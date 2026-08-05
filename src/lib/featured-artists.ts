@@ -49,9 +49,34 @@
  * request route is public and unauthenticated by design (ADR 0025 §6), so
  * honouring unactioned requests here would let any stranger knock any artist
  * off the homepage. Only removals a human has actually executed count.
+ *
+ * ## Why the photo comes from the graph and the rest does not
+ *
+ * The gate used to return ids only, so the homepage had no photo to render and
+ * fell back to the monogram tile — while `/artists` and the profile page showed
+ * the artist's real work. The same featured artist looked like two different
+ * people depending on which page you landed on.
+ *
+ * Carrying an image URL in the curated JSON would have fixed the symptom and
+ * created the drift: a snapshot photo goes stale the moment the artist claims
+ * their profile, swaps their work, or the kill switch below turns off. So the
+ * hero image is read live, from the same query, and put through
+ * `filterPortfolioForDisplay` — the one seam `/artists` and the profile already
+ * read through. Same artist, same seam, same `[0]`, so the homepage photo *is*
+ * the profile photo by construction rather than by a copy someone must
+ * remember to refresh.
+ *
+ * This narrowly widens the graph's power over the homepage: it can take a card
+ * away, and it can say which photo that card wears. It still cannot add a card,
+ * rename anyone, or change who TatT promotes — that stays the reviewed
+ * snapshot. And because the image travels through the TAT-31 gate,
+ * `SHOW_UNCLAIMED_PORTFOLIOS=false` empties the homepage tile exactly when it
+ * empties the profile hero, rather than leaking withheld photographs onto the
+ * most prominent surface of the site.
  */
 import featuredData from "@/data/featured-artists.json";
 import { PUBLIC_ARTIST_CLAUSE } from "@/lib/artist-visibility";
+import { filterPortfolioForDisplay } from "@/lib/portfolio-display";
 import { tombstoneKeysFor } from "@/lib/takedown";
 
 export type FeaturedArtist = {
@@ -63,6 +88,18 @@ export type FeaturedArtist = {
   instagram: string;
   rating: number;
   reviewCount: number;
+};
+
+/**
+ * A candidate the graph vouched for, carrying the photo it vouched for.
+ *
+ * `heroImage` is `null` for an artist with no displayable portfolio — no work
+ * hosted, or the kill switch withholding it. That is a real state, not a
+ * failure: the card renders its monogram tile, exactly as the profile renders
+ * its no-work hero.
+ */
+export type PublishedFeaturedArtist = FeaturedArtist & {
+  heroImage: string | null;
 };
 
 /** The editorial snapshot. Candidates only — never rendered unfiltered. */
@@ -97,10 +134,15 @@ export function retainPublishable(
 }
 
 /**
- * Ask the graph which candidates are still publishable.
+ * Ask the graph which candidates are still publishable, and with which photo.
  *
- * Returns ids, not artists — the rendered content stays the reviewed snapshot,
- * and the graph's only power over the homepage is to take a card away.
+ * Returns ids and raw portfolio fields — never names, cities or styles. The
+ * words on the card stay the reviewed snapshot; the graph decides only whether
+ * a card survives and which of the artist's own images it wears.
+ *
+ * `claimedByUid` rides along because `filterPortfolioForDisplay` needs it to
+ * answer the TAT-31 question. Reading the images without it would silently
+ * treat every artist as unclaimed.
  */
 export const PUBLISHABLE_FEATURED_CYPHER = `
   UNWIND $candidates AS c
@@ -110,8 +152,39 @@ export const PUBLISHABLE_FEATURED_CYPHER = `
   WHERE t.key IN c.keys
   WITH a, count(t) AS tombstones
   WHERE tombstones = 0
-  RETURN a.id AS id
+  RETURN
+    a.id AS id,
+    a.portfolioImages AS portfolioImages,
+    a.claimedByUid AS claimedByUid
 `;
+
+/**
+ * The hero the profile page would show for this row, or `null`.
+ *
+ * Pure, and deliberately the *only* place the homepage turns graph fields into
+ * an image URL — `filterPortfolioForDisplay` then `[0]` is precisely what
+ * `/artists` and `src/app/artists/[slug]/page.tsx` do, so the three surfaces
+ * cannot disagree about which photograph belongs to an artist.
+ */
+export function heroImageFromRecord(record: {
+  portfolioImages?: unknown;
+  claimedByUid?: unknown;
+}): string | null {
+  return filterPortfolioForDisplay(record)[0] ?? null;
+}
+
+/**
+ * Give each retained candidate the photo the graph vouched for.
+ *
+ * Pure and additive-only: an id missing from `heroById` yields `heroImage:
+ * null`, so a partial or malformed response costs a photo, never a card.
+ */
+export function attachHeroImages(
+  artists: readonly FeaturedArtist[],
+  heroById: ReadonlyMap<string, string | null>,
+): PublishedFeaturedArtist[] {
+  return artists.map((a) => ({ ...a, heroImage: heroById.get(a.id) ?? null }));
+}
 
 async function runServerQuery(query: string, params: Record<string, unknown>) {
   const { executeServerCypherQuery } = await import(
@@ -129,16 +202,22 @@ async function runServerQuery(query: string, params: Record<string, unknown>) {
  */
 export async function getFeaturedArtists(
   candidates: readonly FeaturedArtist[] = CURATED_FEATURED,
-): Promise<FeaturedArtist[]> {
+): Promise<PublishedFeaturedArtist[]> {
   if (!candidates.length) return [];
 
   const records = await runServerQuery(PUBLISHABLE_FEATURED_CYPHER, {
     candidates: candidates.map(candidateKeys),
   });
 
-  const allowedIds = records
-    .map((r: { id?: unknown }) => (typeof r?.id === "string" ? r.id : null))
-    .filter((id): id is string => Boolean(id));
+  // One pass: a row only counts as a vouch if it carries a usable id, and the
+  // photo it carries is recorded against that same id. A malformed row drops
+  // out of both, so it can never contribute an image to somebody else's card.
+  const heroById = new Map<string, string | null>();
+  for (const record of records) {
+    const id = typeof record?.id === "string" ? record.id : null;
+    if (!id) continue;
+    heroById.set(id, heroImageFromRecord(record));
+  }
 
-  return retainPublishable(candidates, allowedIds);
+  return attachHeroImages(retainPublishable(candidates, heroById.keys()), heroById);
 }

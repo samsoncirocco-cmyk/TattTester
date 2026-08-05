@@ -253,6 +253,11 @@ export default async function Home() {
                     city={`${a.city}, ${a.state}`}
                     style={a.styles[0]}
                     color={["bg-pink", "bg-bone", "bg-cream", "bg-pink-deep"][i % 4]}
+                    // The artist's own hero, read through the same gate the
+                    // profile reads — so the card a customer taps here shows
+                    // the work they land on. `color` still backs the tile when
+                    // there is no displayable photo.
+                    image={a.heroImage ?? undefined}
                     handle={a.instagram}
                   />
                 ))}
