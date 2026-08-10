@@ -573,6 +573,24 @@ describe('reference-photo retention at completion (ADR-0050 / #334)', () => {
       `design-sessions/${picked.id}/references/r1.jpg`
     );
   });
+
+  it('drops the state free text at close, keeping the cast', async () => {
+    const picked = await startAndPick('v3', 'v2');
+    const stored = await memorySessionStore.get(picked.id);
+    stored!.state = {
+      ...(stored!.state ?? {}),
+      roster: ['Nadia'],
+      directives: ['unreal engine 5 look'],
+      exclusions: ['no lettering'],
+    } as never;
+    await memorySessionStore.save(stored!);
+
+    const completed = await refine(picked.id, { answer: 'not stark enough' });
+
+    expect(completed.state?.directives).toEqual([]);
+    expect(completed.state?.exclusions).toEqual([]);
+    expect((completed.state as { roster?: string[] })?.roster).toEqual(['Nadia']);
+  });
 });
 
 describe('getSession', () => {

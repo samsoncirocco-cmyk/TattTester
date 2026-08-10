@@ -1105,6 +1105,14 @@ export async function refine(sessionId: string, request: RefineRequest): Promise
     rejectedAxisPosition: rejected?.axisPosition,
   };
   session.phase = 'complete';
+  // Same session-lifetime retention as the photos (#334): the customer's
+  // free text in the working state is dropped at close. ONLY the two text
+  // fields — roster and identities stay, they are the cast, not prose, and
+  // Brief-adjacent surfaces still read them. The ADR-0013 hard stop means
+  // no render can ever read directives again after this save.
+  if (session.state) {
+    session.state = { ...session.state, directives: [], exclusions: [] };
+  }
   session.updatedAt = new Date().toISOString();
 
   await store.save(session);
