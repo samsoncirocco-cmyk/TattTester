@@ -1196,8 +1196,11 @@ async function armPlacement(
   });
   // Deliberately no stage change: compositing spends nothing, so there is
   // nothing to double-fire, and leaving the stage alone means the texter can
-  // keep critiquing or pick while the preview is on its way.
-  await store.save({ ...profile, updatedAt: new Date().toISOString() });
+  // keep critiquing or pick while the preview is on its way. The armed token
+  // still persists (#304): executePlacement aborts if a newer photo or a
+  // restart superseded this composite before it delivered.
+  const armedAt = new Date().toISOString();
+  await store.save({ ...profile, placementArmedAt: armedAt, updatedAt: armedAt });
 
   return {
     kind: 'placement',
@@ -1207,6 +1210,7 @@ async function armPlacement(
     mediaUrl: photo.url,
     contentType: photo.contentType,
     message,
+    armedAt,
   };
 }
 
@@ -1222,8 +1226,27 @@ export async function executePlacement(
   sessionId: string,
   phone: string,
   photo: InboundMediaItem,
-  message: string
+  message: string,
+  armedAt: string
 ): Promise<RevealDelivery> {
+  // The superseded guard its deferred siblings already have (#304): a
+  // composite must not deliver after the texter restarted, moved to a
+  // different design, or sent a newer photo. lastStage is deliberately not
+  // checked — placement never set one.
+  const profile = await resolveProfileStore().get(phone);
+  if (
+    !profile ||
+    profile.activeSessionId !== sessionId ||
+    profile.placementArmedAt !== armedAt
+  ) {
+    logger.info({
+      event_type: 'sketchbot_sms.placement_superseded',
+      phone_last4: phoneLast4(phone),
+      session_id: sessionId,
+    });
+    return { cuts: [], closingText: '' };
+  }
+
   try {
     const session = await getSession(sessionId);
     const designUrl = placementSourceUrl(session);
