@@ -19,13 +19,15 @@
 import { depositHoldDays } from "@/lib/deposit-hold";
 
 export const bookingMoneyCopy = {
-  bookingsList:
-    "Every deposit goes to your artist in full — the booking fee you pay at checkout is the only part we keep. A deposit for an unclaimed profile is held while we relay the request and automatically refunded in full if they do not claim and complete setup within the hold window.",
   artistConsole:
     "Clients pay your deposit plus TattTester’s booking fee — you keep 100% of every deposit; the fee is the only part we take.",
   claimHeldDeposit:
     "Clients paid this deposit plus our booking fee — the full deposit is yours; the fee is the only part TattTester keeps.",
 } as const;
+
+export function bookingsListMoneyCopy(holdDays = depositHoldDays()): string {
+  return `Every deposit goes to your artist in full — the booking fee you pay at checkout is the only part we keep. A deposit for an unclaimed profile is held while we relay the request and automatically refunded in full if they do not claim and complete setup within ${holdDays} days.`;
+}
 
 export function checkoutFeeMoneyCopy(
   artistClaimed = true,
