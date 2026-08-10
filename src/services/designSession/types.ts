@@ -4,6 +4,7 @@
 // contract change, not a local edit.
 
 import type { IntakeRecord, AxisSelection } from '../intake/types';
+import type { DesignState } from './internal/designState';
 
 /**
  * A session's lifecycle. Transitions are one-way (ADR-0013 hard stop):
@@ -73,6 +74,19 @@ export interface DesignSession {
   id: string;
   phase: SessionPhase;
   intake: IntakeRecord;
+  /**
+   * The design's state object (ADR-0060) — roster, composition, palette, the
+   * look, the exclusions. Every re-cut renders from the whole of it, so a
+   * critique updates a field instead of appending to the last prompt.
+   *
+   * Optional because sessions revealed before ADR-0060 do not have one; the
+   * critique lane derives it from `intake` on first use, so an old session
+   * gains a state the moment it needs one rather than being left behind.
+   *
+   * ADR-0060 calls this "the ADR-0055 Idea made concrete". It sits on the
+   * session until the Idea graph exists and it moves up a level.
+   */
+  state?: DesignState;
   axisSelection: AxisSelection;
   /** Image provider locked for the whole session (ADR-0016). */
   provider: string;

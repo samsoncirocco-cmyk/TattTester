@@ -93,6 +93,20 @@ features:
       - The server-side allowance defaults to 25 re-cuts and remains bounded by the global generation budget.
       - Production provider behavior has not yet been verified after deployment.
 
+  design_state_object:
+    status: implemented_unverified
+    evidence:
+      - docs/adr/0060-regenerate-from-state-not-from-the-last-prompt.md
+      - src/services/designSession/internal/designState.ts
+      - src/services/designSession/__tests__/designState.test.ts
+      - src/services/designSession/internal/orchestrator.ts
+    limitations:
+      - A re-cut renders from the whole state object; the customer's critique updates a field rather than being appended to the previous prompt.
+      - The state lives on the design session, not yet on an ADR-0055 Idea, so it does not survive across sessions or channels.
+      - The reveal prompt is still the Council's; only the re-cut and re-roll lanes render from state.
+      - A style word with no translation asks the customer instead of rendering, which makes that turn free where it previously produced an image.
+      - Production behavior has not been verified after deployment.
+
   bounded_refinement:
     status: implemented
     evidence:

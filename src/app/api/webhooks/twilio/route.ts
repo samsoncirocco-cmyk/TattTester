@@ -299,7 +299,8 @@ export async function POST(req: NextRequest) {
                   outcome.sessionId,
                   outcome.phone,
                   { url: outcome.mediaUrl, contentType: outcome.contentType },
-                  outcome.message
+                  outcome.message,
+                  outcome.armedAt
                 )
               : outcome.kind === 'refine-round'
                 ? await executeRefineRound(
