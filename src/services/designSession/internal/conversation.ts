@@ -47,6 +47,7 @@ import {
   MAX_SESSION_REFERENCES,
   type StoredReference,
 } from './references';
+import { deleteReferencePhotos } from './referencePhotos';
 
 /**
  * Placeholder DesignSession fields for a session still in conversational
@@ -319,9 +320,9 @@ export async function attachReference(
 
   const reference = await buildStoredReference(analysis, source, imagePath);
   // Newest-first eviction bound: a brief, not a photo album.
-  const references = [...(session.conversation.references ?? []), reference].slice(
-    -MAX_SESSION_REFERENCES
-  );
+  const combined = [...(session.conversation.references ?? []), reference];
+  const references = combined.slice(-MAX_SESSION_REFERENCES);
+  const evicted = combined.slice(0, combined.length - references.length);
   session.conversation.references = references;
   session.conversation.record = applyReferenceSignals(
     session.conversation.record,
@@ -329,6 +330,15 @@ export async function attachReference(
   );
   session.updatedAt = new Date().toISOString();
   await store.save(session);
+
+  // The save dropped the evicted entries; their photo objects go with them
+  // (ADR-0050 / #334). After the save so a failed save deletes nothing.
+  if (evicted.length) {
+    await deleteReferencePhotos(
+      session.id,
+      evicted.map((entry) => entry.imagePath)
+    );
+  }
 
   logger.info({
     event_type: 'design_session.reference_attached',

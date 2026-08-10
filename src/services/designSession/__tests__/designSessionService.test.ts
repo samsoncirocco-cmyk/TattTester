@@ -33,6 +33,10 @@ vi.mock('../../intake', () => ({ extractIntake: vi.fn() }));
 vi.mock('../../council', () => ({ enhanceStructured: vi.fn() }));
 vi.mock('../../generation', () => ({ generate: vi.fn(), routeGeneration: vi.fn() }));
 vi.mock('@/lib/firebase-admin', () => ({ ensureAdminApp: vi.fn(() => false) }));
+vi.mock('@/services/gcs-service', () => ({
+  deleteFromGCS: vi.fn(async () => true),
+  getSignedUrl: vi.fn(async (path: string) => `https://signed.test/${path}`),
+}));
 vi.mock('@/services/storage/imageStorageService', () => ({
   recoverImageAtPath: vi.fn(),
   copyImageToPath: vi.fn(),
@@ -543,6 +547,49 @@ describe('refine', () => {
     await expect(refine('missing', { answer: 'x' })).rejects.toMatchObject({
       code: 'SESSION_NOT_FOUND',
     });
+  });
+});
+
+describe('reference-photo retention at completion (ADR-0050 / #334)', () => {
+  it('drops the stored photo objects when the Brief closes the session', async () => {
+    const { deleteFromGCS } = await import('@/services/gcs-service');
+    const picked = await startAndPick('v3', 'v2');
+
+    // A conversational session would carry these from its intake photos.
+    const stored = await memorySessionStore.get(picked.id);
+    stored!.conversation = {
+      references: [
+        { imagePath: `design-sessions/${picked.id}/references/r1.jpg` },
+        {}, // analysis-only reference — nothing to delete
+      ],
+    } as never;
+    await memorySessionStore.save(stored!);
+
+    const completed = await refine(picked.id, { answer: 'not stark enough' });
+
+    expect(completed.phase).toBe('complete');
+    expect(deleteFromGCS).toHaveBeenCalledTimes(1);
+    expect(deleteFromGCS).toHaveBeenCalledWith(
+      `design-sessions/${picked.id}/references/r1.jpg`
+    );
+  });
+
+  it('drops the state free text at close, keeping the cast', async () => {
+    const picked = await startAndPick('v3', 'v2');
+    const stored = await memorySessionStore.get(picked.id);
+    stored!.state = {
+      ...(stored!.state ?? {}),
+      roster: ['Nadia'],
+      directives: ['unreal engine 5 look'],
+      exclusions: ['no lettering'],
+    } as never;
+    await memorySessionStore.save(stored!);
+
+    const completed = await refine(picked.id, { answer: 'not stark enough' });
+
+    expect(completed.state?.directives).toEqual([]);
+    expect(completed.state?.exclusions).toEqual([]);
+    expect((completed.state as { roster?: string[] })?.roster).toEqual(['Nadia']);
   });
 });
 
