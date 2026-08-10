@@ -30,7 +30,11 @@ vi.mock('../../designConversation', () => {
   };
 });
 vi.mock('@/lib/firebase-admin', () => ({ ensureAdminApp: vi.fn(() => false) }));
-vi.mock('@/services/gcs-service', () => ({ deleteFromGCS: vi.fn(async () => true) }));
+vi.mock('@/services/gcs-service', () => ({
+  deleteFromGCS: vi.fn(async () => true),
+  uploadToGCS: vi.fn(async (_buf: Buffer, path: string) => ({ url: `gs://test/${path}`, path })),
+  getSignedUrl: vi.fn(async (path: string) => `https://signed.test/${path}`),
+}));
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   createRequestLogger: vi.fn(),
@@ -198,10 +202,25 @@ describe('attachReference', () => {
       'design-sessions/s1/variations/v1.png',
       undefined,
       'design-sessions/s1/references/ok.jpg',
+      'reference-photos/s1/new-style.jpg',
     ]);
 
-    expect(deleteFromGCS).toHaveBeenCalledTimes(1);
+    expect(deleteFromGCS).toHaveBeenCalledTimes(2);
     expect(deleteFromGCS).toHaveBeenCalledWith('design-sessions/s1/references/ok.jpg');
+    expect(deleteFromGCS).toHaveBeenCalledWith('reference-photos/s1/new-style.jpg');
+  });
+
+  // #334: new uploads land under their own top-level prefix so the GCS
+  // lifecycle backstop rule can target them — lifecycle conditions match
+  // literal prefixes only, and design-sessions/*/references/ cannot be
+  // expressed without also matching the designs.
+  it('stores new photos under the lifecycle-friendly prefix', async () => {
+    const { storeReferencePhoto } = await import('../internal/referencePhotos');
+    const path = await storeReferencePhoto('sess-9', {
+      data: Buffer.from('img').toString('base64'),
+      mimeType: 'image/jpeg',
+    });
+    expect(path).toMatch(/^reference-photos\/sess-9\/[0-9a-f-]+\.jpg$/);
   });
 
   // ADR-0050: the stored photo path persists with the entry, and the

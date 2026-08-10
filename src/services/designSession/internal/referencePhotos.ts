@@ -45,7 +45,11 @@ export async function storeReferencePhoto(
   image: { data: string; mimeType: string }
 ): Promise<string | undefined> {
   const extension = EXTENSION_BY_MIME[image.mimeType.toLowerCase()] ?? 'png';
-  const path = `design-sessions/${sessionId}/references/${randomUUID()}.${extension}`;
+  // Top-level prefix on purpose (#334): GCS lifecycle conditions match
+  // literal prefixes only, so the retention backstop rule needs the photos
+  // under one prefix of their own — design-sessions/*/references/ cannot be
+  // targeted without also matching the designs.
+  const path = `reference-photos/${sessionId}/${randomUUID()}.${extension}`;
   try {
     await uploadToGCS(Buffer.from(image.data, 'base64'), path, {
       contentType: image.mimeType,
@@ -71,8 +75,13 @@ export async function signedReferenceUrls(paths: string[]): Promise<string[]> {
   return Promise.all(paths.map((path) => getSignedUrl(path, REFERENCE_URL_TTL_SECONDS)));
 }
 
-/** Only ever delete inside the reference prefix — never a design or stencil. */
-const REFERENCE_PATH_RE = /^design-sessions\/[^/]+\/references\//;
+/**
+ * Only ever delete inside a reference prefix — never a design or stencil.
+ * Both generations of path are deletable: the lifecycle-rule-friendly
+ * reference-photos/ prefix and the original in-session location that
+ * pre-#334 uploads still occupy.
+ */
+const REFERENCE_PATH_RE = /^(?:reference-photos\/|design-sessions\/[^/]+\/references\/)/;
 
 /**
  * Best-effort deletion of stored reference photos (ADR-0050: kept for the
