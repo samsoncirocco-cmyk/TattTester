@@ -670,6 +670,15 @@ async function roundPickTurn(
         text: "That round's already locked into the next one — reply REFINE to keep going, or BOOK when you're ready.",
       };
     }
+    // Transient, not a broken session: a round is rendering right now, so
+    // the pick reopens when its cuts land. Dropping the profile here would
+    // strand the texter mid-flow over a timing collision.
+    if (error instanceof DesignSessionError && error.code === 'ROUND_IN_FLIGHT') {
+      return {
+        kind: 'reply',
+        text: 'Hold that thought — your next cuts are rendering right now. Pick again as soon as they land.',
+      };
+    }
     if (error instanceof DesignSessionError) {
       // The session moved on without this channel (web pick, completed
       // session) — same recovery as the ordinal pick path.

@@ -464,6 +464,18 @@ export async function recordRoundPick(
       `Cannot pick a round cut while the session is '${session.phase}' — rounds live between the reveal and the handoff.`
     );
   }
+  // A pick landing while a round renders would be consumed stale: the
+  // render already read the old pick, and the round's whole-document save
+  // would silently revert this one (#338). Refuse loudly instead — the
+  // new cuts land in a moment and the pick reopens with them.
+  const inFlight = session.roundInFlight;
+  if (inFlight && Date.now() - (Date.parse(inFlight.at) || 0) < ROUND_CLAIM_STALE_MS) {
+    throw new DesignSessionError(
+      'ROUND_IN_FLIGHT',
+      `Session '${sessionId}' has a round rendering from the earlier pick — pick again when its cuts land.`
+    );
+  }
+
   let round = currentRound(session.rounds);
   if (!round) {
     if (session.variations.length === 0) {
