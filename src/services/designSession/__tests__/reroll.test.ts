@@ -286,7 +286,7 @@ describe('rerollRound — reject the set, draw fresh on the same axis', () => {
     await rerollRound(session.id, { hint: '  new ones,   more cinematic ' });
 
     // The Council's prompt survives untouched; the customer's words ride
-    // after it, whitespace-normalized — the adjustPromptForCritique posture.
+    // after it, whitespace-normalized — the verbatim-words posture (ADR-0010).
     const prompts = mockGenerate.mock.calls.slice(2).map(([request]) => request.prompt);
     expect(prompts).toEqual([
       'bold-fine-d1 Customer direction: "new ones, more cinematic".',

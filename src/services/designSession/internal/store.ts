@@ -136,6 +136,7 @@ export function toDesignSession(session: StoredSession): DesignSession {
     id,
     phase,
     intake,
+    state,
     axisSelection,
     provider,
     downgraded,
@@ -158,6 +159,11 @@ export function toDesignSession(session: StoredSession): DesignSession {
     id,
     phase,
     intake,
+    // The design's state object (ADR-0060). Crosses the boundary because the
+    // reveal and both channels read the roster and the look off it; spread so
+    // a pre-ADR-0060 session stays absent rather than explicitly undefined,
+    // which Firestore rejects.
+    ...(state ? { state } : {}),
     axisSelection,
     provider,
     // A downgrade is user-facing by design (ADR-0048): the reveal copy and
