@@ -61,7 +61,7 @@ Democratize custom tattoo design by lowering the barrier between idea and execut
 ## Generation routing (gotchas)
 
 - Routing config: `src/config/modelRoutingRules.js`; selection logic: `src/services/generation/internal/routing.ts`. Flux Dev is the primary, Flux Schnell the speed fallback, Krea 2 the style wildcard — all via Replicate. SDXL-era config keys are retired aliases only.
-- Requests naming **3+ characters** route to the Gemini image lane (`gemini-3.1-flash-image`, issue #293) because Flux drops cast identities.
+- Requests naming **3+ characters** route to the Gemini image lane because Flux drops cast identities (issue #293). That lane is served **through Replicate** as `nano-banana-2` — the same model as Gemini 3.1 Flash Image, but do not reach for it by its Vertex name; the route is the `nano_banana_2` key (#314, `docs/adr/0048-gemini-lane-served-through-replicate.md`). Preview and stencil modes still win over the cast lane.
 - `src/services/generation/internal/vertexImagen.ts` no longer calls Imagen despite its name — Google retired the `imagen-*` endpoints; it talks to Gemini. The `imagen3` model key survives as the vertex-ai provider's routing key but is deliberately excluded from complexity-based selection.
 - Flux/Krea/Gemini have no `negative_prompt` input; negatives are folded into the prompt as an "Avoid:" clause. Gemini also ignores `seed` (no determinism) and returns one image per call (N images = N parallel calls).
 
