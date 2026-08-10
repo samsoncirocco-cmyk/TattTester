@@ -1088,6 +1088,16 @@ describe('the two-cut rounds (ADR-0049)', () => {
       expect(profile?.pendingCreditReservationId).toBe('res-1');
     });
 
+    it('reads a contentless tail as REFINE, not a fix-allowance critique (#338)', async () => {
+      mockLinked('user-1');
+      await driveToPicked();
+
+      const outcome = await handleInbound({ phone: PHONE, body: 'refine it please' });
+
+      expect(outcome.kind).toBe('refine-round');
+      expect(reserveGenerationCredit).toHaveBeenCalledWith('user-1');
+    });
+
     it('speaks the empty meter instead of arming a round it cannot charge', async () => {
       mockLinked('user-1');
       await driveToPicked();
@@ -1280,6 +1290,32 @@ describe('the two-cut rounds (ADR-0049)', () => {
       if (outcome.kind === 'reply') {
         expect(outcome.text).toContain('https://tatttester.com/smart-match?ds=s1');
       }
+    });
+
+    it('reads a contentless tail as the keyword, not a paid critique (#338)', async () => {
+      await driveToRevealed();
+
+      for (const body of ['book it', 'Book it!', 'yes book this one', "let's book it now."]) {
+        const outcome = await handleInbound({ phone: PHONE, body });
+
+        expect(outcome.kind).toBe('reply');
+        if (outcome.kind === 'reply') {
+          expect(outcome.text).toContain('https://tatttester.com/smart-match?ds=s1');
+        }
+      }
+      expect(reserveGenerationCredit).not.toHaveBeenCalled();
+    });
+
+    it('still reads a real instruction as the critique lane, not BOOK or REFINE', async () => {
+      await driveToRevealed();
+
+      const outcome = await handleInbound({
+        phone: PHONE,
+        body: 'refine the lines on A',
+      });
+
+      expect(outcome.kind).not.toBe('reply');
+      expect(outcome.kind).not.toBe('refine-round');
     });
   });
 });
