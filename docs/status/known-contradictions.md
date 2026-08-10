@@ -42,14 +42,37 @@ and milestones.
 Resolution: ADR-0024 is authoritative. Older claims are historical and must
 not be repeated.
 
-## Artist and image counts
+## Artist and image counts — RESOLVED 2026-08-06
 
-Counts vary among `README.md`, `CLAUDE.md`, handoffs, cleanup reports, and
+Counts varied among `README.md`, `CLAUDE.md`, handoffs, cleanup reports, and
 research material.
 
 Required procedure: compute counts from the active production source at the
 time of publication and include the query date. Do not copy a number from a
 handoff.
+
+Resolved by applying that procedure. The canonical figures, from a read-only
+production Neo4j query on 2026-07-30 (`docs/legal/artist-data-counsel-notes.md`):
+
+| | |
+|---|---|
+| Artist records in production | 18,002 |
+| With at least one portfolio image URL | 7,511 |
+| Portfolio image URLs total | 68,532 |
+| External URLs | 68,506 |
+| Re-hosted on `gs://tatt-pro-assets` | 26, across 6 artists |
+
+The competing "7,828 artists / 62,313 images" pair came from `host_only.log`,
+which records `SET portfolioImages` **write operations** — and the URLs written
+were the artists' own external links. Reading "portfolioImages written" as
+"photographs re-hosted" is what produced the retracted claim. That sentence had
+propagated into `directives/artist-takedown.md`, `TODO.md`, ADR-0025 and
+ADR-0026; all four were corrected (ADRs by appended note, not rewrite).
+
+Still true, and the reason this entry stays rather than being deleted: the
+procedure above is the fix. Any future count must be recomputed from production
+with its query date stated. `host_only.log` is a record of writes, not of
+current state, and is not a source for either number.
 
 ## Artist verification
 

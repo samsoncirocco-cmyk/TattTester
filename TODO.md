@@ -155,6 +155,11 @@ launched" line described the wrong pipeline. Verified counts:
   (`apify-run.log`; `apify-profiles/` holds exactly 10,427 files).
 - `portfolioImages` written to Neo4j: **7,828 artists / 62,313 images**
   (7,828 distinct `SET portfolioImages` lines in `host_only.log`).
+  These are *write operations from the run log*, and the URLs written were the
+  artists' own external links. A read-only production query on 2026-07-30 found
+  the current state to be **7,511 artists / 68,532 URLs**, only 26 of them
+  GCS-hosted. Do not read "portfolioImages written" as "images re-hosted" —
+  that conflation is what produced the retracted 62,313-re-hosted claim.
 
 ⚠️ **The figure "2,606" that has circulated is wrong** — it is shard 2's
 `hosted:` count from a 3-shard parallel run (2605 / 2606 / 2617), not a total.
@@ -351,9 +356,13 @@ the code survives at `archive/security-hardening-followups`.
   right: **style tags are not populated at all**, because Instagram bios
   don't list styles. This needs the vision pass (#63), not a bio re-scrape.
   Portfolio/bio enrichment is a *separate* and largely finished job —
-  7,828 artists have hosted `portfolioImages` (see the Enrichment block
-  above). Sizing note for #63: the corpus is 62,313 GCS-hosted images across
-  7,828 artists, and `scripts/generate-portfolio-embeddings.js` is **not** a
+  7,511 artists have `portfolioImages` attached in production (see the
+  Enrichment block above). Sizing note for #63: the corpus is **68,532
+  portfolio image URLs across 7,511 artists, of which 68,506 are external
+  links and only 26 are GCS-hosted** (read-only production query 2026-07-30,
+  `docs/legal/artist-data-counsel-notes.md`). A vision pass must therefore
+  fetch from external sources or host first — it cannot assume a local
+  corpus. `scripts/generate-portfolio-embeddings.js` is **not** a
   starting point — it runs CLIP over the orphaned synthetic
   `src/data/artists.json`, which nothing reads.
 - Ask GitHub Support to purge the orphaned pre-scrub commits (password

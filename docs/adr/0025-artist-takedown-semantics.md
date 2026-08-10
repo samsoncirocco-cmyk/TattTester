@@ -206,3 +206,36 @@ cannot be read.
    closes and needs its own decision.
 4. **Statutory response windows.** If any takedown request is a formal DMCA or
    GDPR erasure request, there are deadlines. Nothing here tracks them.
+
+---
+
+## Correction — 2026-08-06 (factual, does not change the decision)
+
+The Context above states that TatT "scraped 7,828 artists and re-hosted 62,313
+of their portfolio photographs." A read-only query against production Neo4j on
+2026-07-30 does not support the re-hosting half of that sentence.
+
+| | |
+|---|---|
+| Artist records in production | 18,002 |
+| With at least one portfolio image URL | 7,511 |
+| Portfolio image URLs total | 68,532 |
+| External URLs | 68,506 |
+| Re-hosted on `gs://tatt-pro-assets` | 26, across 6 artists |
+
+The 7,828 / 62,313 pair came from `host_only.log`, which records
+`SET portfolioImages` write operations. The URLs written were the artists' own
+external links, so "portfolioImages written" was misread as "photographs
+re-hosted." See `docs/legal/artist-data-counsel-notes.md` for the counsel-facing
+version.
+
+**Why the decision still stands.** This ADR's reasoning does not depend on the
+volume of re-hosted content — a takedown mechanism is required because we hold
+18,002 non-consenting records at all, and that number is larger than the one in
+the Context. The mechanism is per-artist and enumerates whatever objects exist
+for that artist, so it is unaffected.
+
+**What it does change** is what a takedown means to a requester: for 6 artists
+it deletes photographs from our storage, and for the rest it removes our copy of
+their profile data and our links to images that stay on their own sites.
+`directives/artist-takedown.md` now states this distinction.

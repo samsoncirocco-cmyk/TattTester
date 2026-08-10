@@ -124,7 +124,14 @@ never deleted. A second reinstatement of the same handle is blocked on sight.
 
 So a remove-then-relist pattern is visible in the graph, and the artist node
 carries `selfRegistered = true` — the one flag in the system that means *this
-person consented*, distinguishing them from the ~7,828 who did not.
+person consented*, distinguishing them from the ~18,002 who did not.[^counts]
+
+[^counts]: Corrected 2026-08-06. This ADR originally said ~7,828, a figure taken
+    from hosting-run logs. A read-only production query on 2026-07-30 found
+    18,002 non-consenting artist records (7,511 of them with portfolio image
+    URLs). See the correction note in `docs/adr/0025-artist-takedown-semantics.md`.
+    The decision is unaffected — the flag's meaning does not depend on the count,
+    which is larger than originally stated, not smaller.
 
 The audit mark is written **before** ownership changes hands, and a failed mark
 aborts the run. Handing someone a profile without a durable record of why would
@@ -148,8 +155,9 @@ husk through the *unverified* route and inherit their connected account —
 bypassing this ADR entirely. That guard is now in place; without it, reinstatement
 is not the only door and nothing here holds.
 
-**What #192 must still fix, independently:** the other ~7,828 artists who have
-*not* been removed are still claimable by the first person to ask. Reinstatement
+**What #192 must still fix, independently:** the other ~18,002 artists who have
+*not* been removed are still claimable by the first person to ask (see
+[^counts] — the exposure is larger than this ADR originally stated). Reinstatement
 is arguably the template for the fix — handle-control proof plus a human before
 the binding — but applying it there is a separate product decision about
 onboarding friction, not something this ADR settles.

@@ -9,9 +9,16 @@
 
 ## Purpose
 
-TatT scraped 7,828 artists and re-hosted 62,313 of their portfolio photographs
-on `gs://tatt-pro-assets`. None of them opted in. This directive is how we
+TatT holds 18,002 scraped artist records in production Neo4j. 7,511 of them have
+at least one portfolio image URL attached, 68,532 URLs in total — of which
+68,506 point at external sources and 26 are re-hosted on `gs://tatt-pro-assets`
+across 6 artists. None of these artists opted in. This directive is how we
 honour one of them asking us to stop.
+
+Counts from a read-only production query on 2026-07-30, recorded in
+`docs/legal/artist-data-counsel-notes.md`. Per
+`docs/status/known-contradictions.md`, recompute from production and state the
+query date rather than copying these forward.
 
 The decisions behind it — soft vs hard delete, tombstones, what identity proof
 we require — are recorded in **`docs/adr/0025-artist-takedown-semantics.md`**.
@@ -120,7 +127,15 @@ match results, and that `/book` refuses them.
 
 **There is none for the content.** The GCS objects and the Supabase embedding
 are hard-deleted. The node can be un-suppressed (`REMOVE a.removedAt`) and the
-tombstone deleted, but the photographs are gone. This is why Step 2 exists.
+tombstone deleted, but anything we hosted is gone. This is why Step 2 exists.
+
+**What a takedown actually removes depends on the artist.** For the 6 artists
+with re-hosted images, it deletes photographs from our storage. For the other
+7,505 with portfolio URLs, their images were never copied — we hold external
+links, so a takedown removes our reference and our copy of their profile data,
+and nothing leaves the artist's own site. Step 2's dry run reports which case
+you are in; read it before answering a requester, because "we deleted your
+photographs" is only true for the first case.
 
 ## Notes
 
