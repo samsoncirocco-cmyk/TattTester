@@ -689,6 +689,51 @@ describe('the picked-cut reference is bucket-verified (config drift guard)', () 
     expect(after.roundInFlight).toBeUndefined();
   });
 
+  it('carries a typed code so the route can classify config drift', async () => {
+    const session = await startSession(startRequest);
+    const stored = (await memorySessionStore.get(session.id)) as StoredSession;
+    stored.variations = stored.variations.map(variation => ({
+      ...variation,
+      imageUrl: `https://storage.googleapis.com/some-other-bucket/${variation.id}.png`,
+    }));
+    await memorySessionStore.save(stored);
+    await recordRoundPick(session.id, { pickedId: 'v2' });
+
+    // A bare Error reaches the client as an unclassified failure; the drift is
+    // ours, so it is a 500 with a code the UI can branch on — not a 4xx that
+    // blames the caller for a request they cannot fix by changing.
+    await expect(refineRound(session.id)).rejects.toMatchObject({
+      name: 'DesignSessionError',
+      code: 'REFERENCE_BUCKET_MISMATCH',
+      status: 500,
+    });
+  });
+
+  it('refuses the round when our own object key will not decode', async () => {
+    const session = await startSession(startRequest);
+    const stored = (await memorySessionStore.get(session.id)) as StoredSession;
+    // On our storage host and in the signing bucket, but the key carries a
+    // malformed percent-escape. Silently seeding nothing here would drop the
+    // customer's pick behind a log line, so it fails the round instead.
+    stored.variations = stored.variations.map(variation => ({
+      ...variation,
+      imageUrl: 'https://storage.googleapis.com/tatt-pro-assets/cuts/%zz.png',
+    }));
+    await memorySessionStore.save(stored);
+    await recordRoundPick(session.id, { pickedId: 'v2' });
+
+    await expect(refineRound(session.id)).rejects.toMatchObject({
+      code: 'REFERENCE_PATH_UNREADABLE',
+      status: 500,
+    });
+
+    // Same guarantee as the drift case: nothing rendered, nothing persisted.
+    expect(mockGenerate).toHaveBeenCalledTimes(2); // reveal only
+    const after = (await memorySessionStore.get(session.id)) as StoredSession;
+    expect(after.rounds).toHaveLength(1);
+    expect(after.roundInFlight).toBeUndefined();
+  });
+
   it('renders unseeded (and logs) when the cut has no usable GCS URL at all', async () => {
     const session = await startSession(startRequest);
     const stored = (await memorySessionStore.get(session.id)) as StoredSession;
