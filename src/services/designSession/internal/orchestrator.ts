@@ -46,10 +46,17 @@ import { signedReferenceUrls } from './referencePhotos';
 import { recordImageSpend } from './spend';
 import {
   allCuts,
-  adjustPromptForCritique,
   cutLabel,
   classifyCritiqueTurn,
 } from './critique';
+import type { DesignState } from './designState';
+import {
+  applyCritique,
+  deriveDesignState,
+  renderStatePrompt,
+  rosterOmissions,
+  withPickedCut,
+} from './designState';
 import {
   ALLOWANCE_SPENT_LINE,
   CHATTER_LINE,
@@ -58,6 +65,7 @@ import {
   REROLL_DOWNGRADED_REFUNDED_NOTE,
   REROLL_NEEDS_ACCOUNT_LINE,
   ROUND_IN_FLIGHT_LINE,
+  UNTRANSLATED_LOOK_LINE,
   WHICH_CUT_LINE,
   fixLandedLine,
   fixesLeftLine,
@@ -374,6 +382,9 @@ export async function startFromRecord(
     ...shell,
     phase: 'revealed',
     intake,
+    // The design's state, established the moment there is a design (ADR-0060).
+    // Everything the critique lane re-renders from starts here.
+    state: deriveDesignState(intake),
     axisSelection: enhanced.axisSelection,
     provider: route.provider,
     pinnedModelId: route.modelId,
@@ -866,7 +877,8 @@ async function renderRoundCuts(
 /**
  * Thread an optional customer style hint into a render prompt — additive
  * only: the hint rides after the Council's prompt in the customer's own
- * words (same verbatim posture as adjustPromptForCritique), never replacing
+ * words (the same verbatim posture designState keeps for a directive),
+ * never replacing
  * any of it. Blank hints are no-ops.
  */
 function withStyleHint(prompt: string, hint?: string): string {
@@ -1192,6 +1204,44 @@ export async function critique(
    * settling on it would clobber the round just delivered.
    */
   const settleRerollSet = async (styleHint: string) => {
+    // ADR-0060 reaches this arm too, and it matters more here than in the
+    // per-cut lane: "i was thinking more like an unreal engine 5 look" names
+    // no cut, so it routes to a FRESH ROUND — a generation credit, not a fix.
+    // Left alone, the hint rode to the render as the customer's raw words
+    // appended to the Council's prompt, which is the exact append this ADR
+    // rejects and the exact reason that request never landed.
+    //
+    // So the hint goes through the state object first: translated to concrete
+    // controls when we know the look, and ASKED about — before any credit is
+    // reserved — when we do not.
+    let translatedHint = styleHint;
+    // Held, not written to `session` — rerollRound loads and saves its OWN
+    // copy, so anything set here before it runs is clobbered by the round it
+    // persists. This lands on `fresh` below, beside the critique turn, for the
+    // same reason the turn does.
+    let rerolledState: DesignState | undefined;
+    if (styleHint.trim()) {
+      const applied = applyCritique(session.state ?? deriveDesignState(session.intake), styleHint);
+      if (applied.unresolvedStyle) {
+        // Nothing was rendered and nothing will be, so this settle owns the
+        // save — writing the resolved fields here is safe and keeps the
+        // customer from having to say them twice.
+        session.state = applied.state;
+        return settle(UNTRANSLATED_LOOK_LINE);
+      }
+      rerolledState = applied.state;
+      // Their words AND the translation — the same posture designState keeps
+      // for a directive (ADR-0010). The words alone never landed; the controls
+      // alone would put our vocabulary in the customer's mouth.
+      const controls = [
+        applied.state.visualTarget && `rendered with ${applied.state.visualTarget}`,
+        applied.state.exclusions.length > 0 && `avoiding ${applied.state.exclusions.join(', ')}`,
+      ]
+        .filter(Boolean)
+        .join(', ');
+      translatedHint = controls ? `${styleHint} — ${controls}` : styleHint;
+    }
+
     const demo = isDemoMode();
     let reservation: { id: string } | undefined;
     if (!demo) {
@@ -1227,7 +1277,7 @@ export async function critique(
     try {
       outcome = await rerollRound(sessionId, {
         ...(reservation ? { reservationId: reservation.id } : {}),
-        ...(styleHint ? { hint: styleHint } : {}),
+        ...(translatedHint ? { hint: translatedHint } : {}),
       });
     } catch (error) {
       const released = await release();
@@ -1257,6 +1307,9 @@ export async function critique(
 
     const fresh = outcome.session;
     const now = new Date().toISOString();
+    // The look the customer just asked for is state, not a property of this
+    // round — the next per-cut fix has to render with it too (ADR-0060).
+    if (rerolledState) fresh.state = rerolledState;
     fresh.critiqueTurns = [...(fresh.critiqueTurns ?? []), { message, reply, at: now }];
     fresh.updatedAt = now;
     await store.save(fresh);
@@ -1308,7 +1361,43 @@ export async function critique(
 
   const target = intent.target;
 
-  const adjustedPrompt = adjustPromptForCritique(target, message);
+  // ADR-0060: the re-cut is rendered from the WHOLE state, not from the
+  // target's prompt with the critique bolted on the end. The critique moves a
+  // field; the prompt is then a pure function of the object.
+  //
+  // Sessions revealed before ADR-0060 have no state — derive one from their
+  // intake rather than leaving them on the old append path, so the fix reaches
+  // sessions that are already open.
+  const priorState = session.state ?? deriveDesignState(session.intake);
+  // The cut they are fixing is the composition they chose; that becomes state
+  // and stays attached to every re-cut after it.
+  const applied = applyCritique(withPickedCut(priorState, target), message);
+
+  // A look we have no translation for. Ask — do not paste it into the prompt
+  // and charge for a render of a guess (ADR-0060). Free, like every other
+  // arm that does not buy an image, and the field updates that DID resolve
+  // are still persisted so the customer never has to say them twice.
+  if (applied.unresolvedStyle) {
+    session.state = applied.state;
+    return settle(UNTRANSLATED_LOOK_LINE);
+  }
+
+  const nextState = applied.state;
+  const adjustedPrompt = renderStatePrompt(nextState);
+
+  // A state naming four characters and a prompt naming two is the exact
+  // contradiction that made this ADR, and it is detectable before the money
+  // is spent. Renderer bug if it ever fires — fail loudly rather than buy the
+  // broken image and let the customer find it.
+  const omissions = rosterOmissions(nextState, adjustedPrompt);
+  if (omissions.length > 0) {
+    throw new Error(
+      `designState render dropped ${omissions.join(', ')} from a roster of ` +
+        `${nextState.roster.length} — refusing to spend a render on a prompt that ` +
+        'contradicts the state object (ADR-0060).'
+    );
+  }
+
   const cutId = `${target.id}-fix${used + 1}`;
 
   let imageUrl: string | undefined;
@@ -1358,6 +1447,10 @@ export async function critique(
     imageUrl,
   };
   session.critiqueCuts = [...(session.critiqueCuts ?? []), cut];
+  // The state that produced this cut is the state the session carries forward
+  // — persisted only now, because a render that threw must not leave the
+  // design claiming a change the customer never saw.
+  session.state = nextState;
   // Only a render that came back counts against the allowance — same rule the
   // Studio's ledger follows.
   session.fixesUsed = used + 1;
