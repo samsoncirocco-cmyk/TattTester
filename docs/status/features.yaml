@@ -1,6 +1,6 @@
 schema_version: 1
-verified_against: 018bbaa
-verified_on: 2026-07-27
+verified_against: 18301f0
+verified_on: 2026-08-10
 
 statuses:
   implemented: Source and focused test evidence exist; production operation is not implied.
@@ -38,11 +38,22 @@ features:
       - src/features/design-session/__tests__/DesignSessionFlow.test.tsx
 
   four_direction_generation:
+    status: retired
+    evidence:
+      - docs/adr/0049-two-cuts-a-round-and-the-pick-is-the-signal.md
+
+  two_cut_rounds:
     status: implemented
     evidence:
-      - src/services/generation/index.ts
-      - src/app/api/v1/design-session/[id]/confirm/route.ts
-      - src/app/api/v1/design-session/__tests__/demo-confirm-flow.test.ts
+      - docs/adr/0049-two-cuts-a-round-and-the-pick-is-the-signal.md
+      - src/services/designSession/internal/orchestrator.ts
+      - src/app/api/v1/design-session/[id]/round/route.ts
+      - src/app/api/v1/design-session/[id]/round/pick/route.ts
+      - src/app/api/v1/design-session/[id]/round/reroll/route.ts
+      - src/app/api/v1/design-session/[id]/round/__tests__/round.test.ts
+      - src/app/api/v1/design-session/[id]/round/reroll/__tests__/reroll.test.ts
+    limitations:
+      - A reroll consumes one generation credit; it is deliberately not a free fix.
 
   ensemble_generation_quality:
     status: implemented_unverified
