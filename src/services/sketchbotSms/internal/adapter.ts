@@ -611,9 +611,25 @@ function parseRoundLetter(body: string): 'A' | 'B' | null {
   return match ? (match[1].toUpperCase() as 'A' | 'B') : null;
 }
 
-/** Whole-message keywords, same discipline as RESTART_INTENT. */
-const REFINE_INTENT = /^\s*refine\s*[.!?]?\s*$/i;
-const BOOK_INTENT = /^\s*book\s*[.!?]?\s*$/i;
+/**
+ * Whole-message keywords, same discipline as RESTART_INTENT. A contentless
+ * lead ("yes", "let's") or tail ("it", "this one", "please") still counts:
+ * those words carry no instruction, and letting "book it" fall through
+ * spends a fix allowance on a critique the texter never asked for (#338).
+ * Anything with real content ("refine the lines on A") still reads as an
+ * instruction and takes the critique lane.
+ */
+const KEYWORD_LEAD = /(?:(?:ok(?:ay)?|yes|yeah|please|let'?s|lets)[\s,]+)*/
+  .source;
+const KEYWORD_TAIL = /(?:\s+(?:it|this|that|one|them|please|now))*/.source;
+const REFINE_INTENT = new RegExp(
+  `^\\s*${KEYWORD_LEAD}refine${KEYWORD_TAIL}\\s*[.!?]*\\s*$`,
+  'i'
+);
+const BOOK_INTENT = new RegExp(
+  `^\\s*${KEYWORD_LEAD}book${KEYWORD_TAIL}\\s*[.!?]*\\s*$`,
+  'i'
+);
 
 /** The live round — the only one whose pick can still change. */
 function liveRound(session: DesignSession): RefineRound | undefined {
