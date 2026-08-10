@@ -226,6 +226,57 @@ describe('recordRoundPick — free, recorded server-side, changeable', () => {
       status: 404,
     });
   });
+
+  it('refuses a pick while a round renders instead of silently reverting it (#338)', async () => {
+    const session = await startSession(startRequest);
+    await recordRoundPick(session.id, { pickedId: 'v2' });
+
+    // Hold the round's render open so the re-pick arrives mid-flight — the
+    // race where the round's stale-loaded save used to eat the new pick.
+    let releaseRender!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseRender = resolve; });
+    mockGenerate.mockImplementation(async request => {
+      await gate;
+      return {
+        images: [`https://replicate.delivery/pbxt/${++imageCounter}/out.png`],
+        metadata: {
+          model: request.modelId ?? 'unknown',
+          provider: 'vertex-ai' as const,
+          generatedAt: new Date().toISOString(),
+          durationMs: 1,
+          attempts: 1,
+          fallbackUsed: false,
+        },
+      };
+    });
+
+    const inFlight = refineRound(session.id);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(recordRoundPick(session.id, { pickedId: 'v1' })).rejects.toMatchObject({
+      code: 'ROUND_IN_FLIGHT',
+      status: 409,
+    });
+
+    releaseRender();
+    await inFlight;
+    // The refusal is transient: the new round's cuts pick normally.
+    const repicked = await recordRoundPick(session.id, { pickedId: 'v3' });
+    expect(repicked.rounds?.[1].pickedId).toBe('v3');
+  });
+
+  it('ignores a stale claim from a crashed instance — picks stay free', async () => {
+    const session = await startSession(startRequest);
+    const stored = (await memorySessionStore.get(session.id)) as StoredSession;
+    stored.roundInFlight = {
+      id: 'dead-claim',
+      at: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+    };
+    await memorySessionStore.save(stored);
+
+    const picked = await recordRoundPick(session.id, { pickedId: 'v2' });
+    expect(picked.rounds?.[0].pickedId).toBe('v2');
+  });
 });
 
 describe('refineRound — the charged next round', () => {
