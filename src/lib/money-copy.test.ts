@@ -3,6 +3,7 @@ import {
   artistDepositNotificationMoneyCopy,
   bookingMoneyCopy,
   bookingReviewMoneyCopy,
+  bookingsListMoneyCopy,
   bookingSuccessMoneyCopy,
   checkoutFeeMoneyCopy,
 } from "./money-copy";
@@ -68,20 +69,19 @@ describe("booking money copy", () => {
   });
 
   it("states both the rule and the unclaimed exception on the bookings list", () => {
-    expect(bookingMoneyCopy.bookingsList).toMatch(
+    delete process.env.DEPOSIT_HOLD_DAYS;
+    expect(bookingsListMoneyCopy()).toMatch(
       /deposit goes to your artist in full/i,
     );
-    expect(bookingMoneyCopy.bookingsList).toMatch(/only part we keep/i);
-    expect(bookingMoneyCopy.bookingsList).toMatch(/unclaimed profile/i);
-    expect(bookingMoneyCopy.bookingsList).toMatch(/relay/i);
-    expect(bookingMoneyCopy.bookingsList).toMatch(
-      /automatically refunded in full/i,
-    );
-    expect(bookingMoneyCopy.bookingsList).toMatch(/hold window/i);
-    expect(bookingMoneyCopy.bookingsList).not.toMatch(
-      /held during verification/i,
-    );
-    expect(bookingMoneyCopy.bookingsList).not.toMatch(/claim window closes/i);
+    expect(bookingsListMoneyCopy()).toMatch(/only part we keep/i);
+    expect(bookingsListMoneyCopy()).toMatch(/unclaimed profile/i);
+    expect(bookingsListMoneyCopy()).toMatch(/relay/i);
+    expect(bookingsListMoneyCopy()).toMatch(/automatically refunded in full/i);
+    expect(bookingsListMoneyCopy()).toMatch(/within 7 days/i);
+    expect(bookingsListMoneyCopy(3)).toMatch(/within 3 days/i);
+    expect(bookingsListMoneyCopy()).not.toMatch(/hold window/i);
+    expect(bookingsListMoneyCopy()).not.toMatch(/held during verification/i);
+    expect(bookingsListMoneyCopy()).not.toMatch(/claim window closes/i);
   });
 
   it("renders the live artist and fee percentage on booking review", () => {

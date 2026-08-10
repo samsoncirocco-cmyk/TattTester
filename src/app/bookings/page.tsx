@@ -13,7 +13,7 @@ import {
 } from "@/lib/tattStorage";
 import { getApiAuthHeaders } from "@/lib/client-api-auth";
 import type { BookingStatus } from "@/lib/booking";
-import { bookingMoneyCopy } from "@/lib/money-copy";
+import { bookingsListMoneyCopy } from "@/lib/money-copy";
 import { bookingStatusCopy } from "./bookingStatus";
 
 function formatBookingDate(iso: string): string {
@@ -327,7 +327,7 @@ export default function BookingsPage() {
           </div>
 
           <p className="mt-6 font-body text-[14px] text-quiet leading-[1.7] max-w-xl">
-            {bookingMoneyCopy.bookingsList}
+            {bookingsListMoneyCopy()}
           </p>
 
           {showEmpty ? (
