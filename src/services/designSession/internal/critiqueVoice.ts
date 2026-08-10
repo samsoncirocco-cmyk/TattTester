@@ -59,6 +59,21 @@ export const REROLL_NEEDS_ACCOUNT_LINE =
   'fresh cuts need an account so i can meter them — sign in and say the word.';
 
 /**
+ * They asked for a look we cannot translate into concrete controls (ADR-0060).
+ *
+ * A style word pasted verbatim onto the end of a prompt weighs almost nothing
+ * — that is why "an unreal engine 5 look" never landed, asked three times.
+ * Rather than sell a render of a guess, this says we did not get it and asks
+ * for the thing we can actually act on. Free turn: nothing is charged.
+ *
+ * Register per ADR-0035: honest capacity, not "unsupported style". It names
+ * what would help instead of putting the failure on the person paying for it.
+ */
+export const UNTRANSLATED_LOOK_LINE =
+  "i don't want to fake that one — tell me what it should look like and i'll build it: " +
+  'flat or 3d, soft or hard light, painted or photographic?';
+
+/**
  * A re-roll landed: two fresh cuts re-asking the same axis the rejected set
  * spread (the axis label comes from the round machinery, never hardcoded).
  * `charged` folds the ADR-0049 price into the delivery — spoken only when a

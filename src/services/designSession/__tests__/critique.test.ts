@@ -13,7 +13,6 @@ import { critique, recordPick, DesignSessionError } from '../index';
 import { memorySessionStore, clearMemorySessions } from '../internal/store';
 import type { StoredSession } from '../internal/store';
 import {
-  adjustPromptForCritique,
   classifyCritiqueTurn,
   isFixRequest,
   resolveCritiqueTarget,
@@ -25,6 +24,7 @@ import {
   REROLL_DOWNGRADED_REFUNDED_NOTE,
   REROLL_NEEDS_ACCOUNT_LINE,
   ROUND_IN_FLIGHT_LINE,
+  UNTRANSLATED_LOOK_LINE,
   WHICH_CUT_LINE,
   rerollLandedLine,
 } from '../internal/critiqueVoice';
@@ -403,26 +403,12 @@ describe('critique — is it a fix request', () => {
   });
 });
 
-describe('critique — the re-cut prompt', () => {
-  it('carries the user’s own words verbatim (ADR-0010)', () => {
-    const prompt = adjustPromptForCritique(variations()[0], "  riku's   missing ");
-    expect(prompt).toContain('p1');
-    expect(prompt).toContain(`Requested change: "riku's missing"`);
-  });
-
-  it('adds a technical directive when a known cue matches', () => {
-    expect(adjustPromptForCritique(variations()[0], 'too busy')).toContain('negative space');
-    expect(adjustPromptForCritique(variations()[0], 'less color')).toContain('muted palette');
-    expect(adjustPromptForCritique(variations()[0], 'make the keyblades bigger')).toContain(
-      'scaled up'
-    );
-  });
-
-  it('leaves an unrecognized critique as the words alone', () => {
-    const prompt = adjustPromptForCritique(variations()[0], 'his jacket is the wrong one');
-    expect(prompt).toBe(`p1 Requested change: "his jacket is the wrong one".`);
-  });
-});
+// The old `describe('critique — the re-cut prompt')` block lived here. It
+// pinned `adjustPromptForCritique` — "${target.prompt} Requested change: ..."
+// — which ADR-0060 replaces outright, so the block went with the function.
+// Its guarantees did not: the customer's words surviving verbatim (ADR-0010)
+// and the cue table translating "too busy" into negative space are both
+// re-pinned in designState.test.ts against the object that now owns them.
 
 describe('critique — the orchestrator turn', () => {
   beforeEach(() => {
@@ -461,7 +447,12 @@ describe('critique — the orchestrator turn', () => {
         negativePrompt: 'n3',
       })
     );
-    expect(mockGenerate.mock.calls[0][0].prompt).toContain('p3');
+    // ADR-0060: the re-cut renders from the STATE, not from the target's
+    // prompt with the critique appended — so 'p3' is deliberately absent and
+    // the critique shows up as a field instead.
+    const recutPrompt = mockGenerate.mock.calls[0][0].prompt;
+    expect(recutPrompt).not.toContain('p3');
+    expect(recutPrompt).toContain('less saturation');
     // Our copy, not the provider's. A re-cut is the image the customer asked
     // for by name, so it is the last one allowed to expire in an hour.
     expect(result.cut?.imageUrl).not.toBe('https://img/recut.png');
@@ -568,7 +559,23 @@ describe('critique — the orchestrator turn', () => {
 
     expect(result.generated).toBe(true);
     expect(result.cut?.id).toBe('v2-fix1');
-    expect(mockGenerate.mock.calls[0][0].prompt).toContain('p2');
+    // The target is proven by the cut id above. The prompt is now the state's,
+    // and the critique that resolved to no field rides as a directive with the
+    // customer's own words intact (ADR-0010).
+    const recutPrompt = mockGenerate.mock.calls[0][0].prompt;
+    expect(recutPrompt).not.toContain('p2');
+    expect(recutPrompt).toContain(`Customer direction: "riku's missing`);
+  });
+
+  it('derives a state for a session revealed before ADR-0060 existed', async () => {
+    // Old sessions have no `state`. They get one from their intake rather than
+    // being stranded on the behavior this ADR replaced.
+    const session = await seed({ phase: 'picked', pickId: 'v2', mostNotYouId: 'v4' });
+    expect(session.state).toBeUndefined();
+
+    const result = await critique('sess-critique', { message: 'his jacket is the wrong one' });
+    expect(result.generated).toBe(true);
+    expect(result.session.state?.medium).toBe('tattoo on the forearm');
   });
 
   it('is closed once the Brief exists (ADR-0013 hard stop)', async () => {
@@ -688,6 +695,68 @@ describe('critique — the reroll-set arm, wired (sprint fix #2)', () => {
     expect(stored.fixesUsed ?? 0).toBe(0);
   });
 
+  it('ASKS instead of faking a look it cannot translate, before reserving a credit', async () => {
+    // ADR-0060: an untranslated style word is a field the system failed to
+    // fill. A whole-piece look names no cut, so it routes to a fresh ROUND —
+    // a generation credit. Refusing before the reservation is the difference
+    // between a free question and a paid guess.
+    await seed({ rounds: roundOne() });
+    const port = creditPort();
+    const result = await critique(
+      'sess-critique',
+      { message: 'more like a vaporwave brutalist look' },
+      { roundCredit: port }
+    );
+
+    expect(result.generated).toBe(false);
+    expect(result.reply).toBe(UNTRANSLATED_LOOK_LINE);
+    expect(port.reserve).not.toHaveBeenCalled();
+    expect(mockGenerate).not.toHaveBeenCalled();
+    expect(mockRecordSpend).not.toHaveBeenCalled();
+    // A question is not a fix; the allowance is untouched.
+    expect(result.fixesRemaining).toBe(DEFAULT_STUDIO_FIX_ALLOWANCE);
+  });
+
+  it('sends a look it CAN translate as concrete controls, not as the style word', async () => {
+    // "an unreal engine 5 look" asked three times and never landed, because
+    // three words at the tail of the Council's prompt weigh nothing. It now
+    // arrives as the controls it means.
+    await seed({ rounds: roundOne() });
+    await critique(
+      'sess-critique',
+      { message: 'i was thinking more like an unreal engine 5 look' },
+      { roundCredit: creditPort() }
+    );
+
+    const prompts = mockGenerate.mock.calls.map(call => call[0].prompt);
+    expect(prompts.length).toBeGreaterThan(0);
+    for (const prompt of prompts) {
+      expect(prompt).toContain('physically based materials');
+      expect(prompt).toContain('flat cel-shaded outlines');
+      expect(prompt).toContain('unreal engine 5 look');  // their words survive
+    }
+  });
+
+  it('carries the state forward, so a later re-cut still has the earlier change', async () => {
+    // The heart of ADR-0060. Turn one sets the look through the re-roll arm;
+    // turn two is a per-cut fix that says nothing about the look — and its
+    // render must STILL carry it, because it builds from the whole state and
+    // not from the last prompt.
+    await seed({ rounds: roundOne() });
+
+    await critique(
+      'sess-critique',
+      { message: 'more like an unreal engine 5 look' },
+      { roundCredit: creditPort() }
+    );
+    mockGenerate.mockClear();
+
+    await critique('sess-critique', { message: 'cut two, his jacket is the wrong one' });
+    const second = mockGenerate.mock.calls[0][0].prompt;
+    expect(second).toContain('physically based materials');
+    expect(second).toContain('Customer direction: "cut two, his jacket is the wrong one".');
+  });
+
   it('threads the customer direction into both fresh prompts, additively', async () => {
     await seed({ rounds: roundOne() });
     await critique(
@@ -697,9 +766,11 @@ describe('critique — the reroll-set arm, wired (sprint fix #2)', () => {
     );
 
     const prompts = mockGenerate.mock.calls.map(([request]) => (request as { prompt: string }).prompt);
+    // ADR-0060: their words survive verbatim AND carry the translation, so a
+    // style word arrives as controls the lane can actually weight.
     expect(prompts).toEqual([
-      'rd1 Customer direction: "new ones, more cinematic feel".',
-      'rd2 Customer direction: "new ones, more cinematic feel".',
+      'rd1 Customer direction: "new ones, more cinematic feel — rendered with cinematic framing and dramatic key lighting with deep shadow falloff".',
+      'rd2 Customer direction: "new ones, more cinematic feel — rendered with cinematic framing and dramatic key lighting with deep shadow falloff".',
     ]);
   });
 
