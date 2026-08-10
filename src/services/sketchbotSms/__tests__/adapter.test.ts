@@ -1023,6 +1023,21 @@ describe('the two-cut rounds (ADR-0049)', () => {
       expect(critique).not.toHaveBeenCalled();
     });
 
+    it('waits out a rendering round without dropping the session (#338)', async () => {
+      await driveToRevealed();
+      vi.mocked(recordRoundPick).mockRejectedValueOnce(
+        new DesignSessionError('ROUND_IN_FLIGHT')
+      );
+
+      const outcome = await handleInbound({ phone: PHONE, body: 'A' });
+
+      expect(outcome.kind).toBe('reply');
+      if (outcome.kind === 'reply') expect(outcome.text).toContain('rendering');
+      // Transient collision, not a broken session — the texter stays linked.
+      const profile = await memoryProfileStore.get(PHONE);
+      expect(profile?.activeSessionId).toBe('s1');
+    });
+
     it('never reads A/B inside an instruction as a pick', async () => {
       await driveToRevealed();
 

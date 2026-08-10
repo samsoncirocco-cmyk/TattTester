@@ -89,6 +89,8 @@ export type InboundOutcome =
       mediaUrl: string;
       contentType: string;
       message: string;
+      /** Matches profile.placementArmedAt — executePlacement aborts if superseded. */
+      armedAt: string;
     };
 
 /** What executeReveal() hands back for MMS delivery. */
@@ -129,6 +131,13 @@ export interface SmsProfile {
   lastStage?: string | null;
   /** When the in-flight render was armed — stale-recovery for the *-running stages. */
   revealArmedAt?: string | null;
+  /**
+   * When the in-flight placement composite was armed. Separate from
+   * revealArmedAt because placement deliberately changes no stage — a
+   * critique can render alongside it. Latest photo wins: a newer arm
+   * supersedes an older composite still in flight.
+   */
+  placementArmedAt?: string | null;
   /**
    * The generation-credit reservation charged for the in-flight REFINE
    * round (ADR-0049). Persisted at reserve time — not only in the deferred

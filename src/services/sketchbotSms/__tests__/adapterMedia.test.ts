@@ -6,7 +6,7 @@
  * design-session service are mocked at their module boundaries.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { handleInbound } from '../index';
+import { executePlacement, handleInbound } from '../index';
 import { clearMemoryProfiles, memoryProfileStore } from '../internal/profileStore';
 import { REVEAL_ACK } from '../internal/render';
 import { analyzeInboundMedia, type MediaIngest } from '../internal/media';
@@ -275,8 +275,75 @@ describe('a photo after the reveal is the body, not a reference', () => {
     if (outcome.kind === 'placement') {
       expect(outcome.mediaUrl).toBe(PHOTO[0].url);
       expect(outcome.message).toBe('here');
+      // The superseded-guard token (#304), persisted like its siblings'.
+      expect(typeof outcome.armedAt).toBe('string');
+      const profile = await memoryProfileStore.get(phone);
+      expect(profile?.placementArmedAt).toBe(outcome.armedAt);
     }
     expect(analyzeInboundMedia).not.toHaveBeenCalled();
+  });
+
+  it('never delivers a composite the texter moved past (#304)', async () => {
+    const phone = '+15550003333';
+    await driveToRevealed(phone);
+    const outcome = await handleInbound({ phone, body: 'here', media: PHOTO });
+    expect(outcome.kind).toBe('placement');
+    if (outcome.kind !== 'placement') return;
+
+    // The texter restarts onto a different design before the composite lands.
+    const profile = await memoryProfileStore.get(phone);
+    profile!.activeSessionId = 's2';
+    await memoryProfileStore.save(profile!);
+
+    const delivery = await executePlacement(
+      outcome.sessionId,
+      phone,
+      { url: outcome.mediaUrl, contentType: outcome.contentType },
+      outcome.message,
+      outcome.armedAt
+    );
+
+    expect(delivery).toEqual({ cuts: [], closingText: '' });
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
+  it('a newer photo supersedes the older in-flight composite (#304)', async () => {
+    const phone = '+15550004444';
+    await driveToRevealed(phone);
+    const first = await handleInbound({ phone, body: 'here', media: PHOTO });
+    // Two arms can land in the same millisecond under test — step the clock
+    // so the tokens differ the way real photos always do.
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 10 });
+    let second;
+    try {
+      second = await handleInbound({ phone, body: 'a bit smaller', media: PHOTO });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(first.kind).toBe('placement');
+    expect(second.kind).toBe('placement');
+    if (first.kind !== 'placement' || second.kind !== 'placement') return;
+
+    // The stale token aborts before touching the session…
+    const stale = await executePlacement(
+      first.sessionId,
+      phone,
+      { url: first.mediaUrl, contentType: first.contentType },
+      first.message,
+      first.armedAt
+    );
+    expect(stale).toEqual({ cuts: [], closingText: '' });
+    expect(getSession).not.toHaveBeenCalled();
+
+    // …while the current one passes the guard into real work.
+    await executePlacement(
+      second.sessionId,
+      phone,
+      { url: second.mediaUrl, contentType: second.contentType },
+      second.message,
+      second.armedAt
+    );
+    expect(getSession).toHaveBeenCalledWith(second.sessionId);
   });
 
   it('still reads a photo BEFORE the reveal as inspiration', async () => {
