@@ -70,3 +70,41 @@ export async function storeReferencePhoto(
 export async function signedReferenceUrls(paths: string[]): Promise<string[]> {
   return Promise.all(paths.map((path) => getSignedUrl(path, REFERENCE_URL_TTL_SECONDS)));
 }
+
+/** Only ever delete inside the reference prefix — never a design or stencil. */
+const REFERENCE_PATH_RE = /^design-sessions\/[^/]+\/references\//;
+
+/**
+ * Best-effort deletion of stored reference photos (ADR-0050: kept for the
+ * life of the session, then dropped; #334). Fail-soft on purpose — the
+ * customer's turn or Brief must never break over bucket housekeeping, and
+ * the bucket lifecycle rule backstops anything missed here. Paths outside
+ * the reference prefix are refused, not deleted.
+ */
+export async function deleteReferencePhotos(
+  sessionId: string,
+  paths: Array<string | undefined>
+): Promise<void> {
+  const deletable = paths.filter(
+    (path): path is string => !!path && REFERENCE_PATH_RE.test(path)
+  );
+  if (deletable.length === 0) return;
+  const { deleteFromGCS } = await import('@/services/gcs-service');
+  for (const path of deletable) {
+    try {
+      await deleteFromGCS(path);
+      logger.info({
+        event_type: 'design_session.reference_photo_deleted',
+        session_id: sessionId,
+        path,
+      });
+    } catch (error) {
+      logger.warn({
+        event_type: 'design_session.reference_photo_delete_failed',
+        session_id: sessionId,
+        path,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}

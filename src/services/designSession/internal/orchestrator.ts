@@ -42,7 +42,7 @@ import { derivePlacementNotes } from './placementNotes';
 import { deriveStencil } from './stencil';
 import { durableRender } from './durableImage';
 import { referenceImagePaths } from './references';
-import { signedReferenceUrls } from './referencePhotos';
+import { deleteReferencePhotos, signedReferenceUrls } from './referencePhotos';
 import { recordImageSpend } from './spend';
 import {
   allCuts,
@@ -1084,6 +1084,16 @@ export async function refine(sessionId: string, request: RefineRequest): Promise
   session.updatedAt = new Date().toISOString();
 
   await store.save(session);
+
+  // ADR-0050: reference photos live for the life of the session, and the
+  // session just closed. The Brief keeps the customer's words and the
+  // product-owned design/stencil images — never the photo objects (#334).
+  // After the save on purpose: a failed save must not orphan a session
+  // whose photos are already gone.
+  await deleteReferencePhotos(
+    session.id,
+    (session.conversation?.references ?? []).map((reference) => reference.imagePath)
+  );
   return session;
 }
 
