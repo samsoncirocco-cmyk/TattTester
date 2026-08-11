@@ -766,11 +766,22 @@ async function armRefineRound(
   // route, and BEFORE the credit reserve so a refused texter is never
   // charged. A mismatch means the session belongs to a different account:
   // recover exactly like an expired session — drop the link and let the
-  // message open a fresh design rather than dead-end.
+  // message open a fresh design rather than dead-end. ONLY the genuine
+  // refusal restarts (SESSION_NOT_FOUND covers vanished and mismatch,
+  // deliberately indistinguishable) — a transient store error must
+  // propagate and surface, never silently discard the texter's session.
   try {
     await claimSessionOwnership(session.id, profile.uid, { stamp: true });
-  } catch {
-    return restartDesign(profile, store, body);
+  } catch (error) {
+    if (error instanceof DesignSessionError && error.code === 'SESSION_NOT_FOUND') {
+      logger.info({
+        event_type: 'sketchbot_sms.round_ownership_refused',
+        phone_last4: phoneLast4(profile.phone),
+        session_id: session.id,
+      });
+      return restartDesign(profile, store, body);
+    }
+    throw error;
   }
 
   if (!isDemoMode()) {
