@@ -13,7 +13,8 @@ const { attachMock, uploadMock, ensureAdminAppMock, verifyApiAuthMock } = vi.hoi
 }));
 
 vi.mock('@/services/designSession', () => ({
-  attachPlacementPreview: attachMock
+  attachPlacementPreview: attachMock,
+  claimSessionOwnership: vi.fn()
 }));
 
 vi.mock('@/services/gcs-service', () => ({
@@ -25,7 +26,7 @@ vi.mock('@/lib/firebase-admin', () => ({
 }));
 
 vi.mock('@/lib/api-auth', () => ({
-  verifyApiAuth: verifyApiAuthMock
+  verifyApiAuthWithUser: verifyApiAuthMock
 }));
 
 vi.mock('@/lib/logger', () => ({
@@ -49,7 +50,7 @@ function completedSession() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  verifyApiAuthMock.mockResolvedValue(null);
+  verifyApiAuthMock.mockResolvedValue({ error: null, user: { uid: 'uid-1' } });
   ensureAdminAppMock.mockReturnValue(false);
   attachMock.mockResolvedValue(completedSession());
 });
@@ -139,9 +140,9 @@ describe('POST /api/v1/design-session/[id]/placement-preview', () => {
 
   it('returns 401 when auth fails', async () => {
     const { NextResponse } = await import('next/server');
-    verifyApiAuthMock.mockResolvedValue(
-      NextResponse.json({ error: 'Authorization header required' }, { status: 401 })
-    );
+    verifyApiAuthMock.mockResolvedValue({
+      error: NextResponse.json({ error: 'Authorization header required' }, { status: 401 }),
+    });
     const res = await POST(makeRequest(URL, { imageData: PNG_DATA_URL }), routeParams('sess-1'));
     expect(res.status).toBe(401);
     expect(attachMock).not.toHaveBeenCalled();

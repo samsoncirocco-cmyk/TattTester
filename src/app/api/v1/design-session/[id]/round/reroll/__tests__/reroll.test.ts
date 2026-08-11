@@ -9,6 +9,7 @@ import { makeRequest, makeSession, routeParams } from '../../../../__tests__/hel
 
 const {
   rerollRoundMock,
+  claimOwnershipMock,
   checkBudgetMock,
   rateLimitMock,
   rateLimitResponseMock,
@@ -19,6 +20,7 @@ const {
   loggerErrorMock,
 } = vi.hoisted(() => ({
   rerollRoundMock: vi.fn(),
+  claimOwnershipMock: vi.fn(),
   checkBudgetMock: vi.fn(),
   rateLimitMock: vi.fn(),
   rateLimitResponseMock: vi.fn(),
@@ -42,6 +44,7 @@ vi.mock('@/services/designSession', () => {
   }
   return {
     rerollRound: rerollRoundMock,
+    claimSessionOwnership: claimOwnershipMock,
     DesignSessionError,
   };
 });
@@ -257,5 +260,18 @@ describe('POST /api/v1/design-session/[id]/round/reroll route adapter', () => {
     expect(rateLimitMock).not.toHaveBeenCalled();
     expect(checkBudgetMock).not.toHaveBeenCalled();
     expect(reserveGenerationCreditMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stranger with 404 before reserving a credit (#338 item 1)', async () => {
+    claimOwnershipMock.mockRejectedValueOnce(
+      new DesignSessionError('SESSION_NOT_FOUND', 'No design session')
+    );
+
+    const res = await POST(makeRequest(URL, {}), routeParams('sess-1'));
+
+    expect(res.status).toBe(404);
+    expect(claimOwnershipMock).toHaveBeenCalledWith('sess-1', 'uid_customer', { stamp: true });
+    expect(reserveGenerationCreditMock).not.toHaveBeenCalled();
+    expect(rerollRoundMock).not.toHaveBeenCalled();
   });
 });

@@ -63,6 +63,7 @@ vi.mock('@/services/designSession', async () => {
   const roundPlan = await import('@/services/designSession/roundPlan');
   return {
     converse: vi.fn(),
+    claimSessionOwnership: vi.fn(),
     confirmProposal: vi.fn(),
     attachReference: vi.fn(),
     getSession: vi.fn(),

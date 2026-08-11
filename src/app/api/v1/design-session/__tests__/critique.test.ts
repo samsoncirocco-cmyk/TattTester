@@ -33,6 +33,7 @@ vi.mock('@/services/designSession', () => ({
   recordPick: vi.fn(),
   refine: vi.fn(),
   critique: critiqueMock,
+  claimSessionOwnership: vi.fn(),
   getSession: vi.fn(),
 }));
 

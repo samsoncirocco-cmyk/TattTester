@@ -8,6 +8,7 @@ import { makeRequest, makeSession, routeParams } from '../../../__tests__/helper
 
 const {
   confirmProposalMock,
+  claimOwnershipMock,
   recordSpendMock,
   checkBudgetMock,
   rateLimitMock,
@@ -19,6 +20,7 @@ const {
   loggerErrorMock,
 } = vi.hoisted(() => ({
   confirmProposalMock: vi.fn(),
+  claimOwnershipMock: vi.fn(),
   recordSpendMock: vi.fn(),
   checkBudgetMock: vi.fn(),
   rateLimitMock: vi.fn(),
@@ -32,6 +34,7 @@ const {
 
 vi.mock('@/services/designSession', () => ({
   confirmProposal: confirmProposalMock,
+  claimSessionOwnership: claimOwnershipMock,
   converse: vi.fn(),
   startSession: vi.fn(),
   recordPick: vi.fn(),
@@ -346,4 +349,18 @@ describe('POST /api/v1/design-session/[id]/confirm route adapter', () => {
     expect(checkBudgetMock).not.toHaveBeenCalled();
     expect(recordSpendMock).not.toHaveBeenCalled();
   }, 10_000);
+
+  it('refuses a stranger with 404 before reserving a credit (#338 item 1)', async () => {
+    claimOwnershipMock.mockRejectedValueOnce(
+      Object.assign(new Error('No design session'), { code: 'SESSION_NOT_FOUND', status: 404 })
+    );
+
+    const res = await POST(makeRequest(URL, {}), routeParams('sess-1'));
+
+    expect(res.status).toBe(404);
+    // The charged action stamps — and the refusal happened pre-charge.
+    expect(claimOwnershipMock).toHaveBeenCalledWith('sess-1', 'uid_customer', { stamp: true });
+    expect(reserveGenerationCreditMock).not.toHaveBeenCalled();
+    expect(confirmProposalMock).not.toHaveBeenCalled();
+  });
 });
