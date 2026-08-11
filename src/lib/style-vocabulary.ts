@@ -150,5 +150,19 @@ export function canonicalStyleForTag(tagId: string): CanonicalStyle | null {
   return null;
 }
 
+/**
+ * The ontology tag id behind a canonical label ("Black & Grey" →
+ * "black-and-grey"). Null for anything that is not a canonical label.
+ *
+ * Exported so callers can carry the id alongside the label without deriving
+ * one by slugifying the label — that derivation works today and silently stops
+ * working the first time a tag's id and label diverge, which is exactly the
+ * drift this module exists to prevent.
+ */
+export function ontologyTagIdForStyle(label: string | null | undefined): string | null {
+  if (typeof label !== "string") return null;
+  return TAG_ID_BY_LABEL.get(label.trim().toLowerCase()) ?? null;
+}
+
 /** Every ontology tag id, matchable or not — the closed vocabulary itself. */
 export const ONTOLOGY_TAG_IDS: readonly string[] = ontology.tags.map((t) => t.id);
