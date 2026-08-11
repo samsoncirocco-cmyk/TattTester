@@ -211,3 +211,38 @@ describe('firestoreSessionStore', () => {
     expect(await firestoreSessionStore.get('gone')).toBeNull();
   });
 });
+
+describe('memorySessionStore — the late-bind ownership claim (#338 item 1)', () => {
+  beforeEach(() => {
+    clearMemorySessions();
+  });
+
+  it('stamps an unowned session on a charged claim, then matches the same uid', async () => {
+    await memorySessionStore.save(makeSession());
+
+    expect(await memorySessionStore.claimOwnership('sess-1', 'uid-a', true)).toBe('stamped');
+    expect(await memorySessionStore.claimOwnership('sess-1', 'uid-a', true)).toBe('match');
+    // The stamp persisted onto the stored session itself.
+    expect((await memorySessionStore.get('sess-1'))?.ownerUid).toBe('uid-a');
+  });
+
+  it('refuses a different uid once owned — stamp or not', async () => {
+    await memorySessionStore.save(makeSession({ ownerUid: 'uid-a' }));
+
+    expect(await memorySessionStore.claimOwnership('sess-1', 'uid-b', true)).toBe('mismatch');
+    expect(await memorySessionStore.claimOwnership('sess-1', 'uid-b', false)).toBe('mismatch');
+    // The refusal never rebinds the session.
+    expect((await memorySessionStore.get('sess-1'))?.ownerUid).toBe('uid-a');
+  });
+
+  it('leaves an unowned session unbound on a guard-only check', async () => {
+    await memorySessionStore.save(makeSession());
+
+    expect(await memorySessionStore.claimOwnership('sess-1', 'uid-a', false)).toBe('unbound');
+    expect((await memorySessionStore.get('sess-1'))?.ownerUid).toBeUndefined();
+  });
+
+  it('reports a missing session as missing', async () => {
+    expect(await memorySessionStore.claimOwnership('gone', 'uid-a', true)).toBe('missing');
+  });
+});

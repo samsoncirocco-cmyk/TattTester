@@ -27,6 +27,7 @@ const {
 
 vi.mock('@/services/designSession', () => ({
   converse: converseMock,
+  claimSessionOwnership: vi.fn(),
   confirmProposal: vi.fn(),
   startSession: vi.fn(),
   recordPick: vi.fn(),
@@ -35,7 +36,7 @@ vi.mock('@/services/designSession', () => ({
 }));
 
 vi.mock('@/lib/api-auth', () => ({
-  verifyApiAuth: verifyApiAuthMock,
+  verifyApiAuthWithUser: verifyApiAuthMock,
 }));
 
 vi.mock('@/lib/rate-limit', () => ({
@@ -75,7 +76,7 @@ function converseResponse(overrides: Partial<ConverseResponse> = {}): ConverseRe
 describe('POST /api/v1/design-session/converse route adapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    verifyApiAuthMock.mockResolvedValue(null);
+    verifyApiAuthMock.mockResolvedValue({ error: null, user: { uid: 'uid-1' } });
     rateLimitMock.mockResolvedValue({ allowed: true });
     recordConversationTurnSpendMock.mockResolvedValue(undefined);
     delete process.env.NEXT_PUBLIC_DEMO_MODE;
@@ -143,7 +144,7 @@ describe('POST /api/v1/design-session/converse route adapter', () => {
 
   it('returns the auth failure untouched and never reaches the service', async () => {
     const denied = NextResponse.json({ error: 'Authorization header required' }, { status: 401 });
-    verifyApiAuthMock.mockResolvedValueOnce(denied);
+    verifyApiAuthMock.mockResolvedValueOnce({ error: denied });
 
     const res = await POST(makeRequest(URL, {}));
 

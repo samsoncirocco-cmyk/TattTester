@@ -49,6 +49,9 @@ import type { ConverseRequest, ConverseResponse } from '../designConversation/ty
 
 export { DesignSessionError } from './internal/orchestrator';
 export type { DesignSessionErrorCode, RoundCreditPort } from './internal/orchestrator';
+// The late-bind ownership gate (#338 item 1): stamp on charged actions,
+// guard-only on uncharged mutations. Throws SESSION_NOT_FOUND on mismatch.
+export { claimSessionOwnership } from './internal/orchestrator';
 // Cut identity, for channels that must name cuts back to the user rather
 // than render a clickable grid. `allCuts` is the canonical order — the
 // rounds' takes followed by anything critique produced — so a number spoken

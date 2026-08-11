@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyApiAuthWithUser } from '@/lib/api-auth';
-import { critique, type RoundCreditPort } from '@/services/designSession';
+import { claimSessionOwnership, critique, type RoundCreditPort } from '@/services/designSession';
 import { rateLimit, rateLimitResponse } from '@/lib/rate-limit';
 import { checkBudget } from '@/lib/budget-tracker';
 import { createRequestLogger } from '@/lib/logger';
@@ -80,6 +80,11 @@ export async function POST(
         if (!message || typeof message !== 'string' || !message.trim()) {
             return invalidRequestResponse('message is required', 'INVALID_MESSAGE');
         }
+
+        // Ownership gate (#338 item 1): a charged action stamps the first
+        // owner and refuses any other uid — BEFORE any critique lane can
+        // reserve a credit, so a refused caller is never charged.
+        await claimSessionOwnership(sessionId, user.uid, { stamp: true });
 
         // Spend is recorded inside the service, at the moment the provider
         // answers — not here. A route can only bill on a successful return,

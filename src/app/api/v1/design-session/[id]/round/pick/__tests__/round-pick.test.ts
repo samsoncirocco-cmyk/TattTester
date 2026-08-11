@@ -7,12 +7,14 @@ import { makeRequest, makeSession, routeParams } from '../../../../__tests__/hel
 
 const {
   recordRoundPickMock,
+  claimOwnershipMock,
   rateLimitMock,
   rateLimitResponseMock,
   verifyApiAuthMock,
   loggerErrorMock,
 } = vi.hoisted(() => ({
   recordRoundPickMock: vi.fn(),
+  claimOwnershipMock: vi.fn(),
   rateLimitMock: vi.fn(),
   rateLimitResponseMock: vi.fn(),
   verifyApiAuthMock: vi.fn(),
@@ -21,8 +23,9 @@ const {
 
 vi.mock('@/services/designSession', () => ({
   recordRoundPick: recordRoundPickMock,
+  claimSessionOwnership: claimOwnershipMock,
 }));
-vi.mock('@/lib/api-auth', () => ({ verifyApiAuth: verifyApiAuthMock }));
+vi.mock('@/lib/api-auth', () => ({ verifyApiAuthWithUser: verifyApiAuthMock }));
 vi.mock('@/lib/rate-limit', () => ({
   rateLimit: rateLimitMock,
   rateLimitResponse: rateLimitResponseMock,
@@ -42,7 +45,7 @@ const URL = 'http://localhost/api/v1/design-session/sess-1/round/pick';
 describe('POST /api/v1/design-session/[id]/round/pick route adapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    verifyApiAuthMock.mockResolvedValue(null);
+    verifyApiAuthMock.mockResolvedValue({ error: null, user: { uid: 'uid-1' } });
     rateLimitMock.mockResolvedValue({ allowed: true });
   });
 
@@ -92,9 +95,9 @@ describe('POST /api/v1/design-session/[id]/round/pick route adapter', () => {
   });
 
   it('returns the auth failure untouched and never reaches the service', async () => {
-    verifyApiAuthMock.mockResolvedValueOnce(
-      NextResponse.json({ error: 'Authorization header required' }, { status: 401 })
-    );
+    verifyApiAuthMock.mockResolvedValueOnce({
+      error: NextResponse.json({ error: 'Authorization header required' }, { status: 401 }),
+    });
 
     const res = await POST(makeRequest(URL, { pickedId: 'var-1' }), routeParams('sess-1'));
 

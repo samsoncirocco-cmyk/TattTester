@@ -7,6 +7,7 @@ import { routeParams } from './helpers';
 
 vi.mock('@/lib/api-auth', () => ({
   verifyApiAuth: vi.fn(async () => null),
+  verifyApiAuthWithUser: vi.fn(async () => ({ error: null, user: { uid: 'demo-user' } })),
 }));
 
 vi.mock('@/lib/auth-dal', () => ({
