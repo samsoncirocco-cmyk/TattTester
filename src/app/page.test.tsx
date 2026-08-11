@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import Home from './page';
+import { getFeaturedArtists } from '@/lib/featured-artists';
 
 afterEach(() => {
   cleanup();
@@ -18,8 +19,13 @@ vi.mock('@/components/punk/SlashHeadline', () => ({
   default: ({ slashed }: { slashed: string }) => <h1>{slashed}</h1>,
 }));
 
+// Records the props that matter rather than rendering the real tile: the bug
+// this guards was a prop the homepage never passed, which no amount of
+// inspecting the rendered card can distinguish from an artist with no photo.
 vi.mock('@/components/punk/ArtistCard', () => ({
-  default: () => <div data-testid="artist-card" />,
+  default: ({ name, image }: { name?: string; image?: string }) => (
+    <div data-testid="artist-card" data-name={name} data-image={image ?? ''} />
+  ),
 }));
 
 // The featured grid owns its own tests; keep the homepage render hermetic.
@@ -92,5 +98,58 @@ describe('Home — text SketchBot mention (TAT-49)', () => {
     expect(document.body.textContent).not.toContain('text your idea to');
     expect(document.body.textContent).not.toContain('By texting SketchBot');
     expect(document.querySelector('a[href^="sms:"]')).toBeNull();
+  });
+});
+
+describe('Home — featured grid photos match the profile', () => {
+  // The regression: the homepage rendered <ArtistCard> without `image`, so
+  // every featured artist showed a monogram tile while their own profile and
+  // the /artists roster showed their real work. Same artist, two faces.
+  it('forwards the hero the gate vouched for', async () => {
+    vi.stubEnv('NEXT_PUBLIC_SKETCHBOT_SMS_NUMBER', '');
+    vi.mocked(getFeaturedArtists).mockResolvedValueOnce([
+      {
+        id: 'artist_edward_needlehands',
+        name: 'Edward Needlehands',
+        city: 'Phoenix',
+        state: 'AZ',
+        styles: ['Blackwork'],
+        instagram: '@edwardneedlehands',
+        rating: 4.9,
+        reviewCount: 120,
+        heroImage: 'https://storage.googleapis.com/tatt-pro-assets/edward-1.jpg',
+      },
+    ]);
+
+    render(await Home());
+
+    const card = screen.getByTestId('artist-card');
+    expect(card.getAttribute('data-name')).toBe('Edward Needlehands');
+    expect(card.getAttribute('data-image')).toBe(
+      'https://storage.googleapis.com/tatt-pro-assets/edward-1.jpg'
+    );
+  });
+
+  it('leaves the tile to its colour block when there is no displayable photo', async () => {
+    // Undefined, not "", so ArtistCard takes its monogram branch — the same
+    // no-work state the profile hero falls back to.
+    vi.stubEnv('NEXT_PUBLIC_SKETCHBOT_SMS_NUMBER', '');
+    vi.mocked(getFeaturedArtists).mockResolvedValueOnce([
+      {
+        id: 'artist_no_work',
+        name: 'No Work',
+        city: 'Tucson',
+        state: 'AZ',
+        styles: ['Fine Line'],
+        instagram: '@nowork',
+        rating: 4.5,
+        reviewCount: 3,
+        heroImage: null,
+      },
+    ]);
+
+    render(await Home());
+
+    expect(screen.getByTestId('artist-card').getAttribute('data-image')).toBe('');
   });
 });
