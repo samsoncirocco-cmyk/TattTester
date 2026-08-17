@@ -366,6 +366,31 @@ def profile_row(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def merge_profile(cached: Any, fresh: Mapping[str, Any]) -> dict[str, Any]:
+    """Fold a fresh scrape into a cached profile without losing what we had.
+
+    A re-scrape is not always an improvement: the actor returns a sparse row
+    for accounts that have gone private, been renamed or been deleted since
+    the original run, and a blind overwrite turns a profile we knew things
+    about into an empty one.  Observed live during the #364 backfill — 8 of
+    338 handles came back with every field stripped.
+
+    Fresh values win whenever they carry information.  ``None`` and ``""`` do
+    not count as information; ``0`` and ``False`` do, so a genuinely empty
+    post count or a flipped ``private`` flag still lands.
+    """
+
+    if not isinstance(cached, Mapping):
+        return dict(fresh)
+    merged = dict(cached)
+    for key, value in fresh.items():
+        if value is None or value == "":
+            merged.setdefault(key, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def missing_post_count(profiles: Mapping[str, Any]) -> list[str]:
     """Handles cached before ``postCount`` was captured, oldest problem first.
 
@@ -438,7 +463,7 @@ def enrich_candidates(
         for row in items:
             username = str(row.get("username") or "").lower()
             if username:
-                profiles[username] = profile_row(row)
+                profiles[username] = merge_profile(profiles.get(username), profile_row(row))
         save(profiles_path, profiles)
         print(f"profile chunk={offset // 50 + 1} status={status} rows={len(items)}")
     print(f"missing_post_count_after={len(missing_post_count(profiles))}")

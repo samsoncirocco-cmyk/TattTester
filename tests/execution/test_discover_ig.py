@@ -355,3 +355,84 @@ def test_filter_warns_when_accepted_candidates_have_no_photo_evidence(tmp_path, 
     assert written["no.evidence"]["postCount"] is None
     output = capsys.readouterr().out
     assert "WARNING: 1 of 2 accepted candidates have no postCount" in output
+
+
+def test_a_sparse_rescrape_never_erases_what_we_already_knew():
+    # Observed live during the #364 backfill: 8 of 338 handles came back with
+    # every field stripped (gone private / renamed / deleted since the first
+    # run). Before --backfill existed this was unreachable, because cached
+    # handles were never re-scraped.
+    cached = {
+        "bio": "Tattoo artist, books open",
+        "followers": 37,
+        "fullName": "Real Name",
+        "url": "https://example.com",
+        "category": "Artist",
+        "private": True,
+        "verified": False,
+    }
+    stripped = discovery.profile_row({"username": "gone.dark"})
+    merged = discovery.merge_profile(cached, stripped)
+    assert merged["bio"] == "Tattoo artist, books open"
+    assert merged["followers"] == 37
+    assert merged["fullName"] == "Real Name"
+    assert merged["private"] is True
+    assert merged["postCount"] is None
+
+
+def test_fresh_values_win_including_falsey_ones_that_carry_information():
+    cached = {"bio": "old bio", "followers": 10, "postCount": 500, "private": True}
+    fresh = discovery.profile_row(
+        {
+            "username": "still.here",
+            "biography": "new bio",
+            "followersCount": 20,
+            "postsCount": 0,
+            "private": False,
+        }
+    )
+    merged = discovery.merge_profile(cached, fresh)
+    assert merged["bio"] == "new bio"
+    assert merged["followers"] == 20
+    # 0 posts and private=False are answers, not absences
+    assert merged["postCount"] == 0
+    assert merged["private"] is False
+
+
+def test_merge_profile_handles_an_uncached_or_unreadable_entry():
+    fresh = discovery.profile_row(APIFY_PROFILE_ITEM)
+    assert discovery.merge_profile(None, fresh) == fresh
+    assert discovery.merge_profile("corrupt", fresh) == fresh
+
+
+def test_backfill_of_a_vanished_account_keeps_the_cached_row(tmp_path, monkeypatch):
+    queue = tmp_path / "queue.json"
+    write_queue(queue)
+    profiles_path = tmp_path / "profiles.json"
+    profiles_path.write_text(
+        json.dumps({"gone.dark": {"bio": "Tattoo artist", "followers": 37, "private": True}})
+    )
+    raw_followees = tmp_path / "raw_followees.json"
+    raw_followees.write_text(json.dumps({"seed": ["gone.dark"]}))
+    raw_hashtags = tmp_path / "raw_hashtags.json"
+    raw_hashtags.write_text(json.dumps({}))
+
+    monkeypatch.setattr(
+        discovery,
+        "run_actor",
+        lambda *_args, **_kwargs: ("SUCCEEDED", [{"username": "gone.dark"}]),
+    )
+    discovery.enrich_candidates(
+        "secret",
+        200,
+        queue_path=queue,
+        raw_followees_path=raw_followees,
+        raw_hashtags_path=raw_hashtags,
+        profiles_path=profiles_path,
+        checkpoint=lambda _record: None,
+        backfill=True,
+    )
+    stored = json.loads(profiles_path.read_text())["gone.dark"]
+    assert stored["bio"] == "Tattoo artist"
+    assert stored["followers"] == 37
+    assert stored["postCount"] is None
