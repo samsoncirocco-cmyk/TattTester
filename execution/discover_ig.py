@@ -4,6 +4,14 @@
 Discovery and enrichment share ``execution.ig_quality.looks_bookable`` so a
 verdict cannot be computed under one set of rules and imported under another.
 All candidates, including rejected ones, remain in the review artifact.
+
+The profile row carries ``postCount`` because the graph importer
+(``scripts/import-discovery-to-neo4j.mjs``) gates candidates on having photos
+and cannot evaluate that gate without it — the first discovery pilot planned a
+yield of zero for exactly this reason (#364).  ``None`` means never scraped and
+is held by the importer; ``0`` means a genuinely empty profile and is
+rejected, so the two are kept distinct everywhere.  Profiles cached before this
+field existed are repaired by ``enrich-candidates --backfill``.
 """
 
 from __future__ import annotations
@@ -17,7 +25,7 @@ import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 try:
     from execution.apify_ig_enrich import merge_run_report, update_json_locked
@@ -332,6 +340,46 @@ def all_raw_candidates(
     return candidates
 
 
+def profile_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Map one ``apify~instagram-profile-scraper`` item to the cached profile.
+
+    ``postsCount`` is the actor's own spelling — the same field
+    ``execution/apify_ig_enrich.py`` stores as ``posts``.  The alternates are
+    tolerated because the actor's schema has drifted before, and losing this
+    field silently is what produced a zero-yield pilot (#364).
+    """
+
+    posts = row.get("postsCount")
+    if posts is None:
+        posts = row.get("mediaCount")
+    if posts is None:
+        posts = row.get("postsCountValue")
+    return {
+        "bio": row.get("biography") or "",
+        "followers": row.get("followersCount"),
+        "fullName": row.get("fullName") or "",
+        "url": row.get("externalUrl") or "",
+        "category": row.get("businessCategoryName") or row.get("category") or "",
+        "private": row.get("private"),
+        "verified": row.get("verified"),
+        "postCount": posts,
+    }
+
+
+def missing_post_count(profiles: Mapping[str, Any]) -> list[str]:
+    """Handles cached before ``postCount`` was captured, oldest problem first.
+
+    These are indistinguishable from a fresh scrape in every other respect,
+    which is why they have to be found by the absent field rather than by date.
+    """
+
+    return [
+        handle
+        for handle, profile in profiles.items()
+        if (profile or {}).get("postCount") is None
+    ]
+
+
 def enrich_candidates(
     token: str,
     maximum: int,
@@ -341,6 +389,7 @@ def enrich_candidates(
     raw_hashtags_path: Path,
     profiles_path: Path,
     checkpoint: Any,
+    backfill: bool = False,
 ) -> None:
     candidates = all_raw_candidates(
         queue_path,
@@ -352,13 +401,31 @@ def enrich_candidates(
     profiles = load(profiles_path, {})
     if not isinstance(profiles, dict):
         raise RuntimeError("profile cache must be a JSON object")
-    todo = [handle for handle in candidates if handle not in profiles][:maximum]
+
+    stale = missing_post_count(profiles)
+    todo = [handle for handle in candidates if handle not in profiles]
+    if backfill:
+        # Repairing evidence already paid for outranks collecting more of it:
+        # an unrepaired profile is held by the importer no matter how many new
+        # candidates sit behind it.
+        todo = stale + todo
+    todo = todo[:maximum]
     if not todo:
-        raise RuntimeError("no uncached discovery candidates remain to enrich")
+        raise RuntimeError(
+            "no uncached discovery candidates remain to enrich"
+            if not stale or backfill
+            else f"no uncached candidates remain, but {len(stale)} cached profiles "
+            "predate postCount capture; re-run with --backfill to repair them"
+        )
     print(
         f"candidates={len(candidates)} cached_profiles={len(profiles)} "
-        f"scraping={len(todo)}"
+        f"missing_post_count={len(stale)} scraping={len(todo)}"
     )
+    if stale and not backfill:
+        print(
+            f"NOTE: {len(stale)} cached profiles predate postCount capture and will be "
+            "HELD by the importer's photo gate; --backfill re-scrapes exactly those"
+        )
     for offset in range(0, len(todo), 50):
         chunk = todo[offset : offset + 50]
         status, items = run_actor(
@@ -371,17 +438,10 @@ def enrich_candidates(
         for row in items:
             username = str(row.get("username") or "").lower()
             if username:
-                profiles[username] = {
-                    "bio": row.get("biography") or "",
-                    "followers": row.get("followersCount"),
-                    "fullName": row.get("fullName") or "",
-                    "url": row.get("externalUrl") or "",
-                    "category": row.get("businessCategoryName") or row.get("category") or "",
-                    "private": row.get("private"),
-                    "verified": row.get("verified"),
-                }
+                profiles[username] = profile_row(row)
         save(profiles_path, profiles)
         print(f"profile chunk={offset // 50 + 1} status={status} rows={len(items)}")
+    print(f"missing_post_count_after={len(missing_post_count(profiles))}")
 
 
 def filter_candidates(
@@ -414,6 +474,9 @@ def filter_candidates(
                 "seedFrom": ",".join(sorted(metadata["seedFrom"])),
                 "bioSnippet": bio[:160],
                 "followers": profile.get("followers"),
+                # None = never scraped (importer holds), 0 = empty profile
+                # (importer rejects). Never collapse the two.
+                "postCount": profile.get("postCount"),
                 "looksBookable": verdict,
                 "filterReason": reason,
             }
@@ -423,7 +486,16 @@ def filter_candidates(
         raise RuntimeError("profile input contains none of the selected candidates")
     save(candidates_path, output)
     accepted = sum(1 for item in output if item["looksBookable"])
+    unknown_photos = sum(
+        1 for item in output if item["looksBookable"] and item["postCount"] is None
+    )
     print(f"reviewed={len(output)} accepted={accepted} rejected={len(output) - accepted}")
+    if unknown_photos:
+        print(
+            f"WARNING: {unknown_photos} of {accepted} accepted candidates have no postCount "
+            "and will be held by the importer's photo gate; run "
+            "enrich-candidates --backfill --execute before quoting a yield"
+        )
     print("reasons:", dict(Counter(item["filterReason"] for item in output)))
     print(f"written -> {candidates_path}")
 
@@ -448,6 +520,11 @@ def main(argv: list[str] | None = None) -> int:
     hashtags.add_argument("--limit", type=int, default=40)
     enrich = commands.add_parser("enrich")
     enrich.add_argument("--max", type=int, default=200)
+    enrich.add_argument(
+        "--backfill",
+        action="store_true",
+        help="also re-scrape cached profiles that predate postCount capture (#364)",
+    )
     commands.add_parser("filter")
     commands.add_parser("stats")
     args = parser.parse_args(argv)
@@ -477,6 +554,12 @@ def main(argv: list[str] | None = None) -> int:
                 )
             ),
         )
+        cached = load(profiles_path, {})
+        if isinstance(cached, dict):
+            print(
+                f"cached profiles: {len(cached)} "
+                f"missing postCount: {len(missing_post_count(cached))}"
+            )
         return 0
     if not args.execute:
         print(
@@ -532,6 +615,7 @@ def main(argv: list[str] | None = None) -> int:
             raw_hashtags_path=raw_hashtags_path,
             profiles_path=profiles_path,
             checkpoint=checkpoint_actor_run,
+            backfill=args.backfill,
         )
     return 0
 
