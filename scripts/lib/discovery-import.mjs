@@ -173,7 +173,7 @@ export function parseDiscoveryImportArgs(args) {
     '--sample',
     '--reference',
   ]);
-  const supported = new Set([...valued, '--apply', '--require-photos']);
+  const supported = new Set([...valued, '--apply', '--allow-unknown-photos']);
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!supported.has(arg)) throw new Error(`Unknown option: ${arg}`);
@@ -187,7 +187,7 @@ export function parseDiscoveryImportArgs(args) {
 
   return {
     apply: args.includes('--apply'),
-    requirePhotos: args.includes('--require-photos'),
+    allowUnknownPhotos: args.includes('--allow-unknown-photos'),
     input,
     profiles: optionValue(args, '--profiles') ?? defaultProfilesPathFor(input),
     out: optionValue(args, '--out') ?? DEFAULT_DISCOVERY_OUTPUT,
@@ -556,43 +556,109 @@ export function resolveShopLink(profileUrl, index) {
 export const QUALITY_GATES = Object.freeze([
   'looksBookable',
   'notPrivate',
+  'notJobBoard',
   'followers',
   'bio',
   'photos',
 ]);
 
 /**
+ * Instagram categories that say outright the account is not a person who
+ * tattoos. Kept narrow on purpose — the pilot's bookable set also contains an
+ * `Artist` who runs a shop and a working artist filed under `Hot Dog Joint`,
+ * so only categories that *are* the disqualification belong here.
+ */
+export const NON_ARTIST_CATEGORIES = Object.freeze([
+  'employment agency',
+  'recruiter',
+  'staffing agency',
+  'staffing service',
+  'job board',
+]);
+const NON_ARTIST_CATEGORY_SET = new Set(NON_ARTIST_CATEGORIES);
+
+/**
+ * Job boards and gig marketplaces clear the upstream `looks_bookable`
+ * classifier because their bios are wall-to-wall tattoo-and-booking language
+ * (#62 is the upstream fix). These are phrases, never the bare word "job" —
+ * a working artist writes "I have a full time job, but I also make ceramics"
+ * and must not be held for it.
+ */
+export const JOB_BOARD_BIO_PATTERNS = Object.freeze([
+  /\bjob board\b/i,
+  /\btattoo (?:jobs|gigs)\b/i,
+  /\bjobs? (?:worldwide|available|posted|board)\b/i,
+  /\bartists? wanted\b/i,
+  /\bnow hiring\b/i,
+  /\bhiring\b[^.\n]{0,30}\bartists?\b/i,
+  /\bpost (?:&|and) search jobs\b/i,
+  /\brecruit(?:ing|ment|er)\b/i,
+  /\b\d[\d,]*\+?\s*jobs\b/i,
+]);
+
+/** Handles minted like a domain — `tattoo.jobs`, `tattoo.gigs`. */
+const JOB_BOARD_HANDLE_SUFFIXES = Object.freeze(['.jobs', '.gigs']);
+
+/**
+ * True when the account is a job board / gig marketplace rather than an
+ * artist. Returns the evidence so the hold is auditable in the plan artifact
+ * instead of being an unexplained rejection.
+ */
+export function classifyJobBoard(candidate, profile) {
+  const category = String(profile?.category ?? '').trim().toLowerCase();
+  if (NON_ARTIST_CATEGORY_SET.has(category)) {
+    return { isJobBoard: true, evidence: `category: ${profile.category}` };
+  }
+
+  const handle = normalizeInstagramHandle(candidate?.handle ?? profile?.handle) ?? '';
+  const suffix = JOB_BOARD_HANDLE_SUFFIXES.find((end) => handle.endsWith(end));
+  if (suffix) return { isJobBoard: true, evidence: `handle ends in ${suffix}` };
+
+  const bio = String(profile?.bio ?? candidate?.bioSnippet ?? '');
+  const pattern = JOB_BOARD_BIO_PATTERNS.find((regex) => regex.test(bio));
+  if (pattern) {
+    return { isJobBoard: true, evidence: `bio matches ${pattern.source}` };
+  }
+
+  return { isJobBoard: false, evidence: null };
+}
+
+/**
  * The automated bar. `photos` is the honest problem: a discovery run records
  * no post or media count, so "has photos" cannot be evaluated from the pilot
- * artifact. Rather than pretend, the gate reports `unknown` and, by default,
- * admits — every unknown is force-included in the human spot-check sample.
- * `--require-photos` flips it to a hard fail (which, on the pilot data, admits
- * nobody at all — that is the point of being able to see it).
+ * artifact. It is a **hold** — an account we cannot show a portfolio for is
+ * not import-ready, and admitting it while calling the gate enforced was the
+ * defect Samson caught in review. `--allow-unknown-photos` opts back into
+ * admitting them, which is how you measure the ceiling the pilot *would* have
+ * if discovery captured media counts; every unknown is force-included in the
+ * human spot-check sample either way.
  */
 export function evaluateQualityGates(candidate, profile, options = {}) {
   const minFollowers = options.minFollowers ?? DEFAULT_MIN_FOLLOWERS;
-  const requirePhotos = options.requirePhotos ?? false;
+  const allowUnknownPhotos = options.allowUnknownPhotos ?? false;
 
   const followers = candidate?.followers ?? profile?.followers ?? null;
   const bio = String(profile?.bio ?? candidate?.bioSnippet ?? '').trim();
   const photoCount = profile?.postCount ?? profile?.mediaCount ?? null;
   const photosKnown = Number.isFinite(photoCount);
+  const jobBoard = classifyJobBoard(candidate, profile);
 
   const failures = [];
   const warnings = [];
 
   if (candidate?.looksBookable !== true) failures.push('looksBookable');
   if (profile?.private === true) failures.push('notPrivate');
+  if (jobBoard.isJobBoard) failures.push('notJobBoard');
   if (!Number.isFinite(followers)) failures.push('followers:unknown');
   else if (followers < minFollowers) failures.push('followers');
   if (!bio) failures.push('bio');
 
   if (photosKnown) {
     if (photoCount <= 0) failures.push('photos');
-  } else if (requirePhotos) {
-    failures.push('photos:unknown');
-  } else {
+  } else if (allowUnknownPhotos) {
     warnings.push('photos:unknown');
+  } else {
+    failures.push('photos:unknown');
   }
 
   return {
@@ -601,6 +667,7 @@ export function evaluateQualityGates(candidate, profile, options = {}) {
     warnings,
     followers,
     photoEvidence: photosKnown ? 'counted' : 'unknown',
+    jobBoardEvidence: jobBoard.evidence,
   };
 }
 
@@ -792,6 +859,7 @@ export function summarizeDecisions(decisions, { totalCandidates = 0, bookable = 
     heldQualityGate: 0,
     heldNoLocation: 0,
     heldNonUs: 0,
+    heldJobBoard: 0,
     photosUnknown: 0,
     gateFailures: {},
     locationSources: { 'bio-explicit': 0, 'bio-alias': 0, 'bio-city': 0, shop: 0, seed: 0, none: 0 },
@@ -804,6 +872,7 @@ export function summarizeDecisions(decisions, { totalCandidates = 0, bookable = 
 
   for (const decision of decisions) {
     if (decision.gates.photoEvidence === 'unknown') stats.photosUnknown += 1;
+    if (decision.gates.jobBoardEvidence) stats.heldJobBoard += 1;
     if (decision.shop) stats.shopLinks += 1;
     if (decision.location.ambiguousSeed) stats.ambiguousSeeds += 1;
     stats.locationSources[decision.location.source] =
@@ -903,7 +972,7 @@ export function buildImportPlanArtifact({ plan, options, generatedAt, referenceS
     reference: referenceSummary,
     settings: {
       minFollowers: options.minFollowers,
-      requirePhotos: options.requirePhotos,
+      allowUnknownPhotos: options.allowUnknownPhotos,
       cityProminence: DEFAULT_CITY_PROMINENCE,
       limit: Number.isFinite(options.limit) ? options.limit : null,
     },
@@ -920,6 +989,7 @@ export function buildImportPlanArtifact({ plan, options, generatedAt, referenceS
       filterReason: decision.filterReason,
       gateFailures: decision.gates.failures,
       gateWarnings: decision.gates.warnings,
+      jobBoardEvidence: decision.gates.jobBoardEvidence ?? null,
       city: decision.location.city,
       state: decision.location.state,
       locationSource: decision.location.source,

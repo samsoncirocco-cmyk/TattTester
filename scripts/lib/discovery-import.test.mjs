@@ -10,6 +10,7 @@ import {
   buildReferenceIndex,
   buildSpotCheckSample,
   classifyDuplicate,
+  classifyJobBoard,
   detectNonUsLocation,
   discoveryArtistId,
   evaluateQualityGates,
@@ -105,6 +106,10 @@ function profile(overrides = {}) {
     category: 'Artist',
     private: false,
     verified: false,
+    // The pilot artifact carries no post count, but the photo gate is a hold,
+    // so the shared fixture is a profile that *does* clear it. Tests that care
+    // about the unknown-photo path drop this explicitly.
+    postCount: 42,
     ...overrides,
   };
 }
@@ -113,7 +118,7 @@ describe('discovery importer options', () => {
   it('is dry-run by default and derives the profiles path from the input', () => {
     expect(parseDiscoveryImportArgs([])).toEqual({
       apply: false,
-      requirePhotos: false,
+      allowUnknownPhotos: false,
       input: DEFAULT_DISCOVERY_CANDIDATES_INPUT,
       profiles: 'data/discovery/profiles.json',
       out: DEFAULT_DISCOVERY_OUTPUT,
@@ -135,7 +140,7 @@ describe('discovery importer options', () => {
     expect(
       parseDiscoveryImportArgs([
         '--apply',
-        '--require-photos',
+        '--allow-unknown-photos',
         '--input', 'a/candidates.json',
         '--profiles', 'b/profiles.json',
         '--out', 'c/plan.json',
@@ -146,7 +151,7 @@ describe('discovery importer options', () => {
       ]),
     ).toEqual({
       apply: true,
-      requirePhotos: true,
+      allowUnknownPhotos: true,
       input: 'a/candidates.json',
       profiles: 'b/profiles.json',
       out: 'c/plan.json',
@@ -196,15 +201,68 @@ describe('quality gates', () => {
     expect(evaluateQualityGates(candidate({ looksBookable: false }), profile()).failures).toContain('looksBookable');
   });
 
-  it('reports the photo gate as unknown rather than silently passing it', () => {
-    const lenient = evaluateQualityGates(candidate(), profile());
-    expect(lenient.photoEvidence).toBe('unknown');
-    expect(lenient.warnings).toContain('photos:unknown');
-    expect(lenient.admitted).toBe(true);
-
-    const strict = evaluateQualityGates(candidate(), profile(), { requirePhotos: true });
+  it('holds a candidate whose photo evidence is unknown', () => {
+    const strict = evaluateQualityGates(candidate(), profile({ postCount: null }));
+    expect(strict.photoEvidence).toBe('unknown');
     expect(strict.admitted).toBe(false);
     expect(strict.failures).toContain('photos:unknown');
+  });
+
+  it('admits unknown photo evidence only under --allow-unknown-photos, and says so', () => {
+    const lenient = evaluateQualityGates(candidate(), profile({ postCount: null }), {
+      allowUnknownPhotos: true,
+    });
+    expect(lenient.admitted).toBe(true);
+    expect(lenient.failures).toEqual([]);
+    expect(lenient.warnings).toContain('photos:unknown');
+    expect(lenient.photoEvidence).toBe('unknown');
+  });
+
+  // Both of these cleared the upstream looks_bookable classifier in the real
+  // pilot run and reached the plan as importable artists (#62 is the upstream
+  // fix). They are held, not dropped, so a reviewer can still see them.
+  it('holds job boards and gig marketplaces that clear the upstream classifier', () => {
+    const jobs = evaluateQualityGates(
+      candidate({ handle: 'tattoo.jobs' }),
+      profile({
+        bio: "🌎The World's Tattoo Job Board since 2017\n•Tattoo Artists Wanted",
+        category: 'Employment Agency',
+        fullName: 'Tattoo Jobs',
+      }),
+    );
+    expect(jobs.admitted).toBe(false);
+    expect(jobs.failures).toContain('notJobBoard');
+    expect(jobs.jobBoardEvidence).toMatch(/Employment Agency/);
+
+    const gigs = evaluateQualityGates(
+      candidate({ handle: 'tattoo.gigs' }),
+      profile({
+        bio: '🌍 Tattoo jobs worldwide\n⭐ 1000+ Jobs | 4000+ Artists',
+        category: 'None',
+        fullName: 'TattooGigs',
+      }),
+    );
+    expect(gigs.admitted).toBe(false);
+    expect(gigs.failures).toContain('notJobBoard');
+    expect(gigs.jobBoardEvidence).toBeTruthy();
+  });
+
+  it('does not hold a working artist who merely mentions having a job', () => {
+    const result = evaluateQualityGates(
+      candidate({ handle: 'sarah_spectre' }),
+      profile({
+        bio: '🏮I have a full time job, but I also make ceramics & paintings🏮',
+        category: 'Artist',
+      }),
+    );
+    expect(result.failures).not.toContain('notJobBoard');
+    expect(result.jobBoardEvidence).toBeNull();
+  });
+
+  it('catches a job board by handle even when category and bio are empty', () => {
+    const result = classifyJobBoard({ handle: '@ink.gigs' }, { bio: 'Booking now', category: '' });
+    expect(result.isJobBoard).toBe(true);
+    expect(result.evidence).toMatch(/\.gigs/);
   });
 
   it('enforces the photo gate when a run does carry a post count', () => {

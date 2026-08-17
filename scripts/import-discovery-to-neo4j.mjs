@@ -18,14 +18,18 @@
  *
  * Quality bar (locked on #65): automated gates admit; a human spot-checks a
  * sample. The gates are followers >= --min-followers, a non-empty bio, a
- * public profile, and photos. A discovery run records no post count, so the
- * photo gate reports `unknown` and admits by default; pass --require-photos to
- * make it a hard failure instead.
+ * public profile, not a job board, and photos. A discovery run currently
+ * records no post count, so the photo gate cannot be satisfied and every such
+ * candidate is HELD — on the pilot artifact that holds all 137. Pass
+ * --allow-unknown-photos to admit them anyway, which measures the ceiling the
+ * pilot would reach once discovery captures media counts. Do not read a run
+ * made with that flag as "the photo gate passed".
  *
  * Usage:
  *   node scripts/import-discovery-to-neo4j.mjs --input ../tatt-scraper/data/discovery/candidates.json
  *   node scripts/import-discovery-to-neo4j.mjs --limit 25            # dry run, small slice
  *   node scripts/import-discovery-to-neo4j.mjs --reference snap.json # fully offline plan
+ *   node scripts/import-discovery-to-neo4j.mjs --allow-unknown-photos # ceiling, gate not enforced
  *   node scripts/import-discovery-to-neo4j.mjs --apply               # actually write
  *
  * Requires NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD in .env unless --reference is
@@ -159,7 +163,11 @@ console.log(`  possible dupes (held):     ${stats.possibleDuplicates}`);
 console.log(`  held — quality gate:       ${stats.heldQualityGate}`);
 console.log(`  held — no location:        ${stats.heldNoLocation}`);
 console.log(`  held — non-US location:    ${stats.heldNonUs}`);
-console.log(`  photo evidence unknown:    ${stats.photosUnknown}`);
+console.log(`  job boards detected:       ${stats.heldJobBoard}`);
+console.log(
+  `  photo evidence unknown:    ${stats.photosUnknown}` +
+    (options.allowUnknownPhotos ? ' (admitted — photo gate NOT enforced)' : ' (held)'),
+);
 console.log('\n  city from (all considered / of the importable)');
 for (const [source, count] of Object.entries(stats.locationSources)) {
   const importable = stats.importableLocationSources[source] ?? 0;
