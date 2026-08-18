@@ -75,6 +75,26 @@ describe("buildRosterFilter", () => {
     );
   });
 
+  // The count and the grid share this WHERE, so the headline "Artists: N"
+  // stays honest: junk-stamped unclaimed discovery accounts (RESEARCH bet 2)
+  // are excluded from both, whatever the filters.
+  it("excludes junk-stamped unclaimed discovery accounts from every roster read", () => {
+    for (const filter of [
+      {},
+      { q: "austin" },
+      { style: "Blackwork" },
+      { hasPortfolio: true },
+    ]) {
+      const where = buildRosterFilter(filter).where;
+      expect(where).toContain("coalesce(a.discoverySignal, '') = 'junk'");
+      // Unstamped / uncertain / tattoo nodes and claimed profiles must pass:
+      // the clause only bites on the explicit junk stamp of an unclaimed node.
+      expect(where).toContain(
+        "NOT (coalesce(a.discoverySignal, '') = 'junk' AND (a.claimedByUid IS NULL OR a.claimedByUid = ''))",
+      );
+    }
+  });
+
   it("gates the roster on real stored portfolioImages, not the stale count", () => {
     const { where, params } = buildRosterFilter({ hasPortfolio: true });
     expect(params.hasPortfolio).toBe(true);
@@ -100,8 +120,9 @@ describe("buildRosterFilter", () => {
       expect(where).toContain("size(a.portfolioImages) > 0");
       expect(where).toContain("SHOWCASES");
       expect(where).toContain("PortfolioPost");
-      // No claim gate, no legacy permalink tier.
-      expect(where).not.toContain("claimedByUid");
+      // No claim gate, no legacy permalink tier. (The discovery-junk clause
+      // reads claimedByUid too, so target the gate's IS NOT NULL shape.)
+      expect(where).not.toContain("a.claimedByUid IS NOT NULL");
       expect(where).not.toContain("portfolioPermalinks");
     });
 

@@ -45,5 +45,19 @@ const KNOWN_NON_ARTIST_VALUES = KNOWN_NON_ARTIST_NAMES.map(
 /** Explicitly known bad rows never belong in public discovery. */
 export const NOT_KNOWN_NON_ARTIST_CLAUSE = `NOT toLower(trim(coalesce(a.name, ''))) IN [${KNOWN_NON_ARTIST_VALUES}]`;
 
+/**
+ * The durable successor to KNOWN_NON_ARTIST_NAMES: the discovery classifier
+ * (scripts/classify-discovery-signals.mjs) tiers scraped handles into
+ * 'tattoo' | 'uncertain' | 'junk' from bio/category/hashtag/caption evidence,
+ * and scripts/apply-discovery-signals.mjs stamps the tier onto the node.
+ *
+ * Only an unclaimed artist explicitly stamped 'junk' is excluded. Absent
+ * property, 'uncertain', 'tattoo', or a claimed profile all stay visible —
+ * the clause is inert until stamps are applied, and a sparse-bio real artist
+ * ('uncertain') is never hidden.
+ */
+export const NOT_DISCOVERY_JUNK_CLAUSE =
+  "NOT (coalesce(a.discoverySignal, '') = 'junk' AND (a.claimedByUid IS NULL OR a.claimedByUid = ''))";
+
 /** The shared predicate for roster, profile, homepage, and match reads. */
 export const PUBLIC_ARTIST_CLAUSE = `(${NOT_REMOVED_CLAUSE}) AND (${NOT_STALE_CLAUSE}) AND (${LOOKS_BOOKABLE_CLAUSE}) AND (${NOT_KNOWN_NON_ARTIST_CLAUSE})`;

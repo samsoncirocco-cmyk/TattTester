@@ -17,7 +17,10 @@ import {
   HAS_REACHABLE_CONTACT_CLAUSE,
   type BookingTier,
 } from "@/lib/artist-bookability";
-import { PUBLIC_ARTIST_CLAUSE } from "@/lib/artist-visibility";
+import {
+  NOT_DISCOVERY_JUNK_CLAUSE,
+  PUBLIC_ARTIST_CLAUSE,
+} from "@/lib/artist-visibility";
 import {
   IG_PERMALINK_CYPHER,
   filterPermalinksForDisplay,
@@ -139,8 +142,12 @@ export function buildRosterFilter(
   // Leads the clause and is not conditional on any filter: an artist who asked
   // to be removed must be absent from every roster read, not merely from the
   // unfiltered one. See docs/adr/0025.
+  // The roster and its headline count share this clause, so both exclude
+  // unclaimed accounts the discovery classifier stamped as junk (AMC
+  // Theatres, Panera, ... — RESEARCH bet 2). Unstamped nodes pass untouched.
   const where = `
     ${PUBLIC_ARTIST_CLAUSE}
+    AND ${NOT_DISCOVERY_JUNK_CLAUSE}
     AND ($q IS NULL
       OR toLower(coalesce(a.name, '')) CONTAINS toLower($q)
       OR toLower(coalesce(a.city, '')) CONTAINS toLower($q)
