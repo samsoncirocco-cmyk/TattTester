@@ -5,21 +5,40 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextResponse } from 'next/server';
 import { makeBrief, makeRequest, makeSession, routeParams } from './helpers';
 
-const { refineMock, recordSpendMock, checkBudgetMock, rateLimitMock, rateLimitResponseMock, verifyApiAuthMock } = vi.hoisted(() => ({
+const {
+  refineMock,
+  recordSpendMock,
+  checkBudgetMock,
+  rateLimitMock,
+  rateLimitResponseMock,
+  verifyApiAuthMock,
+  claimSessionOwnershipMock,
+  reserveCreditMock,
+  releaseCreditMock,
+} = vi.hoisted(() => ({
   refineMock: vi.fn(),
   recordSpendMock: vi.fn(),
   checkBudgetMock: vi.fn(),
   rateLimitMock: vi.fn(),
   rateLimitResponseMock: vi.fn(),
-  verifyApiAuthMock: vi.fn()
+  verifyApiAuthMock: vi.fn(),
+  claimSessionOwnershipMock: vi.fn(),
+  reserveCreditMock: vi.fn(),
+  releaseCreditMock: vi.fn()
 }));
 
 vi.mock('@/services/designSession', () => ({
   startSession: vi.fn(),
   recordPick: vi.fn(),
   refine: refineMock,
-  claimSessionOwnership: vi.fn(),
+  claimSessionOwnership: claimSessionOwnershipMock,
   getSession: vi.fn()
+}));
+
+vi.mock('@/lib/generation-credits', () => ({
+  reserveGenerationCredit: reserveCreditMock,
+  releaseGenerationCredit: releaseCreditMock,
+  GenerationCreditsExhaustedError: class GenerationCreditsExhaustedError extends Error {}
 }));
 
 vi.mock('@/lib/api-auth', () => ({
@@ -47,6 +66,11 @@ vi.mock('@/lib/logger', () => ({
 
 import { POST } from '../[id]/refine/route';
 
+/** Matches the real error by `code`, which is what the route branches on. */
+class FakeExhausted extends Error {
+  readonly code = 'GENERATION_CREDITS_EXHAUSTED';
+}
+
 const URL = 'http://localhost/api/v1/design-session/sess-1/refine';
 
 function completeSession() {
@@ -73,6 +97,9 @@ describe('POST /api/v1/design-session/[id]/refine route adapter', () => {
     rateLimitMock.mockResolvedValue({ allowed: true });
     checkBudgetMock.mockResolvedValue({ allowed: true });
     recordSpendMock.mockResolvedValue(undefined);
+    claimSessionOwnershipMock.mockResolvedValue(undefined);
+    reserveCreditMock.mockResolvedValue({ id: 'res-1', source: 'free', freeRemaining: 24, paidRemaining: 0 });
+    releaseCreditMock.mockResolvedValue(undefined);
     delete process.env.NEXT_PUBLIC_DEMO_MODE;
   });
 
@@ -188,5 +215,66 @@ describe('POST /api/v1/design-session/[id]/refine route adapter', () => {
     expect(rateLimitMock).not.toHaveBeenCalled();
     expect(checkBudgetMock).not.toHaveBeenCalled();
     expect(recordSpendMock).not.toHaveBeenCalled();
+  }, 10_000);
+  // ---------------------------------------------------------------------
+  // Generation credits (ADR-0041). Refine renders one image, so it charges
+  // one credit — and, being a charged action, stamps the session's owner.
+  // Before these tests it did neither: it reserved nothing and passed
+  // `stamp: false`, treating a paid render as an uncharged read.
+  // ---------------------------------------------------------------------
+
+  it('reserves one credit and stamps ownership for the charged regeneration', async () => {
+    refineMock.mockResolvedValueOnce(completeSession());
+
+    const res = await POST(makeRequest(URL, { answer: 'bolder' }), routeParams('sess-1'));
+
+    expect(res.status).toBe(200);
+    expect(claimSessionOwnershipMock).toHaveBeenCalledWith('sess-1', 'uid-1', { stamp: true });
+    expect(reserveCreditMock).toHaveBeenCalledWith('uid-1');
+    expect(releaseCreditMock).not.toHaveBeenCalled();
+    expect((await res.json()).credits).toMatchObject({ id: 'res-1' });
+  });
+
+  it('refuses with 402 when the lifetime allowance is spent, without rendering', async () => {
+    reserveCreditMock.mockRejectedValueOnce(new FakeExhausted());
+
+    const res = await POST(makeRequest(URL, { answer: 'bolder' }), routeParams('sess-1'));
+
+    expect(res.status).toBe(402);
+    expect((await res.json()).code).toBe('GENERATION_CREDITS_EXHAUSTED');
+    expect(refineMock).not.toHaveBeenCalled();
+    expect(releaseCreditMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the credit when the regeneration never lands', async () => {
+    refineMock.mockRejectedValueOnce(new Error('provider exploded'));
+
+    const res = await POST(makeRequest(URL, { answer: 'bolder' }), routeParams('sess-1'));
+
+    expect(res.status).toBe(500);
+    expect(releaseCreditMock).toHaveBeenCalledWith('uid-1', expect.objectContaining({ id: 'res-1' }));
+  });
+
+  // The ownership gate runs BEFORE the reserve, so a caller refused for
+  // someone else's session is never charged for the refusal.
+  it('never reserves a credit when the ownership gate refuses the caller', async () => {
+    claimSessionOwnershipMock.mockRejectedValueOnce(new Error('No design session'));
+
+    await POST(makeRequest(URL, { answer: 'bolder' }), routeParams('sess-1'));
+
+    expect(reserveCreditMock).not.toHaveBeenCalled();
+    expect(releaseCreditMock).not.toHaveBeenCalled();
+    expect(refineMock).not.toHaveBeenCalled();
+  });
+
+  it('demo mode never touches the credit ledger', async () => {
+    process.env.NEXT_PUBLIC_DEMO_MODE = 'true';
+    refineMock.mockResolvedValueOnce(completeSession());
+
+    const res = await POST(makeRequest(URL, { answer: 'bolder' }), routeParams('sess-1'));
+
+    expect(res.status).toBe(200);
+    expect(reserveCreditMock).not.toHaveBeenCalled();
+    expect(releaseCreditMock).not.toHaveBeenCalled();
   }, 10_000);
 });
