@@ -5,24 +5,44 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextResponse } from 'next/server';
 import { makeRequest, makeSession } from './helpers';
 
-const { startSessionMock, recordSpendMock, checkBudgetMock, rateLimitMock, rateLimitResponseMock, verifyApiAuthMock } = vi.hoisted(() => ({
+const {
+  startSessionMock,
+  recordSpendMock,
+  checkBudgetMock,
+  rateLimitMock,
+  rateLimitResponseMock,
+  verifyApiAuthMock,
+  claimSessionOwnershipMock,
+  reserveCreditMock,
+  releaseCreditMock,
+} = vi.hoisted(() => ({
   startSessionMock: vi.fn(),
   recordSpendMock: vi.fn(),
   checkBudgetMock: vi.fn(),
   rateLimitMock: vi.fn(),
   rateLimitResponseMock: vi.fn(),
-  verifyApiAuthMock: vi.fn()
+  verifyApiAuthMock: vi.fn(),
+  claimSessionOwnershipMock: vi.fn(),
+  reserveCreditMock: vi.fn(),
+  releaseCreditMock: vi.fn()
 }));
 
 vi.mock('@/services/designSession', () => ({
   startSession: startSessionMock,
   recordPick: vi.fn(),
   refine: vi.fn(),
+  claimSessionOwnership: claimSessionOwnershipMock,
   getSession: vi.fn()
 }));
 
 vi.mock('@/lib/api-auth', () => ({
-  verifyApiAuth: verifyApiAuthMock
+  verifyApiAuthWithUser: verifyApiAuthMock
+}));
+
+vi.mock('@/lib/generation-credits', () => ({
+  reserveGenerationCredit: reserveCreditMock,
+  releaseGenerationCredit: releaseCreditMock,
+  GenerationCreditsExhaustedError: class GenerationCreditsExhaustedError extends Error {}
 }));
 
 vi.mock('@/lib/rate-limit', () => ({
@@ -46,15 +66,23 @@ vi.mock('@/lib/logger', () => ({
 
 import { POST } from '../route';
 
+/** Matches the real error by `code`, which is what the route branches on. */
+class FakeExhausted extends Error {
+  readonly code = 'GENERATION_CREDITS_EXHAUSTED';
+}
+
 const URL = 'http://localhost/api/v1/design-session';
 
 describe('POST /api/v1/design-session route adapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    verifyApiAuthMock.mockResolvedValue(null);
+    verifyApiAuthMock.mockResolvedValue({ error: null, user: { uid: 'uid-1' } });
     rateLimitMock.mockResolvedValue({ allowed: true });
     checkBudgetMock.mockResolvedValue({ allowed: true });
     recordSpendMock.mockResolvedValue(undefined);
+    claimSessionOwnershipMock.mockResolvedValue(undefined);
+    reserveCreditMock.mockResolvedValue({ id: 'res-1', source: 'free', freeRemaining: 24, paidRemaining: 0 });
+    releaseCreditMock.mockResolvedValue(undefined);
     delete process.env.NEXT_PUBLIC_DEMO_MODE;
   });
 
@@ -109,7 +137,7 @@ describe('POST /api/v1/design-session route adapter', () => {
 
   it('returns the auth failure untouched and never reaches the service', async () => {
     const denied = NextResponse.json({ error: 'Authorization header required', code: 'AUTH_REQUIRED' }, { status: 401 });
-    verifyApiAuthMock.mockResolvedValueOnce(denied);
+    verifyApiAuthMock.mockResolvedValueOnce({ error: denied });
 
     const res = await POST(makeRequest(URL, { placementAnswer: 'forearm', meaningAnswer: 'x y z' }));
 
@@ -197,4 +225,69 @@ describe('POST /api/v1/design-session route adapter', () => {
     expect(json.code).toBe('INVALID_PLACEMENT_ANSWER');
     expect(startSessionMock).not.toHaveBeenCalled();
   });
+  // ---------------------------------------------------------------------
+  // Generation credits (ADR-0041). This route renders; before these tests
+  // it never touched the ledger, so a signed-in customer could take an
+  // unlimited number of free reveals by starting a new session instead of
+  // paying. The lifetime allowance is only real if EVERY generating route
+  // debits it.
+  // ---------------------------------------------------------------------
+
+  it('reserves one generation credit before the renders and stamps the new session', async () => {
+    const session = makeSession();
+    startSessionMock.mockResolvedValueOnce(session);
+
+    const res = await POST(makeRequest(URL, { placementAnswer: 'forearm', meaningAnswer: 'my dog' }));
+
+    expect(res.status).toBe(200);
+    expect(reserveCreditMock).toHaveBeenCalledWith('uid-1');
+    expect(releaseCreditMock).not.toHaveBeenCalled();
+    // First charged action on a session created unowned (#357) — it stamps.
+    expect(claimSessionOwnershipMock).toHaveBeenCalledWith('sess-1', 'uid-1', { stamp: true });
+    expect((await res.json()).credits).toMatchObject({ id: 'res-1', source: 'free' });
+  });
+
+  it('refuses with 402 when the lifetime allowance is spent, without rendering', async () => {
+    reserveCreditMock.mockRejectedValueOnce(new FakeExhausted());
+
+    const res = await POST(makeRequest(URL, { placementAnswer: 'forearm', meaningAnswer: 'my dog' }));
+
+    expect(res.status).toBe(402);
+    expect((await res.json()).code).toBe('GENERATION_CREDITS_EXHAUSTED');
+    expect(startSessionMock).not.toHaveBeenCalled();
+    // Nothing was reserved, so nothing may be handed back.
+    expect(releaseCreditMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the credit when the renders never land', async () => {
+    startSessionMock.mockRejectedValueOnce(new Error('provider exploded'));
+
+    const res = await POST(makeRequest(URL, { placementAnswer: 'forearm', meaningAnswer: 'my dog' }));
+
+    expect(res.status).toBe(500);
+    expect(releaseCreditMock).toHaveBeenCalledWith('uid-1', expect.objectContaining({ id: 'res-1' }));
+  });
+
+  // The customer already has the cuts they paid for; a store hiccup while
+  // stamping must not turn a delivered reveal into a 500.
+  it('still returns the reveal when ownership stamping fails', async () => {
+    startSessionMock.mockResolvedValueOnce(makeSession());
+    claimSessionOwnershipMock.mockRejectedValueOnce(new Error('store unavailable'));
+
+    const res = await POST(makeRequest(URL, { placementAnswer: 'forearm', meaningAnswer: 'my dog' }));
+
+    expect(res.status).toBe(200);
+    expect(releaseCreditMock).not.toHaveBeenCalled();
+  });
+
+  it('demo mode never touches the credit ledger', async () => {
+    process.env.NEXT_PUBLIC_DEMO_MODE = 'true';
+    startSessionMock.mockResolvedValueOnce(makeSession());
+
+    const res = await POST(makeRequest(URL, { placementAnswer: 'forearm', meaningAnswer: 'my dog' }));
+
+    expect(res.status).toBe(200);
+    expect(reserveCreditMock).not.toHaveBeenCalled();
+    expect(releaseCreditMock).not.toHaveBeenCalled();
+  }, 10_000);
 });
