@@ -15,6 +15,20 @@ export const dynamic = 'force-dynamic';
 // recording (its own budget line item), and response-shape mapping. No
 // sessionId starts a new conversation (the bot sends the opener).
 //
+// OPEN TO SIGNED-OUT VISITORS. This is the product's front door, and it
+// generates nothing: ADR-0041 puts one gate in front of *generation*, and a
+// conversation turn is not a generation. #357 completed the other half —
+// sessions are created unowned and stamped by the first CHARGED action —
+// but this route still demanded a Bearer token, so a stranger could not
+// reach SketchBot at all. The wall now sits at /confirm, where the renders
+// (and the credit debit) actually happen.
+//
+// A signed-in caller still sends their token and gets the ordinary
+// per-uid 'default' allowance. A signed-out one is rate-limited per IP on
+// a much tighter 'converse-anon' tier — turns cost real model money, so an
+// open door is not an open bar — and, when continuing an existing session,
+// is refused any session that already has an owner.
+//
 // Demo mode (NEXT_PUBLIC_DEMO_MODE): delegates to the real service — the
 // engine's deterministic demo script serves the turn, free — so rate policy
 // and spend recording are skipped, matching the other design-session routes.
@@ -24,19 +38,38 @@ export const dynamic = 'force-dynamic';
 // hint: the UI downgrades to the scripted two-question intake (the ADR-0019
 // degraded mode via POST /api/v1/design-session).
 
+/**
+ * Stands in for a uid when nobody is signed in. Contains a colon, which a
+ * Firebase uid cannot, so it can never collide with a real owner.
+ */
+const ANONYMOUS_CALLER = 'anonymous:web';
+
 export async function POST(req: NextRequest) {
     const reqLogger = createRequestLogger('design-session-converse');
 
     // Setup lives inside the try so an auth/rate failure still returns the
     // structured error envelope and logs, instead of escaping as a bare 500.
     try {
-        const auth = await verifyApiAuthWithUser(req);
-        if (auth.error) return auth.error;
+        // A token is honored when present and never required. An INVALID
+        // token is still refused: a caller who tried to authenticate and
+        // failed is a bug or an attack, not an anonymous visitor, and
+        // silently downgrading them to anonymous would hide both.
+        const hasBearer = req.headers.get('authorization')?.startsWith('Bearer ') === true;
+        let uid: string | null = null;
+        if (hasBearer) {
+            const auth = await verifyApiAuthWithUser(req);
+            if (auth.error) return auth.error;
+            uid = auth.user.uid;
+        }
 
         const demoMode = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
 
         if (!demoMode) {
-            const rateResult = await rateLimit(req, 'default');
+            // Signed-in: per-uid, the ordinary allowance. Signed-out: per-IP
+            // on the tight anonymous tier.
+            const rateResult = uid
+                ? await rateLimit(req, 'default', uid)
+                : await rateLimit(req, 'converse-anon');
             if (!rateResult.allowed) {
                 return rateLimitResponse(rateResult);
             }
@@ -67,11 +100,18 @@ export async function POST(req: NextRequest) {
         }
 
         // Ownership guard (#338 item 1): a continuing turn on an owned
-        // session refuses any other uid with 404. An opening call has no
+        // session refuses any other caller with 404. An opening call has no
         // session yet, and an unowned session stays capability-model until
         // its first charged action stamps an owner.
+        //
+        // A signed-out caller is checked with the anonymous sentinel, which
+        // can never equal a real Firebase uid — so it matches nothing and
+        // stamps nothing, and simply reads as "not the owner". Opening the
+        // route to strangers must not open owned sessions to them.
         if (typeof sessionId === 'string') {
-            await claimSessionOwnership(sessionId.trim(), auth.user.uid, { stamp: false });
+            await claimSessionOwnership(sessionId.trim(), uid ?? ANONYMOUS_CALLER, {
+                stamp: false,
+            });
         }
 
         const response = await converse({

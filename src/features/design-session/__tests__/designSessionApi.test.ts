@@ -5,10 +5,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@/lib/client-api-auth', () => ({
   getApiAuthHeaders: vi.fn().mockResolvedValue({}),
+  // converse() deliberately uses the optional variant — the route is open
+  // to signed-out visitors, so a missing token sends no header rather than
+  // stopping the request in the browser.
+  getOptionalApiAuthHeaders: vi.fn().mockResolvedValue({}),
+  SignInRequiredError: class SignInRequiredError extends Error {},
 }));
 
+import { getApiAuthHeaders, getOptionalApiAuthHeaders } from '@/lib/client-api-auth';
 import {
   confirmProposal,
+  converse,
   DesignSessionRequestError,
 } from '../services/designSessionApi';
 
@@ -109,5 +116,31 @@ describe('confirmProposal — retry semantics', () => {
 
     await expect(confirmProposal('sess-1')).rejects.toThrow('wrong phase');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Which auth helper each call reaches for IS the policy: the strict one
+// opens a sign-in modal and throws before any request leaves the browser,
+// the optional one sends the request without a token. Putting the strict
+// helper in front of a conversation turn was the wall on /design.
+describe('auth policy per route', () => {
+  it('sends a conversation turn without demanding a token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { sessionId: 'sess-1', reply: 'hi', stage: 'chatting', turn: 0 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await converse({});
+
+    expect(getOptionalApiAuthHeaders).toHaveBeenCalledTimes(1);
+    expect(getApiAuthHeaders).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined();
+  });
+
+  it('still fails closed on the charged confirm', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, SESSION)));
+
+    await confirmProposal('sess-1');
+
+    expect(getApiAuthHeaders).toHaveBeenCalledTimes(1);
+    expect(getOptionalApiAuthHeaders).not.toHaveBeenCalled();
   });
 });
