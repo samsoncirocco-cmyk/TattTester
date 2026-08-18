@@ -1,112 +1,112 @@
 {
   "source": "neo4j:SPECIALIZES_IN",
-  "generated": "2026-07-26",
-  "ontologyVersion": 3,
+  "generated": "2026-08-18",
+  "ontologyVersion": 5,
   "styles": [
     {
       "tag": "anime",
       "graphNames": [
         "Anime"
       ],
-      "artists": 256
+      "artists": 478
     },
     {
       "tag": "black-and-grey",
       "graphNames": [
         "Black & Grey"
       ],
-      "artists": 1126
+      "artists": 1972
     },
     {
       "tag": "blackwork",
       "graphNames": [
         "Blackwork"
       ],
-      "artists": 391
+      "artists": 704
     },
     {
       "tag": "chicano",
       "graphNames": [
         "Chicano"
       ],
-      "artists": 412
+      "artists": 729
     },
     {
       "tag": "fine-line",
       "graphNames": [
         "Fine Line"
       ],
-      "artists": 620
+      "artists": 1166
     },
     {
       "tag": "geometric",
       "graphNames": [
         "Geometric"
       ],
-      "artists": 204
+      "artists": 371
     },
     {
       "tag": "illustrative",
       "graphNames": [
         "Illustrative"
       ],
-      "artists": 679
+      "artists": 1222
     },
     {
       "tag": "japanese",
       "graphNames": [
-        "Japanese (Irezumi)"
+        "Japanese"
       ],
-      "artists": 434
+      "artists": 738
     },
     {
       "tag": "neo-traditional",
       "graphNames": [
         "Neo-Traditional"
       ],
-      "artists": 469
+      "artists": 836
     },
     {
       "tag": "new-school",
       "graphNames": [
         "New School"
       ],
-      "artists": 98
+      "artists": 177
     },
     {
       "tag": "ornamental",
       "graphNames": [
         "Ornamental"
       ],
-      "artists": 185
+      "artists": 320
     },
     {
       "tag": "realism",
       "graphNames": [
         "Realism"
       ],
-      "artists": 1028
+      "artists": 1893
     },
     {
       "tag": "traditional",
       "graphNames": [
         "Traditional"
       ],
-      "artists": 1259
+      "artists": 2248
     },
     {
       "tag": "tribal",
       "graphNames": [
         "Tribal"
       ],
-      "artists": 114
+      "artists": 193
     },
     {
       "tag": "watercolor",
       "graphNames": [
         "Watercolor"
       ],
-      "artists": 159
+      "artists": 312
     }
   ]
 }
