@@ -24,6 +24,7 @@ const {
 
 vi.mock('@/services/designSession', () => ({
   attachReference: attachReferenceMock,
+  claimSessionOwnership: vi.fn(),
   storeReferencePhoto: vi.fn(async () => 'design-sessions/sess-1/references/ref-1.png'),
 }));
 
@@ -32,7 +33,7 @@ vi.mock('@/services/vision', async (importOriginal) => {
   return { ...actual, analyzeReferenceImage: analyzeMock };
 });
 
-vi.mock('@/lib/api-auth', () => ({ verifyApiAuth: verifyApiAuthMock }));
+vi.mock('@/lib/api-auth', () => ({ verifyApiAuthWithUser: verifyApiAuthMock }));
 vi.mock('@/lib/rate-limit', () => ({
   rateLimit: rateLimitMock,
   rateLimitResponse: rateLimitResponseMock,
@@ -64,7 +65,7 @@ const ANALYSIS = {
 describe('POST /api/v1/design-session/[id]/reference', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    verifyApiAuthMock.mockResolvedValue(null);
+    verifyApiAuthMock.mockResolvedValue({ error: null, user: { uid: 'uid-1' } });
     rateLimitMock.mockResolvedValue({ allowed: true });
     analyzeMock.mockResolvedValue({ status: 'analyzed', analysis: ANALYSIS });
     attachReferenceMock.mockResolvedValue({
@@ -146,12 +147,12 @@ describe('POST /api/v1/design-session/[id]/reference', () => {
 
   it('honors the auth gate and rate bucket', async () => {
     const denied = new Response(null, { status: 401 });
-    verifyApiAuthMock.mockResolvedValue(denied);
+    verifyApiAuthMock.mockResolvedValue({ error: denied });
     const res = await POST(makeRequest(URL, IMAGE_BODY), routeParams('sess-1'));
     expect(res.status).toBe(401);
     expect(analyzeMock).not.toHaveBeenCalled();
 
-    verifyApiAuthMock.mockResolvedValue(null);
+    verifyApiAuthMock.mockResolvedValue({ error: null, user: { uid: 'uid-1' } });
     rateLimitMock.mockResolvedValue({ allowed: false });
     rateLimitResponseMock.mockReturnValue(new Response(null, { status: 429 }));
     const limited = await POST(makeRequest(URL, IMAGE_BODY), routeParams('sess-1'));

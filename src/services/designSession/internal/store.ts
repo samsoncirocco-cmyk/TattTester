@@ -83,6 +83,24 @@ export type ClaimRoundResult =
   | { status: 'missing' };
 
 /**
+ * Outcome of the late-bind ownership claim (#338 item 1).
+ * - 'stamped': the session had no owner and this uid just became it.
+ * - 'match': the session already belongs to this uid.
+ * - 'unbound': no owner yet and the caller chose not to stamp (a guard-only
+ *   check from an uncharged route) — access allowed, capability model.
+ * - 'mismatch': owned by a DIFFERENT uid. Callers must present this as
+ *   SESSION_NOT_FOUND, never 403 — a stranger probing ids must not learn
+ *   that an id exists.
+ * - 'missing': no such session.
+ */
+export type ClaimOwnershipResult =
+  | 'stamped'
+  | 'match'
+  | 'unbound'
+  | 'mismatch'
+  | 'missing';
+
+/**
  * What we persist: the public DesignSession plus the pinned generation
  * route. ADR-0016 locks one provider per session — the frozen contract
  * carries the provider name, and we additionally pin the exact model id
@@ -106,6 +124,14 @@ export interface StoredSession extends DesignSession {
    * a concurrent refine round must lose the claim race, never double-charge.
    */
   roundInFlight?: RoundClaim;
+  /**
+   * Late-bound owner (#338 item 1). Absent on creation — sessions start
+   * anonymously — and stamped by the FIRST authenticated charged action
+   * (confirm / round / re-roll / critique, web or SMS). Once set, every
+   * authenticated mutating route refuses any other uid with 404. Never set
+   * back to undefined; never crosses toDesignSession (whitelist).
+   */
+  ownerUid?: string;
 }
 
 export interface SessionStore {
@@ -121,6 +147,14 @@ export interface SessionStore {
   claimRound(id: string, claim: RoundClaim, staleMs: number): Promise<ClaimRoundResult>;
   /** Clear the slot when it still belongs to `claimId` (failure path). */
   releaseRound(id: string, claimId: string): Promise<void>;
+  /**
+   * Atomically resolve the session's owner against `uid` (#338 item 1).
+   * With `stamp`, an unowned session becomes owned by `uid` in the same
+   * read-check-write — two first-chargers racing must serialize here, so
+   * exactly one of them ever becomes the owner (Firestore runs this in a
+   * transaction, mirroring claimRound).
+   */
+  claimOwnership(id: string, uid: string, stamp: boolean): Promise<ClaimOwnershipResult>;
 }
 
 /**
@@ -231,6 +265,17 @@ export const memorySessionStore: SessionStore = {
     const session = sessions.get(id);
     if (session?.roundInFlight?.id === claimId) delete session.roundInFlight;
   },
+  // Atomic by construction, same as claimRound: synchronous on the one
+  // JS thread, so two first-chargers can't interleave.
+  async claimOwnership(id, uid, stamp) {
+    const session = sessions.get(id);
+    if (!session) return 'missing';
+    if (session.ownerUid === uid) return 'match';
+    if (session.ownerUid) return 'mismatch';
+    if (!stamp) return 'unbound';
+    session.ownerUid = uid;
+    return 'stamped';
+  },
 };
 
 /** Test hook: reset the in-memory store between cases. */
@@ -283,6 +328,24 @@ export const firestoreSessionStore: SessionStore = {
       if (!snap.exists) return;
       if ((snap.data() as StoredSession).roundInFlight?.id !== claimId) return;
       tx.update(ref, { roundInFlight: FieldValue.delete() });
+    });
+  },
+  // Transactional for the same reason claimRound is: two first-chargers
+  // racing to stamp must serialize, so exactly one becomes the owner and
+  // the other sees 'mismatch' — never a last-write-wins double-stamp.
+  async claimOwnership(id, uid, stamp) {
+    const { getFirestore } = await import('firebase-admin/firestore');
+    const db = getFirestore();
+    const ref = db.collection(COLLECTION).doc(id);
+    return db.runTransaction(async (tx): Promise<ClaimOwnershipResult> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return 'missing';
+      const owner = (snap.data() as StoredSession).ownerUid;
+      if (owner === uid) return 'match';
+      if (owner) return 'mismatch';
+      if (!stamp) return 'unbound';
+      tx.update(ref, { ownerUid: uid });
+      return 'stamped';
     });
   },
 };

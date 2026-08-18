@@ -68,8 +68,8 @@ describe('vocabulary lock', () => {
     expect(graphStyleName('Script')).toBe('Lettering');
   });
 
-  it('writes the graph spelling for Japanese, not the empty twin node', () => {
-    expect(graphStyleName('Japanese')).toBe('Japanese (Irezumi)');
+  it('writes the graph spelling for Japanese (one node since the #176 merge)', () => {
+    expect(graphStyleName('Japanese')).toBe('Japanese');
   });
 
   // Anything this lane writes must be resolvable by the matcher, or the edge is
@@ -102,7 +102,7 @@ describe('generator/import normalization', () => {
         ['Japanese', 'Old School', 'Photo Realism', 'Trash Polka'],
         'fixture',
       ),
-    ).toEqual(['Japanese (Irezumi)', 'Traditional', 'Realism', 'Trash Polka']);
+    ).toEqual(['Japanese', 'Traditional', 'Realism', 'Trash Polka']);
   });
 
   it('fails loudly when a write path receives an unapproved style', () => {
@@ -277,7 +277,7 @@ describe('toStylePairs', () => {
   // the ontology label, the graph gets its own spelling.
   it('translates the ontology label into the graph spelling', () => {
     expect(toStylePairs([{ artistId: 'a1', styles: ['Japanese'] }])).toEqual([
-      { artistId: 'a1', style: 'Japanese (Irezumi)' },
+      { artistId: 'a1', style: 'Japanese' },
     ]);
   });
 });

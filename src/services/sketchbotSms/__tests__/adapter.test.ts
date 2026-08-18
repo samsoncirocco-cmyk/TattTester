@@ -37,6 +37,7 @@ import {
   refineRound,
   refine,
   critique,
+  claimSessionOwnership,
   DesignSessionError,
 } from '@/services/designSession';
 import {
@@ -63,6 +64,7 @@ vi.mock('@/services/designSession', async () => {
   const roundPlan = await import('@/services/designSession/roundPlan');
   return {
     converse: vi.fn(),
+    claimSessionOwnership: vi.fn(),
     confirmProposal: vi.fn(),
     attachReference: vi.fn(),
     getSession: vi.fn(),
@@ -420,6 +422,41 @@ describe('parity with the web after the reveal', () => {
       revealedSession() as unknown as Awaited<ReturnType<typeof getSession>>
     );
   }
+
+  describe('the post-reveal session load (#360)', () => {
+    it('restarts on a genuine not-found — the session expired out from under the profile', async () => {
+      await driveToRevealed();
+      vi.mocked(getSession).mockRejectedValueOnce(
+        new DesignSessionError('SESSION_NOT_FOUND', 'No design session')
+      );
+      vi.mocked(converse).mockResolvedValueOnce(turn('chatting', { sessionId: 's2' }));
+
+      const outcome = await handleInbound({ phone: PHONE, body: 'make 2 bolder' });
+
+      // Same recovery as before: never a dead-end — the message opens a
+      // fresh conversation instead.
+      expect(outcome.kind).toBe('reply');
+      const profile = await memoryProfileStore.get(PHONE);
+      expect(profile?.activeSessionId).toBe('s2');
+      expect(profile?.pendingPickId).toBeNull();
+    });
+
+    it('propagates a transient store error instead of silently discarding the session', async () => {
+      await driveToRevealed();
+      vi.mocked(getSession).mockRejectedValueOnce(new Error('firestore hiccup'));
+
+      await expect(handleInbound({ phone: PHONE, body: 'make 2 bolder' })).rejects.toThrow(
+        'firestore hiccup'
+      );
+
+      // The texter's in-progress session survives — only a genuine
+      // SESSION_NOT_FOUND may unlink it.
+      expect(critique).not.toHaveBeenCalled();
+      const profile = await memoryProfileStore.get(PHONE);
+      expect(profile?.activeSessionId).toBe('s1');
+      expect(profile?.lastStage).toBe('revealed');
+    });
+  });
 
   describe('critique', () => {
     it('treats an instruction as a fix and defers the re-cut', async () => {
@@ -1101,6 +1138,40 @@ describe('the two-cut rounds (ADR-0049)', () => {
       // Persisted at reserve time, not only in the deferred closure: a
       // crash before delivery leaves a reconcilable reservation id.
       expect(profile?.pendingCreditReservationId).toBe('res-1');
+    });
+
+    it('restarts the design when the session belongs to another account — refused pre-charge (#338 item 1)', async () => {
+      mockLinked('user-1');
+      await driveToPicked();
+      vi.mocked(claimSessionOwnership).mockRejectedValueOnce(
+        new DesignSessionError('SESSION_NOT_FOUND', 'No design session')
+      );
+      vi.mocked(converse).mockResolvedValueOnce(turn('chatting', { sessionId: 's2' }));
+
+      const outcome = await handleInbound({ phone: PHONE, body: 'REFINE' });
+
+      // Same recovery as an expired session: never a charge, never a dead-end —
+      // the message opens a fresh conversation instead.
+      expect(reserveGenerationCredit).not.toHaveBeenCalled();
+      expect(outcome.kind).toBe('reply');
+      const profile = await memoryProfileStore.get(PHONE);
+      expect(profile?.activeSessionId).toBe('s2');
+    });
+
+    it('propagates a transient store error instead of silently discarding the session', async () => {
+      mockLinked('user-1');
+      await driveToPicked();
+      vi.mocked(claimSessionOwnership).mockRejectedValueOnce(new Error('firestore hiccup'));
+
+      await expect(handleInbound({ phone: PHONE, body: 'REFINE' })).rejects.toThrow(
+        'firestore hiccup'
+      );
+
+      // The texter's in-progress session survives — only a genuine
+      // SESSION_NOT_FOUND may unlink it.
+      expect(reserveGenerationCredit).not.toHaveBeenCalled();
+      const profile = await memoryProfileStore.get(PHONE);
+      expect(profile?.activeSessionId).toBe('s1');
     });
 
     it('reads a contentless tail as REFINE, not a fix-allowance critique (#338)', async () => {

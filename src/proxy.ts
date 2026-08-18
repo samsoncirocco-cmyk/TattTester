@@ -30,9 +30,21 @@ function normalizeHost(raw: string | null): string {
 
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
-  const host = normalizeHost(
-    request.headers.get('host') ?? request.nextUrl.host
-  );
+  const rawHost = (request.headers.get('host') ?? request.nextUrl.host)
+    .split(':')[0]
+    .toLowerCase();
+  const host = normalizeHost(rawHost);
+
+  // www.* is a duplicate indexable origin (#81): 301 it to the apex. This
+  // must run before the image2ink root rewrite so www.image2ink.com/
+  // redirects to the apex instead of serving the door. Localhost and
+  // *.vercel.app previews never carry a www prefix, so they fall through.
+  if (
+    rawHost.startsWith('www.') &&
+    (host === canonicalHost() || host === image2inkHost())
+  ) {
+    return NextResponse.redirect(`https://${host}${pathname}${search}`, 301);
+  }
 
   if (host === image2inkHost()) {
     // The discovery door has exactly one page. The root serves the

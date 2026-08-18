@@ -5,6 +5,10 @@ conversational intake, AI-generated tattoo directions, placement review,
 artist matching, booking, deposits, and artist operations in one Next.js
 application.
 
+Live at [https://tatttester.com](https://tatttester.com) — the one canonical
+origin. image2ink.com is the one-page discovery door, and tatt-t.com 301s to
+tatttester.com.
+
 ## Start here
 
 - [Current product](docs/product/current-product.md)

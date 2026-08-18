@@ -18,11 +18,12 @@ vi.mock('@/services/designSession', () => ({
   startSession: vi.fn(),
   recordPick: vi.fn(),
   refine: refineMock,
+  claimSessionOwnership: vi.fn(),
   getSession: vi.fn()
 }));
 
 vi.mock('@/lib/api-auth', () => ({
-  verifyApiAuth: verifyApiAuthMock
+  verifyApiAuthWithUser: verifyApiAuthMock
 }));
 
 vi.mock('@/lib/rate-limit', () => ({
@@ -68,7 +69,7 @@ function completeSession() {
 describe('POST /api/v1/design-session/[id]/refine route adapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    verifyApiAuthMock.mockResolvedValue(null);
+    verifyApiAuthMock.mockResolvedValue({ error: null, user: { uid: 'uid-1' } });
     rateLimitMock.mockResolvedValue({ allowed: true });
     checkBudgetMock.mockResolvedValue({ allowed: true });
     recordSpendMock.mockResolvedValue(undefined);
@@ -150,7 +151,7 @@ describe('POST /api/v1/design-session/[id]/refine route adapter', () => {
 
   it('returns the auth failure untouched and never reaches the service', async () => {
     const denied = NextResponse.json({ error: 'Authorization header required', code: 'AUTH_REQUIRED' }, { status: 401 });
-    verifyApiAuthMock.mockResolvedValueOnce(denied);
+    verifyApiAuthMock.mockResolvedValueOnce({ error: denied });
 
     const res = await POST(makeRequest(URL, { answer: 'bolder' }), routeParams('sess-1'));
 

@@ -132,6 +132,42 @@ export async function loadSession(store: SessionStore, sessionId: string): Promi
 }
 
 /**
+ * The late-bind ownership gate (#338 item 1). Routes call this after
+ * authenticating and BEFORE any credit reserve or render: a mismatch must
+ * refuse pre-charge. `stamp` is true only on charged actions — the first
+ * authenticated charge binds the session to that uid; uncharged mutating
+ * routes guard without binding, so the anonymous pre-payment flow stays
+ * open. A mismatch (and a missing session) throws SESSION_NOT_FOUND, never
+ * 403 — a stranger probing ids must not learn that an id exists.
+ */
+export async function claimSessionOwnership(
+  sessionId: string,
+  uid: string,
+  opts?: { stamp?: boolean }
+): Promise<void> {
+  const store = resolveSessionStore();
+  const result = await store.claimOwnership(sessionId, uid, opts?.stamp === true);
+  if (result === 'mismatch' || result === 'missing') {
+    if (result === 'mismatch') {
+      // The one log of the event: uid of the refused caller, never the
+      // owner's — enough to spot probing without pairing the two.
+      logger.warn({
+        event_type: 'design_session.ownership_refused',
+        session_id: sessionId,
+        caller_uid: uid,
+      });
+    }
+    throw new DesignSessionError('SESSION_NOT_FOUND', `No design session '${sessionId}'.`);
+  }
+  if (result === 'stamped') {
+    logger.info({
+      event_type: 'design_session.ownership_stamped',
+      session_id: sessionId,
+    });
+  }
+}
+
+/**
  * A generation request pinned to the session's resolved model (ADR-0016).
  * Passing modelId explicitly skips routing, and provider fallback is off:
  * a failed render must surface, never silently cross providers mid-session

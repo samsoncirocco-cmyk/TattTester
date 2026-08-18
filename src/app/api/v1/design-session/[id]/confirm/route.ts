@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyApiAuth } from '@/lib/api-auth';
-import { confirmProposal } from '@/services/designSession';
+import { claimSessionOwnership, confirmProposal } from '@/services/designSession';
 import { rateLimit, rateLimitResponse } from '@/lib/rate-limit';
 import { checkBudget } from '@/lib/budget-tracker';
 import { createRequestLogger } from '@/lib/logger';
@@ -76,6 +76,11 @@ export async function POST(
         }
 
         ({ id: sessionId } = await params);
+
+        // Ownership gate (#338 item 1): a charged action stamps the first
+        // owner and refuses any other uid — BEFORE the credit reserve, so a
+        // refused caller is never charged.
+        await claimSessionOwnership(sessionId, user.uid, { stamp: true });
 
         if (demoMode) await new Promise(r => setTimeout(r, 1500));
 

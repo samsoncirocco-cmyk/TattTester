@@ -52,6 +52,7 @@ import {
   isLadderAxis,
   ROUND_POLE_LABEL,
   DesignSessionError,
+  claimSessionOwnership,
 } from '@/services/designSession';
 import type { DesignSession, RefineRound } from '@/services/designSession';
 // The charged round's credit primitive (ADR-0041 / ADR-0049): reserved at
@@ -550,9 +551,21 @@ async function postRevealTurn(
   let session;
   try {
     session = await getSession(sessionId);
-  } catch {
-    // The session expired out from under the profile. Drop the post-reveal
-    // state and let the message open a fresh design rather than dead-end.
+  } catch (error) {
+    // ONLY a genuine SESSION_NOT_FOUND means the session expired out from
+    // under the profile — drop the post-reveal state, logged, and let the
+    // message open a fresh design rather than dead-end (#360, the twin of
+    // #357's armRefineRound gate). A transient store error must propagate
+    // and surface, never silently discard the texter's in-progress
+    // (possibly paid) session.
+    if (!(error instanceof DesignSessionError && error.code === 'SESSION_NOT_FOUND')) {
+      throw error;
+    }
+    logger.info({
+      event_type: 'sketchbot_sms.post_reveal_session_expired',
+      phone_last4: phoneLast4(profile.phone),
+      session_id: sessionId,
+    });
     profile.activeSessionId = null;
     profile.lastStage = null;
     profile.pendingPickId = null;
@@ -583,7 +596,7 @@ async function postRevealTurn(
     return roundPickTurn(profile, store, session, letter);
   }
   if (REFINE_INTENT.test(body)) {
-    return armRefineRound(profile, store, session);
+    return armRefineRound(profile, store, session, body);
   }
   if (BOOK_INTENT.test(body)) {
     return { kind: 'reply', text: bookText(handoffUrl(appBaseUrl(), session.id)) };
@@ -737,7 +750,8 @@ async function roundPickTurn(
 async function armRefineRound(
   profile: SmsProfile,
   store: ProfileStoreT,
-  session: Awaited<ReturnType<typeof getSession>>
+  session: Awaited<ReturnType<typeof getSession>>,
+  body: string
 ): Promise<InboundOutcome> {
   const base = appBaseUrl();
   const round = liveRound(session);
@@ -757,6 +771,29 @@ async function armRefineRound(
       phone_last4: phoneLast4(profile.phone),
     });
     return { kind: 'reply', text: linkGateText(`${base}/signup`) };
+  }
+
+  // Late-bind ownership (#338 item 1): the linked account's first charged
+  // round stamps it as the session owner — the same gate as the web round
+  // route, and BEFORE the credit reserve so a refused texter is never
+  // charged. A mismatch means the session belongs to a different account:
+  // recover exactly like an expired session — drop the link and let the
+  // message open a fresh design rather than dead-end. ONLY the genuine
+  // refusal restarts (SESSION_NOT_FOUND covers vanished and mismatch,
+  // deliberately indistinguishable) — a transient store error must
+  // propagate and surface, never silently discard the texter's session.
+  try {
+    await claimSessionOwnership(session.id, profile.uid, { stamp: true });
+  } catch (error) {
+    if (error instanceof DesignSessionError && error.code === 'SESSION_NOT_FOUND') {
+      logger.info({
+        event_type: 'sketchbot_sms.round_ownership_refused',
+        phone_last4: phoneLast4(profile.phone),
+        session_id: session.id,
+      });
+      return restartDesign(profile, store, body);
+    }
+    throw error;
   }
 
   if (!isDemoMode()) {

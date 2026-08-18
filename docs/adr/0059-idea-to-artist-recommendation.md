@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Mapping an Idea to artists: extend the hybrid matcher, don't rebuild it
@@ -33,10 +33,9 @@ The proposed weighting (40/30/15/10/5) and the shipped weighting
 
 ## Decision
 
-*(Proposed — four questions below are unresolved and are the owner's calls.)*
-
 Extend the existing hybrid matcher rather than building a second one. The two
-additions that do not exist today and are worth having:
+additions that do not exist today and are worth having, sequenced per the
+owner decisions below:
 
 - **Artist consistency.** An artist with forty blackwork pieces and one with
   three blackwork among thirty color pieces currently score identically on
@@ -46,32 +45,39 @@ additions that do not exist today and are worth having:
   the first one, too busy" should push down ornate-heavy artists, not merely
   re-roll an image.
 
-## Open questions
+## Owner decisions (2026-08-11, grilled with Sonnet)
 
-1. **Is visual similarity coming back?** `visualSimilarity` is not visual today.
-   `vectorDbConfig.js` records the migration — "Changed from 1408 (CLIP) → 768
-   (Vertex AI text-embedding-005)" — and `scripts/migrate-to-text-embeddings.js`
-   states the reason: better semantic matching between user queries and artist
-   specialties. `embeddingService.ts` is text-only and validates 768 dimensions.
-   Weighting 40% on vision means reversing that migration, which may well be
-   right, but is a decision and not a tuning change. The `DEFAULT_WEIGHTS`
-   comment still claims CLIP and is stale either way.
+1. **Visual similarity: don't reverse the migration blind.** Keep text
+   embeddings live, stand up image embeddings alongside them, and let real
+   match/click data pick the weighting once it exists. Reversing the CLIP→text
+   migration outright was rejected — nothing has shown image embeddings work
+   better for this product, and the migration note says text was chosen
+   because it matched user queries better. Running both in parallel does mean
+   maintaining two embedding pipelines for a while; that cost is not yet
+   sized and is an open risk.
 
-2. **Portfolio image sourcing is out of scope here.** Which posts may be
-   embedded, and on what basis, is deferred to the existing portfolio ADRs
-   (ADR-0037, ADR-0042, ADR-0043, ADR-0025) rather than re-decided in this one.
-   Nothing in this ADR grants a source it does not already have.
+2. **Portfolio image sourcing stays out of scope**, deferred to ADR-0037,
+   ADR-0042, ADR-0043, ADR-0025 as originally proposed. Not re-litigated.
 
-3. **How are weights chosen with no interaction data?** Nobody has clicked an
-   artist. The shipped weights are guesses; a fifth term at 5% granularity is
-   precision nothing has earned. The Idea graph is what eventually makes fitting
-   them possible — which argues for fewer terms until it exists.
+3. **Weights: collapse now, split later.** Ship with fewer, coarser weight
+   categories instead of five precise terms at 5% granularity — that
+   precision is a guess dressed up as a measurement when nobody has ever
+   clicked a recommended artist. Revisit granularity once real interaction
+   data exists to fit against.
 
-4. **Does novelty belong in the score at all?** `randomVariety` already injects
-   `Math.random()` at 5%, so the same query never ranks quite the same twice.
-   The comment owns it as noise rather than signal. "Novelty" in the proposal
-   may mean something sharper — deliberate exposure of unfamiliar artists —
-   which is a different mechanism from a random tiebreak.
+4. **Novelty: drop the random slot, don't dress it up.** `randomVariety`'s
+   `Math.random()` term is noise, not signal, and is removed from the score
+   entirely. If a genuine "deliberate exposure to unfamiliar artists" feature
+   gets built later, it is a distinct discovery mechanism, not a score weight
+   — and it is not scheduled by this ADR.
+
+5. **Build order: negative signals before artist consistency.** Both are real
+   builds, not tuning, and nothing forces them together. Negative signals
+   (`REJECTED_DESCRIPTOR` feedback pushing down matching artists) go first —
+   it depends on ADR-0058's faceted vocabulary, which is already staffed and
+   in flight, and it closes a gap users feel today ("hate it, too busy"
+   currently does nothing but re-roll an image). Artist consistency (portfolio
+   specialization signal) is next in line, with no owner or date yet.
 
 ## Rejected
 
@@ -86,6 +92,10 @@ additions that do not exist today and are worth having:
 Evidence posts are the missing half of an explanation that already half-exists —
 `generateMatchReasoning` says why, but shows nothing.
 
-If visual similarity stays text-based, the faceted vocabulary of ADR-0058 is
-carrying more of the matching load than the proposal assumes, and the ontology
-migration becomes the higher-leverage work.
+Text embeddings stay the load-bearing signal until image embeddings are stood
+up and data says otherwise — the faceted vocabulary of ADR-0058 continues
+carrying more of the matching load than the original proposal assumed.
+
+The score's weight categories will be collapsed and `randomVariety` removed as
+a follow-up change to `scoreAggregation.js`, separate from the negative-signals
+and artist-consistency builds.

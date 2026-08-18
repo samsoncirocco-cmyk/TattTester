@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyApiAuth } from '@/lib/api-auth';
-import { converse } from '@/services/designSession';
+import { verifyApiAuthWithUser } from '@/lib/api-auth';
+import { claimSessionOwnership, converse } from '@/services/designSession';
 import { rateLimit, rateLimitResponse } from '@/lib/rate-limit';
 import { recordConversationTurnSpend } from '@/lib/budget-tracker';
 import { createRequestLogger } from '@/lib/logger';
@@ -30,8 +30,8 @@ export async function POST(req: NextRequest) {
     // Setup lives inside the try so an auth/rate failure still returns the
     // structured error envelope and logs, instead of escaping as a bare 500.
     try {
-        const authError = await verifyApiAuth(req);
-        if (authError) return authError;
+        const auth = await verifyApiAuthWithUser(req);
+        if (auth.error) return auth.error;
 
         const demoMode = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
 
@@ -64,6 +64,14 @@ export async function POST(req: NextRequest) {
                 'message is required when continuing a conversation',
                 'INVALID_MESSAGE'
             );
+        }
+
+        // Ownership guard (#338 item 1): a continuing turn on an owned
+        // session refuses any other uid with 404. An opening call has no
+        // session yet, and an unowned session stays capability-model until
+        // its first charged action stamps an owner.
+        if (typeof sessionId === 'string') {
+            await claimSessionOwnership(sessionId.trim(), auth.user.uid, { stamp: false });
         }
 
         const response = await converse({

@@ -5,8 +5,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextResponse } from 'next/server';
 import { makeRequest, makeSession, routeParams } from './helpers';
 
-const { recordPickMock, rateLimitMock, rateLimitResponseMock, verifyApiAuthMock } = vi.hoisted(() => ({
+const { recordPickMock, claimOwnershipMock, rateLimitMock, rateLimitResponseMock, verifyApiAuthMock } = vi.hoisted(() => ({
   recordPickMock: vi.fn(),
+  claimOwnershipMock: vi.fn(),
   rateLimitMock: vi.fn(),
   rateLimitResponseMock: vi.fn(),
   verifyApiAuthMock: vi.fn()
@@ -15,12 +16,13 @@ const { recordPickMock, rateLimitMock, rateLimitResponseMock, verifyApiAuthMock 
 vi.mock('@/services/designSession', () => ({
   startSession: vi.fn(),
   recordPick: recordPickMock,
+  claimSessionOwnership: claimOwnershipMock,
   refine: vi.fn(),
   getSession: vi.fn()
 }));
 
 vi.mock('@/lib/api-auth', () => ({
-  verifyApiAuth: verifyApiAuthMock
+  verifyApiAuthWithUser: verifyApiAuthMock
 }));
 
 vi.mock('@/lib/rate-limit', () => ({
@@ -49,7 +51,7 @@ const URL = 'http://localhost/api/v1/design-session/sess-1/pick';
 describe('POST /api/v1/design-session/[id]/pick route adapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    verifyApiAuthMock.mockResolvedValue(null);
+    verifyApiAuthMock.mockResolvedValue({ error: null, user: { uid: 'uid-1' } });
     rateLimitMock.mockResolvedValue({ allowed: true });
   });
 
@@ -150,7 +152,7 @@ describe('POST /api/v1/design-session/[id]/pick route adapter', () => {
 
   it('returns the auth failure untouched and never reaches the service', async () => {
     const denied = NextResponse.json({ error: 'Invalid authorization token', code: 'AUTH_INVALID' }, { status: 401 });
-    verifyApiAuthMock.mockResolvedValueOnce(denied);
+    verifyApiAuthMock.mockResolvedValueOnce({ error: denied });
 
     const res = await POST(
       makeRequest(URL, { pickId: 'var-2', mostNotYouId: 'var-3' }),
@@ -173,6 +175,22 @@ describe('POST /api/v1/design-session/[id]/pick route adapter', () => {
 
     expect(res.status).toBe(500);
     expect(await res.json()).toMatchObject({ code: 'DESIGN_SESSION_FAILED', retryable: false });
+    expect(recordPickMock).not.toHaveBeenCalled();
+  });
+
+  it('guards ownership without stamping — a stranger gets 404, an unowned session stays unbound (#338 item 1)', async () => {
+    claimOwnershipMock.mockRejectedValueOnce(
+      Object.assign(new Error('No design session'), { code: 'SESSION_NOT_FOUND', status: 404 })
+    );
+
+    const res = await POST(
+      makeRequest(URL, { pickId: 'var-1', mostNotYouId: 'var-2' }),
+      routeParams('sess-1')
+    );
+
+    expect(res.status).toBe(404);
+    // A free pick guards but never binds — stamping is a charged-action right.
+    expect(claimOwnershipMock).toHaveBeenCalledWith('sess-1', 'uid-1', { stamp: false });
     expect(recordPickMock).not.toHaveBeenCalled();
   });
 });

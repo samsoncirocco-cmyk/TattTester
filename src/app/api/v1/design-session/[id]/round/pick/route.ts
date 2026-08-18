@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyApiAuth } from '@/lib/api-auth';
-import { recordRoundPick } from '@/services/designSession';
+import { verifyApiAuthWithUser } from '@/lib/api-auth';
+import { claimSessionOwnership, recordRoundPick } from '@/services/designSession';
 import { rateLimit, rateLimitResponse } from '@/lib/rate-limit';
 import { createRequestLogger } from '@/lib/logger';
 import { designSessionErrorResponse, invalidRequestResponse } from '../../../shared';
@@ -24,8 +24,8 @@ export async function POST(
     let sessionId = 'unknown';
 
     try {
-        const authError = await verifyApiAuth(req);
-        if (authError) return authError;
+        const auth = await verifyApiAuthWithUser(req);
+        if (auth.error) return auth.error;
 
         const rateResult = await rateLimit(req, 'default');
         if (!rateResult.allowed) {
@@ -33,6 +33,12 @@ export async function POST(
         }
 
         ({ id: sessionId } = await params);
+
+        // Ownership guard (#338 item 1): an owned session refuses any other
+        // uid with 404. Uncharged, so no stamp — the session stays unbound
+        // until its first charged action.
+        await claimSessionOwnership(sessionId, auth.user.uid, { stamp: false });
+
         const body = await req.json().catch(() => ({}));
         const { pickedId } = body;
 
