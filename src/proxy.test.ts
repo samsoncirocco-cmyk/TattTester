@@ -67,11 +67,12 @@ describe('host routing (TAT-46)', () => {
       expect(rewriteTarget(res)).toContain('/image2ink');
     });
 
-    it('treats www.image2ink.com the same as the apex', async () => {
+    it('301s www.image2ink.com to the apex instead of serving the door', async () => {
       const res = await proxy(
         pageRequest('https://www.image2ink.com/', 'www.image2ink.com')
       );
-      expect(rewriteTarget(res)).toContain('/image2ink');
+      expect(res.status).toBe(301);
+      expect(res.headers.get('location')).toBe('https://image2ink.com/');
     });
 
     it('301s every other path to the canonical host, preserving path + query', async () => {
@@ -118,6 +119,24 @@ describe('host routing (TAT-46)', () => {
       );
       expect(res.status).toBe(301);
       expect(res.headers.get('location')).toBe('https://tatttester.com/pricing');
+    });
+  });
+
+  describe('www — duplicate indexable origin (#81)', () => {
+    it('301s www.tatttester.com to the apex, preserving path + query', async () => {
+      const res = await proxy(
+        pageRequest('https://www.tatttester.com/x?q=1', 'www.tatttester.com')
+      );
+      expect(res.status).toBe(301);
+      expect(res.headers.get('location')).toBe('https://tatttester.com/x?q=1');
+    });
+
+    it('301s the www root to the apex root', async () => {
+      const res = await proxy(
+        pageRequest('https://www.tatttester.com/', 'www.tatttester.com')
+      );
+      expect(res.status).toBe(301);
+      expect(res.headers.get('location')).toBe('https://tatttester.com/');
     });
   });
 
