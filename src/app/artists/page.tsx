@@ -3,6 +3,7 @@ import StudioShell from "@/components/studio/StudioShell";
 import ArtistCard from "@/components/punk/ArtistCard";
 import SlashHeadline from "@/components/punk/SlashHeadline";
 import RosterControls from "./RosterControls";
+import { pickHeroImage } from "@/lib/hero-image";
 import {
   browseArtists,
   ROSTER_STYLES,
@@ -83,7 +84,7 @@ export default async function ArtistsPage({
                 name={a.name}
                 city={a.location}
                 color={COLORS[i % COLORS.length]}
-                image={a.portfolioImages[0] ?? undefined}
+                image={pickHeroImage(a.portfolioImages) ?? undefined}
                 handle={a.instagram ?? undefined}
                 style={a.styles[0] ?? ""}
                 showFavorite
