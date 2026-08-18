@@ -47,12 +47,12 @@ describe('synthetic artist generator vocabulary', () => {
 
     const graph = formatForNeo4j([fixture]);
     expect(graph.nodes.styles.map((style) => style.name).sort()).toEqual([
-      'Japanese (Irezumi)',
+      'Japanese',
       'Realism',
       'Traditional',
     ]);
     expect(graph.relationships.SPECIALIZES_IN.map((relationship) => relationship.to).sort()).toEqual([
-      'Japanese (Irezumi)',
+      'Japanese',
       'Realism',
       'Traditional',
     ]);
