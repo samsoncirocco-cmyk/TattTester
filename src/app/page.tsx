@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import StudioShell from "@/components/studio/StudioShell";
 import SlashHeadline from "@/components/punk/SlashHeadline";
@@ -16,6 +17,13 @@ import { EXAMPLE_DESIGNS } from "@/lib/example-designs";
 // removed artist lingers for up to a minute instead of indefinitely.
 // See src/lib/featured-artists.ts and docs/adr/0025.
 export const revalidate = 60;
+
+// The layout's relative `canonical: "./"` resolves to "/index" for the root
+// page (Next.js quirk), which is not a real URL. Pin the homepage canonical
+// to "/" explicitly; every other page keeps the layout's relative behavior.
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+};
 
 const STEPS = [
   {
