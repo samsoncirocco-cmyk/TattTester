@@ -1,0 +1,958 @@
+{
+  "sweeps": {
+    "backfill-postcount-2026-08-17": {
+      "actorRuns": [
+        {
+          "accountedChargedEventCounts": {
+            "about-account": 0,
+            "profile": 49
+          },
+          "actId": "dSCLg0C3YEZ83HzYX",
+          "actor": "apify~instagram-profile-scraper",
+          "attemptId": "4201f88df0e94b3b9c9f564151ada107",
+          "buildId": "lZnJdbcLE7hhdafj8",
+          "buildNumber": "0.0.570",
+          "chargedEventCounts": {
+            "about-account": 0,
+            "profile": 49
+          },
+          "consoleUrl": "https://console.apify.com/view/runs/d3cLH8n5Se4jP3LSS",
+          "containerUrl": "https://jseyyfoa6cax.runs.apify.net",
+          "defaultDatasetId": "NMvpvd9rAdc0lclzk",
+          "defaultKeyValueStoreId": "ziKfIpawsgfGZD3UL",
+          "defaultRequestQueueId": "156CvzdegCzDkXRSq",
+          "eventUsage": {
+            "about-account": {
+              "eventTitle": "Add-on: About account",
+              "eventTotalUsd": 0
+            },
+            "profile": {
+              "eventTitle": "Profile",
+              "eventTotalUsd": 0.1127
+            }
+          },
+          "exitCode": 0,
+          "finishedAt": "2026-08-17T22:16:35.836Z",
+          "generalAccess": "FOLLOW_USER_SETTING",
+          "id": "d3cLH8n5Se4jP3LSS",
+          "isStatusMessageTerminal": null,
+          "meta": {
+            "origin": "API",
+            "userAgent": "Python-urllib/3.14"
+          },
+          "operation": "enrich-candidates:250:50",
+          "options": {
+            "build": "latest",
+            "diskMbytes": 2048,
+            "isMaxTotalChargeUsdSetByUser": false,
+            "maxItems": null,
+            "maxTotalChargeUsd": 0.89427,
+            "memoryMbytes": 1024,
+            "timeoutSecs": 30000
+          },
+          "output": {
+            "dataset": "https://api.apify.com/v2/datasets/NMvpvd9rAdc0lclzk/items"
+          },
+          "platformUsageBillingModel": "DEVELOPER",
+          "pricingInfo": {
+            "apifyMarginPercentage": 0.2,
+            "createdAt": "2026-02-17T17:10:00.438Z",
+            "isPriceChangeNotificationSuppressed": true,
+            "minimalMaxTotalChargeUsd": 0.0026,
+            "pricingModel": "PAY_PER_EVENT",
+            "pricingPerEvent": {
+              "actorChargeEvents": {
+                "about-account": {
+                  "eventDescription": "Extra cost per profile scraped with account information. This includes the date joined and the country of the account. Be aware that the county is scraped only if the user filled in this information.",
+                  "eventPriceUsd": 0.006,
+                  "eventTitle": "Add-on: About account",
+                  "isOneTimeEvent": false
+                },
+                "profile": {
+                  "eventDescription": "Each profile written to the dataset.",
+                  "eventPriceUsd": 0.0023,
+                  "eventTitle": "Profile",
+                  "isOneTimeEvent": false,
+                  "isPrimaryEvent": true
+                }
+              }
+            },
+            "startedAt": "2026-02-17T17:10:00.438Z"
+          },
+          "spendStatus": "identified",
+          "standby": null,
+          "startedAt": "2026-08-17T22:15:35.522Z",
+          "stats": {
+            "computeUnits": 0.016714166666666665,
+            "cpuAvgUsage": 5.628290042545235,
+            "cpuCurrentUsage": 0,
+            "cpuMaxUsage": 88.27145877378435,
+            "durationMillis": 60171,
+            "inputBodyLen": 872,
+            "memAvgBytes": 114398324.61956142,
+            "memCurrentBytes": 0,
+            "memMaxBytes": 130306048,
+            "metamorph": 0,
+            "migrationCount": 0,
+            "netRxBytes": 3714875,
+            "netTxBytes": 1481943,
+            "rebootCount": 0,
+            "restartCount": 0,
+            "resurrectCount": 0,
+            "runTimeSecs": 60.171
+          },
+          "status": "SUCCEEDED",
+          "statusMessage": "Crawled 49/50 pages, 0 failed requests, desired concurrency 32.",
+          "storageIds": {
+            "datasets": {
+              "default": "NMvpvd9rAdc0lclzk"
+            },
+            "keyValueStores": {
+              "default": "ziKfIpawsgfGZD3UL"
+            },
+            "requestQueues": {
+              "default": "156CvzdegCzDkXRSq"
+            }
+          },
+          "terminal": true,
+          "usageTotalUsd": 0.1127,
+          "userId": "ywTXmH9XAKSvDCdfH"
+        },
+        {
+          "accountedChargedEventCounts": {
+            "about-account": 0,
+            "profile": 49
+          },
+          "actId": "dSCLg0C3YEZ83HzYX",
+          "actor": "apify~instagram-profile-scraper",
+          "attemptId": "49539b386afb4b7ebf727ca440f41e1c",
+          "buildId": "lZnJdbcLE7hhdafj8",
+          "buildNumber": "0.0.570",
+          "chargedEventCounts": {
+            "about-account": 0,
+            "profile": 49
+          },
+          "consoleUrl": "https://console.apify.com/view/runs/A2fb6mnMTcXuwX73B",
+          "containerUrl": "https://xpn9fjhuka1f.runs.apify.net",
+          "defaultDatasetId": "HEblf3SArDN8cJZ9g",
+          "defaultKeyValueStoreId": "a3phmtwsK4EP1n9wh",
+          "defaultRequestQueueId": "LKLsHU2KOZUo5kOGt",
+          "eventUsage": {
+            "about-account": {
+              "eventTitle": "Add-on: About account",
+              "eventTotalUsd": 0
+            },
+            "profile": {
+              "eventTitle": "Profile",
+              "eventTotalUsd": 0.1127
+            }
+          },
+          "exitCode": 0,
+          "finishedAt": "2026-08-17T22:13:06.373Z",
+          "generalAccess": "FOLLOW_USER_SETTING",
+          "id": "A2fb6mnMTcXuwX73B",
+          "isStatusMessageTerminal": null,
+          "meta": {
+            "origin": "API",
+            "userAgent": "Python-urllib/3.14"
+          },
+          "operation": "enrich-candidates:50:50",
+          "options": {
+            "build": "latest",
+            "diskMbytes": 2048,
+            "isMaxTotalChargeUsdSetByUser": false,
+            "maxItems": null,
+            "maxTotalChargeUsd": 1.244098,
+            "memoryMbytes": 1024,
+            "timeoutSecs": 30000
+          },
+          "output": {
+            "dataset": "https://api.apify.com/v2/datasets/HEblf3SArDN8cJZ9g/items"
+          },
+          "platformUsageBillingModel": "DEVELOPER",
+          "pricingInfo": {
+            "apifyMarginPercentage": 0.2,
+            "createdAt": "2026-02-17T17:10:00.438Z",
+            "isPriceChangeNotificationSuppressed": true,
+            "minimalMaxTotalChargeUsd": 0.0026,
+            "pricingModel": "PAY_PER_EVENT",
+            "pricingPerEvent": {
+              "actorChargeEvents": {
+                "about-account": {
+                  "eventDescription": "Extra cost per profile scraped with account information. This includes the date joined and the country of the account. Be aware that the county is scraped only if the user filled in this information.",
+                  "eventPriceUsd": 0.006,
+                  "eventTitle": "Add-on: About account",
+                  "isOneTimeEvent": false
+                },
+                "profile": {
+                  "eventDescription": "Each profile written to the dataset.",
+                  "eventPriceUsd": 0.0023,
+                  "eventTitle": "Profile",
+                  "isOneTimeEvent": false,
+                  "isPrimaryEvent": true
+                }
+              }
+            },
+            "startedAt": "2026-02-17T17:10:00.438Z"
+          },
+          "spendStatus": "identified",
+          "standby": null,
+          "startedAt": "2026-08-17T22:12:23.090Z",
+          "stats": {
+            "computeUnits": 0.011981666666666667,
+            "cpuAvgUsage": 7.690836819693007,
+            "cpuCurrentUsage": 0,
+            "cpuMaxUsage": 82.53505853357979,
+            "durationMillis": 43134,
+            "inputBodyLen": 818,
+            "memAvgBytes": 110824068.1285878,
+            "memCurrentBytes": 0,
+            "memMaxBytes": 127873024,
+            "metamorph": 0,
+            "migrationCount": 0,
+            "netRxBytes": 3123264,
+            "netTxBytes": 1260875,
+            "rebootCount": 0,
+            "restartCount": 0,
+            "resurrectCount": 0,
+            "runTimeSecs": 43.134
+          },
+          "status": "SUCCEEDED",
+          "statusMessage": "Crawled 49/50 pages, 0 failed requests, desired concurrency 32.",
+          "storageIds": {
+            "datasets": {
+              "default": "HEblf3SArDN8cJZ9g"
+            },
+            "keyValueStores": {
+              "default": "a3phmtwsK4EP1n9wh"
+            },
+            "requestQueues": {
+              "default": "LKLsHU2KOZUo5kOGt"
+            }
+          },
+          "terminal": true,
+          "usageTotalUsd": 0.1127,
+          "userId": "ywTXmH9XAKSvDCdfH"
+        },
+        {
+          "accountedChargedEventCounts": {
+            "about-account": 0,
+            "profile": 49
+          },
+          "actId": "dSCLg0C3YEZ83HzYX",
+          "actor": "apify~instagram-profile-scraper",
+          "attemptId": "644d5faeeec040ce9ee56ff393062c04",
+          "buildId": "lZnJdbcLE7hhdafj8",
+          "buildNumber": "0.0.570",
+          "chargedEventCounts": {
+            "about-account": 0,
+            "profile": 49
+          },
+          "consoleUrl": "https://console.apify.com/view/runs/eFS0swPfzPzOkrw1r",
+          "containerUrl": "https://rifbjnm8hqpr.runs.apify.net",
+          "defaultDatasetId": "1skrbL685Gled4ZJX",
+          "defaultKeyValueStoreId": "CQu3NCwWSUENValFK",
+          "defaultRequestQueueId": "pmc9s0krQUnM6H3NS",
+          "eventUsage": {
+            "about-account": {
+              "eventTitle": "Add-on: About account",
+              "eventTotalUsd": 0
+            },
+            "profile": {
+              "eventTitle": "Profile",
+              "eventTotalUsd": 0.1127
+            }
+          },
+          "exitCode": 0,
+          "finishedAt": "2026-08-17T22:14:41.530Z",
+          "generalAccess": "FOLLOW_USER_SETTING",
+          "id": "eFS0swPfzPzOkrw1r",
+          "isStatusMessageTerminal": null,
+          "meta": {
+            "origin": "API",
+            "userAgent": "Python-urllib/3.14"
+          },
+          "operation": "enrich-candidates:150:50",
+          "options": {
+            "build": "latest",
+            "diskMbytes": 2048,
+            "isMaxTotalChargeUsdSetByUser": false,
+            "maxItems": null,
+            "maxTotalChargeUsd": 0.89427,
+            "memoryMbytes": 1024,
+            "timeoutSecs": 30000
+          },
+          "output": {
+            "dataset": "https://api.apify.com/v2/datasets/1skrbL685Gled4ZJX/items"
+          },
+          "platformUsageBillingModel": "DEVELOPER",
+          "pricingInfo": {
+            "apifyMarginPercentage": 0.2,
+            "createdAt": "2026-02-17T17:10:00.438Z",
+            "isPriceChangeNotificationSuppressed": true,
+            "minimalMaxTotalChargeUsd": 0.0026,
+            "pricingModel": "PAY_PER_EVENT",
+            "pricingPerEvent": {
+              "actorChargeEvents": {
+                "about-account": {
+                  "eventDescription": "Extra cost per profile scraped with account information. This includes the date joined and the country of the account. Be aware that the county is scraped only if the user filled in this information.",
+                  "eventPriceUsd": 0.006,
+                  "eventTitle": "Add-on: About account",
+                  "isOneTimeEvent": false
+                },
+                "profile": {
+                  "eventDescription": "Each profile written to the dataset.",
+                  "eventPriceUsd": 0.0023,
+                  "eventTitle": "Profile",
+                  "isOneTimeEvent": false,
+                  "isPrimaryEvent": true
+                }
+              }
+            },
+            "startedAt": "2026-02-17T17:10:00.438Z"
+          },
+          "spendStatus": "identified",
+          "standby": null,
+          "startedAt": "2026-08-17T22:14:16.678Z",
+          "stats": {
+            "computeUnits": 0.006856666666666666,
+            "cpuAvgUsage": 10.752864560781765,
+            "cpuCurrentUsage": 0.8130362487529099,
+            "cpuMaxUsage": 62.34264884568651,
+            "durationMillis": 24684,
+            "inputBodyLen": 815,
+            "memAvgBytes": 115312820.66959392,
+            "memCurrentBytes": 114778112,
+            "memMaxBytes": 132427776,
+            "metamorph": 0,
+            "migrationCount": 0,
+            "netRxBytes": 3582161,
+            "netTxBytes": 1365223,
+            "rebootCount": 0,
+            "restartCount": 0,
+            "resurrectCount": 0,
+            "runTimeSecs": 24.684
+          },
+          "status": "SUCCEEDED",
+          "statusMessage": "Scraper finished",
+          "storageIds": {
+            "datasets": {
+              "default": "1skrbL685Gled4ZJX"
+            },
+            "keyValueStores": {
+              "default": "CQu3NCwWSUENValFK"
+            },
+            "requestQueues": {
+              "default": "pmc9s0krQUnM6H3NS"
+            }
+          },
+          "terminal": true,
+          "usageTotalUsd": 0.1127,
+          "userId": "ywTXmH9XAKSvDCdfH"
+        },
+        {
+          "accountedChargedEventCounts": {
+            "about-account": 0,
+            "profile": 40
+          },
+          "actId": "dSCLg0C3YEZ83HzYX",
+          "actor": "apify~instagram-profile-scraper",
+          "attemptId": "861468987e8f45ecb6557127297d4c3a",
+          "buildId": "lZnJdbcLE7hhdafj8",
+          "buildNumber": "0.0.570",
+          "chargedEventCounts": {
+            "about-account": 0,
+            "profile": 48
+          },
+          "consoleUrl": "https://console.apify.com/view/runs/XMinCeriQMGV0bKFL",
+          "containerUrl": "https://rdpfkwykh2wa.runs.apify.net",
+          "defaultDatasetId": "3ETlwcRLwZvR73zTk",
+          "defaultKeyValueStoreId": "MA6tVFNEXTXbvZZy6",
+          "defaultRequestQueueId": "4mcrmc2NLd3X9InwZ",
+          "eventUsage": {
+            "about-account": {
+              "eventTitle": "Add-on: About account",
+              "eventTotalUsd": 0
+            },
+            "profile": {
+              "eventTitle": "Profile",
+              "eventTotalUsd": 0.092
+            }
+          },
+          "exitCode": 0,
+          "finishedAt": "2026-08-17T22:12:21.359Z",
+          "generalAccess": "FOLLOW_USER_SETTING",
+          "id": "XMinCeriQMGV0bKFL",
+          "isStatusMessageTerminal": null,
+          "meta": {
+            "origin": "API",
+            "userAgent": "Python-urllib/3.14"
+          },
+          "operation": "enrich-candidates:0:50",
+          "options": {
+            "build": "latest",
+            "diskMbytes": 2048,
+            "isMaxTotalChargeUsdSetByUser": false,
+            "maxItems": null,
+            "maxTotalChargeUsd": 1.244098,
+            "memoryMbytes": 1024,
+            "timeoutSecs": 30000
+          },
+          "output": {
+            "dataset": "https://api.apify.com/v2/datasets/3ETlwcRLwZvR73zTk/items"
+          },
+          "platformUsageBillingModel": "DEVELOPER",
+          "pricingInfo": {
+            "apifyMarginPercentage": 0.2,
+            "createdAt": "2026-02-17T17:10:00.438Z",
+            "isPriceChangeNotificationSuppressed": true,
+            "minimalMaxTotalChargeUsd": 0.0026,
+            "pricingModel": "PAY_PER_EVENT",
+            "pricingPerEvent": {
+              "actorChargeEvents": {
+                "about-account": {
+                  "eventDescription": "Extra cost per profile scraped with account information. This includes the date joined and the country of the account. Be aware that the county is scraped only if the user filled in this information.",
+                  "eventPriceUsd": 0.006,
+                  "eventTitle": "Add-on: About account",
+                  "isOneTimeEvent": false
+                },
+                "profile": {
+                  "eventDescription": "Each profile written to the dataset.",
+                  "eventPriceUsd": 0.0023,
+                  "eventTitle": "Profile",
+                  "isOneTimeEvent": false,
+                  "isPrimaryEvent": true
+                }
+              }
+            },
+            "startedAt": "2026-02-17T17:10:00.438Z"
+          },
+          "spendStatus": "identified",
+          "standby": null,
+          "startedAt": "2026-08-17T22:11:54.569Z",
+          "stats": {
+            "computeUnits": 0.007367222222222222,
+            "cpuAvgUsage": 13.053920116914746,
+            "cpuCurrentUsage": 0,
+            "cpuMaxUsage": 45.17308905852418,
+            "durationMillis": 26522,
+            "inputBodyLen": 827,
+            "memAvgBytes": 115682354.67747162,
+            "memCurrentBytes": 0,
+            "memMaxBytes": 125448192,
+            "metamorph": 0,
+            "migrationCount": 0,
+            "netRxBytes": 3346928,
+            "netTxBytes": 1418914,
+            "rebootCount": 0,
+            "restartCount": 0,
+            "resurrectCount": 0,
+            "runTimeSecs": 26.522
+          },
+          "status": "SUCCEEDED",
+          "statusMessage": "Scraper finished",
+          "storageIds": {
+            "datasets": {
+              "default": "3ETlwcRLwZvR73zTk"
+            },
+            "keyValueStores": {
+              "default": "MA6tVFNEXTXbvZZy6"
+            },
+            "requestQueues": {
+              "default": "4mcrmc2NLd3X9InwZ"
+            }
+          },
+          "terminal": true,
+          "usageTotalUsd": 0.092,
+          "userId": "ywTXmH9XAKSvDCdfH"
+        },
+        {
+          "accountedChargedEventCounts": {
+            "about-account": 0,
+            "profile": 31
+          },
+          "actId": "dSCLg0C3YEZ83HzYX",
+          "actor": "apify~instagram-profile-scraper",
+          "attemptId": "9e1ef5c9e7b2466ea218d79e34c6de88",
+          "buildId": "lZnJdbcLE7hhdafj8",
+          "buildNumber": "0.0.570",
+          "chargedEventCounts": {
+            "about-account": 0,
+            "profile": 37
+          },
+          "consoleUrl": "https://console.apify.com/view/runs/heyUQ6mjLeQvn0xyc",
+          "containerUrl": "https://447jc5lkxgv7.runs.apify.net",
+          "defaultDatasetId": "CqBshVKDu07RaibUC",
+          "defaultKeyValueStoreId": "biltaFKG1jtw5MK4R",
+          "defaultRequestQueueId": "lkETvyNhbKDqNNpDv",
+          "eventUsage": {
+            "about-account": {
+              "eventTitle": "Add-on: About account",
+              "eventTotalUsd": 0
+            },
+            "profile": {
+              "eventTitle": "Profile",
+              "eventTotalUsd": 0.0713
+            }
+          },
+          "exitCode": 0,
+          "finishedAt": "2026-08-17T22:17:01.576Z",
+          "generalAccess": "FOLLOW_USER_SETTING",
+          "id": "heyUQ6mjLeQvn0xyc",
+          "isStatusMessageTerminal": null,
+          "meta": {
+            "origin": "API",
+            "userAgent": "Python-urllib/3.14"
+          },
+          "operation": "enrich-candidates:300:38",
+          "options": {
+            "build": "latest",
+            "diskMbytes": 2048,
+            "isMaxTotalChargeUsdSetByUser": false,
+            "maxItems": null,
+            "maxTotalChargeUsd": 0.89427,
+            "memoryMbytes": 1024,
+            "timeoutSecs": 30000
+          },
+          "output": {
+            "dataset": "https://api.apify.com/v2/datasets/CqBshVKDu07RaibUC/items"
+          },
+          "platformUsageBillingModel": "DEVELOPER",
+          "pricingInfo": {
+            "apifyMarginPercentage": 0.2,
+            "createdAt": "2026-02-17T17:10:00.438Z",
+            "isPriceChangeNotificationSuppressed": true,
+            "minimalMaxTotalChargeUsd": 0.0026,
+            "pricingModel": "PAY_PER_EVENT",
+            "pricingPerEvent": {
+              "actorChargeEvents": {
+                "about-account": {
+                  "eventDescription": "Extra cost per profile scraped with account information. This includes the date joined and the country of the account. Be aware that the county is scraped only if the user filled in this information.",
+                  "eventPriceUsd": 0.006,
+                  "eventTitle": "Add-on: About account",
+                  "isOneTimeEvent": false
+                },
+                "profile": {
+                  "eventDescription": "Each profile written to the dataset.",
+                  "eventPriceUsd": 0.0023,
+                  "eventTitle": "Profile",
+                  "isOneTimeEvent": false,
+                  "isPrimaryEvent": true
+                }
+              }
+            },
+            "startedAt": "2026-02-17T17:10:00.438Z"
+          },
+          "spendStatus": "identified",
+          "standby": null,
+          "startedAt": "2026-08-17T22:16:39.304Z",
+          "stats": {
+            "computeUnits": 0.0061355555555555556,
+            "cpuAvgUsage": 10.334828839851168,
+            "cpuCurrentUsage": 0,
+            "cpuMaxUsage": 62.51070925825664,
+            "durationMillis": 22088,
+            "inputBodyLen": 644,
+            "memAvgBytes": 111130649.52895847,
+            "memCurrentBytes": 0,
+            "memMaxBytes": 124116992,
+            "metamorph": 0,
+            "migrationCount": 0,
+            "netRxBytes": 2559574,
+            "netTxBytes": 996588,
+            "rebootCount": 0,
+            "restartCount": 0,
+            "resurrectCount": 0,
+            "runTimeSecs": 22.088
+          },
+          "status": "SUCCEEDED",
+          "statusMessage": "Crawled 37/38 pages, 0 failed requests, desired concurrency 32.",
+          "storageIds": {
+            "datasets": {
+              "default": "CqBshVKDu07RaibUC"
+            },
+            "keyValueStores": {
+              "default": "biltaFKG1jtw5MK4R"
+            },
+            "requestQueues": {
+              "default": "lkETvyNhbKDqNNpDv"
+            }
+          },
+          "terminal": true,
+          "usageTotalUsd": 0.0713,
+          "userId": "ywTXmH9XAKSvDCdfH"
+        },
+        {
+          "accountedChargedEventCounts": {
+            "about-account": 0,
+            "profile": 49
+          },
+          "actId": "dSCLg0C3YEZ83HzYX",
+          "actor": "apify~instagram-profile-scraper",
+          "attemptId": "c54d6888836d4d23b437fe71da839705",
+          "buildId": "lZnJdbcLE7hhdafj8",
+          "buildNumber": "0.0.570",
+          "chargedEventCounts": {
+            "about-account": 0,
+            "profile": 50
+          },
+          "consoleUrl": "https://console.apify.com/view/runs/cyve5xtTrekgiPZaC",
+          "containerUrl": "https://hlvnursypxys.runs.apify.net",
+          "defaultDatasetId": "K3Mdb0TNOo2n8fYTq",
+          "defaultKeyValueStoreId": "cz3DCvxzhIeT8XiiB",
+          "defaultRequestQueueId": "C9Z4zLydTlpdRnG5c",
+          "eventUsage": {
+            "about-account": {
+              "eventTitle": "Add-on: About account",
+              "eventTotalUsd": 0
+            },
+            "profile": {
+              "eventTitle": "Profile",
+              "eventTotalUsd": 0.1127
+            }
+          },
+          "exitCode": 0,
+          "finishedAt": "2026-08-17T22:15:29.596Z",
+          "generalAccess": "FOLLOW_USER_SETTING",
+          "id": "cyve5xtTrekgiPZaC",
+          "isStatusMessageTerminal": null,
+          "meta": {
+            "origin": "API",
+            "userAgent": "Python-urllib/3.14"
+          },
+          "operation": "enrich-candidates:200:50",
+          "options": {
+            "build": "latest",
+            "diskMbytes": 2048,
+            "isMaxTotalChargeUsdSetByUser": false,
+            "maxItems": null,
+            "maxTotalChargeUsd": 0.89427,
+            "memoryMbytes": 1024,
+            "timeoutSecs": 30000
+          },
+          "output": {
+            "dataset": "https://api.apify.com/v2/datasets/K3Mdb0TNOo2n8fYTq/items"
+          },
+          "platformUsageBillingModel": "DEVELOPER",
+          "pricingInfo": {
+            "apifyMarginPercentage": 0.2,
+            "createdAt": "2026-02-17T17:10:00.438Z",
+            "isPriceChangeNotificationSuppressed": true,
+            "minimalMaxTotalChargeUsd": 0.0026,
+            "pricingModel": "PAY_PER_EVENT",
+            "pricingPerEvent": {
+              "actorChargeEvents": {
+                "about-account": {
+                  "eventDescription": "Extra cost per profile scraped with account information. This includes the date joined and the country of the account. Be aware that the county is scraped only if the user filled in this information.",
+                  "eventPriceUsd": 0.006,
+                  "eventTitle": "Add-on: About account",
+                  "isOneTimeEvent": false
+                },
+                "profile": {
+                  "eventDescription": "Each profile written to the dataset.",
+                  "eventPriceUsd": 0.0023,
+                  "eventTitle": "Profile",
+                  "isOneTimeEvent": false,
+                  "isPrimaryEvent": true
+                }
+              }
+            },
+            "startedAt": "2026-02-17T17:10:00.438Z"
+          },
+          "spendStatus": "identified",
+          "standby": null,
+          "startedAt": "2026-08-17T22:14:45.164Z",
+          "stats": {
+            "computeUnits": 0.012304444444444444,
+            "cpuAvgUsage": 9.09069075001345,
+            "cpuCurrentUsage": 0,
+            "cpuMaxUsage": 85.01866666666666,
+            "durationMillis": 44296,
+            "inputBodyLen": 875,
+            "memAvgBytes": 115723245.27234453,
+            "memCurrentBytes": 0,
+            "memMaxBytes": 134414336,
+            "metamorph": 0,
+            "migrationCount": 0,
+            "netRxBytes": 3892697,
+            "netTxBytes": 1614210,
+            "rebootCount": 0,
+            "restartCount": 0,
+            "resurrectCount": 0,
+            "runTimeSecs": 44.296
+          },
+          "status": "SUCCEEDED",
+          "statusMessage": "Crawled 49/50 pages, 0 failed requests, desired concurrency 32.",
+          "storageIds": {
+            "datasets": {
+              "default": "K3Mdb0TNOo2n8fYTq"
+            },
+            "keyValueStores": {
+              "default": "cz3DCvxzhIeT8XiiB"
+            },
+            "requestQueues": {
+              "default": "C9Z4zLydTlpdRnG5c"
+            }
+          },
+          "terminal": true,
+          "usageTotalUsd": 0.1127,
+          "userId": "ywTXmH9XAKSvDCdfH"
+        },
+        {
+          "accountedChargedEventCounts": {
+            "about-account": 0,
+            "profile": 49
+          },
+          "actId": "dSCLg0C3YEZ83HzYX",
+          "actor": "apify~instagram-profile-scraper",
+          "attemptId": "e6b572a48e5a4b3280e70351b36d42f4",
+          "buildId": "lZnJdbcLE7hhdafj8",
+          "buildNumber": "0.0.570",
+          "chargedEventCounts": {
+            "about-account": 0,
+            "profile": 50
+          },
+          "consoleUrl": "https://console.apify.com/view/runs/9dHH6VYw1Tc6TEslW",
+          "containerUrl": "https://jhfebyy0chcp.runs.apify.net",
+          "defaultDatasetId": "8a1TqJSl1iVTj00Lw",
+          "defaultKeyValueStoreId": "5zeEeef3DTWUc5jOy",
+          "defaultRequestQueueId": "Io8RbDoAxClPwaQRP",
+          "eventUsage": {
+            "about-account": {
+              "eventTitle": "Add-on: About account",
+              "eventTotalUsd": 0
+            },
+            "profile": {
+              "eventTitle": "Profile",
+              "eventTotalUsd": 0.1127
+            }
+          },
+          "exitCode": 0,
+          "finishedAt": "2026-08-17T22:14:10.996Z",
+          "generalAccess": "FOLLOW_USER_SETTING",
+          "id": "9dHH6VYw1Tc6TEslW",
+          "isStatusMessageTerminal": true,
+          "meta": {
+            "origin": "API",
+            "userAgent": "Python-urllib/3.14"
+          },
+          "operation": "enrich-candidates:100:50",
+          "options": {
+            "build": "latest",
+            "diskMbytes": 2048,
+            "isMaxTotalChargeUsdSetByUser": false,
+            "maxItems": null,
+            "maxTotalChargeUsd": 1.244098,
+            "memoryMbytes": 1024,
+            "timeoutSecs": 30000
+          },
+          "output": {
+            "dataset": "https://api.apify.com/v2/datasets/8a1TqJSl1iVTj00Lw/items"
+          },
+          "platformUsageBillingModel": "DEVELOPER",
+          "pricingInfo": {
+            "apifyMarginPercentage": 0.2,
+            "createdAt": "2026-02-17T17:10:00.438Z",
+            "isPriceChangeNotificationSuppressed": true,
+            "minimalMaxTotalChargeUsd": 0.0026,
+            "pricingModel": "PAY_PER_EVENT",
+            "pricingPerEvent": {
+              "actorChargeEvents": {
+                "about-account": {
+                  "eventDescription": "Extra cost per profile scraped with account information. This includes the date joined and the country of the account. Be aware that the county is scraped only if the user filled in this information.",
+                  "eventPriceUsd": 0.006,
+                  "eventTitle": "Add-on: About account",
+                  "isOneTimeEvent": false
+                },
+                "profile": {
+                  "eventDescription": "Each profile written to the dataset.",
+                  "eventPriceUsd": 0.0023,
+                  "eventTitle": "Profile",
+                  "isOneTimeEvent": false,
+                  "isPrimaryEvent": true
+                }
+              }
+            },
+            "startedAt": "2026-02-17T17:10:00.438Z"
+          },
+          "spendStatus": "identified",
+          "standby": null,
+          "startedAt": "2026-08-17T22:13:08.759Z",
+          "stats": {
+            "computeUnits": 0.017249444444444446,
+            "cpuAvgUsage": 6.131412084571359,
+            "cpuCurrentUsage": 1.666560781918143,
+            "cpuMaxUsage": 108.09907949790795,
+            "durationMillis": 62098,
+            "inputBodyLen": 797,
+            "memAvgBytes": 116008312.98323622,
+            "memCurrentBytes": 117551104,
+            "memMaxBytes": 130719744,
+            "metamorph": 0,
+            "migrationCount": 0,
+            "netRxBytes": 4070125,
+            "netTxBytes": 1614437,
+            "rebootCount": 0,
+            "restartCount": 0,
+            "resurrectCount": 0,
+            "runTimeSecs": 62.098
+          },
+          "status": "SUCCEEDED",
+          "statusMessage": "Finished! Total 50 requests: 50 succeeded, 0 failed.",
+          "storageIds": {
+            "datasets": {
+              "default": "8a1TqJSl1iVTj00Lw"
+            },
+            "keyValueStores": {
+              "default": "5zeEeef3DTWUc5jOy"
+            },
+            "requestQueues": {
+              "default": "Io8RbDoAxClPwaQRP"
+            }
+          },
+          "terminal": true,
+          "usageTotalUsd": 0.1127,
+          "userId": "ywTXmH9XAKSvDCdfH"
+        }
+      ],
+      "apifyUsageAmbiguousAttemptCount": 0,
+      "apifyUsageKnownSubtotalUsd": 0.7268,
+      "apifyUsageMissingRunCount": 0,
+      "apifyUsageNonterminalRunCount": 0,
+      "apifyUsagePricingStatus": "complete",
+      "apifyUsageTotalUsd": 0.7268,
+      "gcsCostNote": "Capture from the GCS billing export after hosting; not guessed here.",
+      "gcsCostUsd": null,
+      "lastInvocation": {
+        "actorRuns": [
+          {
+            "accountedChargedEventCounts": {
+              "about-account": 0,
+              "profile": 31
+            },
+            "actId": "dSCLg0C3YEZ83HzYX",
+            "actor": "apify~instagram-profile-scraper",
+            "attemptId": "9e1ef5c9e7b2466ea218d79e34c6de88",
+            "buildId": "lZnJdbcLE7hhdafj8",
+            "buildNumber": "0.0.570",
+            "chargedEventCounts": {
+              "about-account": 0,
+              "profile": 37
+            },
+            "consoleUrl": "https://console.apify.com/view/runs/heyUQ6mjLeQvn0xyc",
+            "containerUrl": "https://447jc5lkxgv7.runs.apify.net",
+            "defaultDatasetId": "CqBshVKDu07RaibUC",
+            "defaultKeyValueStoreId": "biltaFKG1jtw5MK4R",
+            "defaultRequestQueueId": "lkETvyNhbKDqNNpDv",
+            "eventUsage": {
+              "about-account": {
+                "eventTitle": "Add-on: About account",
+                "eventTotalUsd": 0
+              },
+              "profile": {
+                "eventTitle": "Profile",
+                "eventTotalUsd": 0.0713
+              }
+            },
+            "exitCode": 0,
+            "finishedAt": "2026-08-17T22:17:01.576Z",
+            "generalAccess": "FOLLOW_USER_SETTING",
+            "id": "heyUQ6mjLeQvn0xyc",
+            "isStatusMessageTerminal": null,
+            "meta": {
+              "origin": "API",
+              "userAgent": "Python-urllib/3.14"
+            },
+            "operation": "enrich-candidates:300:38",
+            "options": {
+              "build": "latest",
+              "diskMbytes": 2048,
+              "isMaxTotalChargeUsdSetByUser": false,
+              "maxItems": null,
+              "maxTotalChargeUsd": 0.89427,
+              "memoryMbytes": 1024,
+              "timeoutSecs": 30000
+            },
+            "output": {
+              "dataset": "https://api.apify.com/v2/datasets/CqBshVKDu07RaibUC/items"
+            },
+            "platformUsageBillingModel": "DEVELOPER",
+            "pricingInfo": {
+              "apifyMarginPercentage": 0.2,
+              "createdAt": "2026-02-17T17:10:00.438Z",
+              "isPriceChangeNotificationSuppressed": true,
+              "minimalMaxTotalChargeUsd": 0.0026,
+              "pricingModel": "PAY_PER_EVENT",
+              "pricingPerEvent": {
+                "actorChargeEvents": {
+                  "about-account": {
+                    "eventDescription": "Extra cost per profile scraped with account information. This includes the date joined and the country of the account. Be aware that the county is scraped only if the user filled in this information.",
+                    "eventPriceUsd": 0.006,
+                    "eventTitle": "Add-on: About account",
+                    "isOneTimeEvent": false
+                  },
+                  "profile": {
+                    "eventDescription": "Each profile written to the dataset.",
+                    "eventPriceUsd": 0.0023,
+                    "eventTitle": "Profile",
+                    "isOneTimeEvent": false,
+                    "isPrimaryEvent": true
+                  }
+                }
+              },
+              "startedAt": "2026-02-17T17:10:00.438Z"
+            },
+            "spendStatus": "identified",
+            "standby": null,
+            "startedAt": "2026-08-17T22:16:39.304Z",
+            "stats": {
+              "computeUnits": 0.0061355555555555556,
+              "cpuAvgUsage": 10.334828839851168,
+              "cpuCurrentUsage": 0,
+              "cpuMaxUsage": 62.51070925825664,
+              "durationMillis": 22088,
+              "inputBodyLen": 644,
+              "memAvgBytes": 111130649.52895847,
+              "memCurrentBytes": 0,
+              "memMaxBytes": 124116992,
+              "metamorph": 0,
+              "migrationCount": 0,
+              "netRxBytes": 2559574,
+              "netTxBytes": 996588,
+              "rebootCount": 0,
+              "restartCount": 0,
+              "resurrectCount": 0,
+              "runTimeSecs": 22.088
+            },
+            "status": "SUCCEEDED",
+            "statusMessage": "Crawled 37/38 pages, 0 failed requests, desired concurrency 32.",
+            "storageIds": {
+              "datasets": {
+                "default": "CqBshVKDu07RaibUC"
+              },
+              "keyValueStores": {
+                "default": "biltaFKG1jtw5MK4R"
+              },
+              "requestQueues": {
+                "default": "lkETvyNhbKDqNNpDv"
+              }
+            },
+            "terminal": true,
+            "usageTotalUsd": 0.0713,
+            "userId": "ywTXmH9XAKSvDCdfH"
+          }
+        ],
+        "slice": {
+          "command": "enrich",
+          "queueRecords": 19332
+        },
+        "summary": {
+          "command": "enrich"
+        }
+      },
+      "lastRunAt": "2026-08-17T22:17:02Z",
+      "startedAt": "2026-08-17T22:11:54Z"
+    }
+  },
+  "version": 2
+}

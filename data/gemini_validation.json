@@ -1,0 +1,110 @@
+{
+  "artist_artedejavi": {
+    "verified": true,
+    "styles": [
+      "Black and Grey",
+      "Realism",
+      "Tribal"
+    ],
+    "quality_score": 0.8,
+    "images_reviewed": 3,
+    "checked_at": "2026-07-27T22:47:09.164Z"
+  },
+  "artist_blackshawart": {
+    "verified": true,
+    "styles": [
+      "Traditional",
+      "Neo-Traditional",
+      "Illustrative"
+    ],
+    "quality_score": 0.8,
+    "images_reviewed": 3,
+    "checked_at": "2026-07-27T22:47:16.556Z"
+  },
+  "artist_ak.tattooing": {
+    "verified": true,
+    "styles": [
+      "Ornamental",
+      "Black and Grey",
+      "Illustrative"
+    ],
+    "quality_score": 0.75,
+    "images_reviewed": 3,
+    "checked_at": "2026-07-27T22:47:26.018Z"
+  },
+  "artist_nathanwoelketattooist": {
+    "verified": true,
+    "styles": [
+      "Japanese",
+      "Neo-Traditional",
+      "Traditional"
+    ],
+    "quality_score": 0.8,
+    "images_reviewed": 3,
+    "checked_at": "2026-07-27T22:47:33.971Z"
+  },
+  "artist_mikeyballstattoo": {
+    "verified": true,
+    "styles": [
+      "Neo-Traditional",
+      "Traditional",
+      "Illustrative"
+    ],
+    "quality_score": 0.75,
+    "images_reviewed": 3,
+    "checked_at": "2026-07-27T22:47:41.850Z"
+  },
+  "artist__bare_": {
+    "verified": true,
+    "styles": [
+      "Traditional",
+      "Neo-Traditional"
+    ],
+    "quality_score": 0.8,
+    "images_reviewed": 3,
+    "checked_at": "2026-07-27T22:47:49.290Z"
+  },
+  "artist_lousy_hart": {
+    "verified": true,
+    "styles": [
+      "Illustrative",
+      "Anime",
+      "Color"
+    ],
+    "quality_score": 0.8,
+    "images_reviewed": 3,
+    "checked_at": "2026-07-27T22:47:57.932Z"
+  },
+  "artist_verosangre": {
+    "verified": true,
+    "styles": [
+      "Traditional",
+      "Neo-Traditional",
+      "Black & Grey"
+    ],
+    "quality_score": 0.8,
+    "images_reviewed": 3,
+    "checked_at": "2026-07-27T22:48:05.494Z"
+  },
+  "artist_evanhawkinstattoos": {
+    "verified": true,
+    "styles": [
+      "Neo-Traditional",
+      "Illustrative"
+    ],
+    "quality_score": 0.7,
+    "images_reviewed": 3,
+    "checked_at": "2026-07-27T22:48:13.736Z"
+  },
+  "artist_kyledubb": {
+    "verified": true,
+    "styles": [
+      "Japanese",
+      "Illustrative",
+      "Neo-Traditional"
+    ],
+    "quality_score": 0.8,
+    "images_reviewed": 3,
+    "checked_at": "2026-07-27T22:48:24.929Z"
+  }
+}

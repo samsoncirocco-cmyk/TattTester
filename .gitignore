@@ -70,3 +70,10 @@ __pycache__/
 
 # Expo
 .expo/
+
+# Agent/run state — never commit
+.claude/
+data/enrichment/
+data/discovery/*.lock
+data/discovery/*.bak
+data/ink-graph-*.html
