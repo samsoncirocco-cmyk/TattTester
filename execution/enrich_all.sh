@@ -11,13 +11,15 @@ START=${1:-100}
 END=${2:-10427}
 STEP=${3:-300}
 TS=$(( $(date +%s) * 1000 ))
+# apify_ig_enrich.py requires APIFY_TOKEN in the environment (no .env fallback)
+export APIFY_TOKEN="${APIFY_TOKEN:-$(grep '^APIFY_TOKEN=' /opt/org/.env | cut -d= -f2-)}"
 
 echo "[$(date +%H:%M:%S)] BULK ENRICH start=$START end=$END step=$STEP" >> "$LOG"
 off=$START
 while [ "$off" -lt "$END" ]; do
   echo "[$(date +%H:%M:%S)] === batch offset $off ===" >> "$LOG"
   # 1. scrape this batch via Apify
-  python3 "$SCRAPER/execution/apify_ig_enrich.py" --start "$off" --count "$STEP" --chunk 100 >> "$LOG" 2>&1
+  python3 "$SCRAPER/execution/apify_ig_enrich.py" --execute --queue "$SCRAPER/data/enrichment/instagram/artist-queue.json" --start "$off" --count "$STEP" --chunk 100 >> "$LOG" 2>&1
   # 2. host the images downloaded so far (idempotent; only new artists upload)
   ( cd "$TATT" && node scripts/host-artist-images.mjs --input "$PROFILES" --timestamp "$TS" >> "$LOG" 2>&1 )
   echo "[$(date +%H:%M:%S)] batch offset $off done" >> "$LOG"

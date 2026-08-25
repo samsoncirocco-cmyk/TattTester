@@ -1,147 +1,377 @@
 #!/usr/bin/env python3
-"""Instagram artist DISCOVERY for the TatT project (find NEW handles).
+"""Find and review new Instagram artist handles without writing to the graph.
 
-Distinct from enrichment (which scrapes profiles for artists we already have).
-This finds candidate NEW tattoo-artist handles via two strategies, dedupes them
-against the existing artist set, profile-scrapes survivors, and applies a
-bio-based quality filter to flag likely-bookable artists.
-
-  Strategy A  followee expansion : scrape who a seed (shop/artist) FOLLOWS
-                                    -> peers + shop artists. High signal.
-  Strategy B  hashtag / location  : scrape recent posters of city tattoo tags
-                                    -> post authors. High volume, more noise.
-
-Nothing here writes to Neo4j or the app. Output is a review file only:
-  data/discovery/candidates.json = [{handle, source, seedFrom, bioSnippet,
-                                     followers, looksBookable}]
-
-Usage:
-  discover_ig.py collectA --seeds a,b,c --max 100      # followee expansion
-  discover_ig.py collectB --tags austintattoo,... --limit 40
-  discover_ig.py enrich --max 200                      # profile-scrape raw candidates
-  discover_ig.py filter                                # dedup + quality filter -> candidates.json
+Discovery and enrichment share ``execution.ig_quality.looks_bookable`` so a
+verdict cannot be computed under one set of rules and imported under another.
+All candidates, including rejected ones, remain in the review artifact.
 """
-import argparse, json, os, re, sys, time, urllib.request, urllib.parse
 
-TOKEN = os.environ.get("APIFY_TOKEN") or open("/opt/org/.env").read().split("APIFY_TOKEN=")[1].split("\n")[0].strip()
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import time
+import urllib.request
+import uuid
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+try:
+    from execution.apify_ig_enrich import merge_run_report, update_json_locked
+    from execution.ig_quality import looks_bookable
+except ModuleNotFoundError:  # direct ``python execution/discover_ig.py``
+    from apify_ig_enrich import merge_run_report, update_json_locked
+    from ig_quality import looks_bookable
+
+
 BASE = "https://api.apify.com/v2"
-FOLLOW_ACTOR  = "coderx~instagram-followers-following-scraper-no-cookies-login"
+FOLLOW_ACTOR = "coderx~instagram-followers-following-scraper-no-cookies-login"
 HASHTAG_ACTOR = "apify~instagram-hashtag-scraper"
 PROFILE_ACTOR = "apify~instagram-profile-scraper"
-
-ROOT = os.path.expanduser("~/tatt-scraper")
-QUEUE = f"{ROOT}/data/enrichment/instagram/artist-queue.json"
-OUT   = f"{ROOT}/data/discovery"
-RAW_A = f"{OUT}/raw_followees.json"     # {seed: [handles]}
-RAW_B = f"{OUT}/raw_hashtags.json"      # {tag: [handles]}
-PROFILES = f"{OUT}/profiles.json"        # {handle: profile_row}
-CANDIDATES = f"{OUT}/candidates.json"
-os.makedirs(OUT, exist_ok=True)
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "data" / "discovery"
+TERMINAL_STATUSES = {"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"}
 
 
-def api(method, path, body=None, timeout=180):
-    url = f"{BASE}{path}{'&' if '?' in path else '?'}token={TOKEN}"
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def load_token() -> str:
+    token = os.environ.get("APIFY_TOKEN", "").strip()
+    if token:
+        return token
+    raise RuntimeError("APIFY_TOKEN is required")
+
+
+def load(path: Path, fallback: Any) -> Any:
+    try:
+        return json.loads(path.read_text())
+    except FileNotFoundError:
+        return fallback
+
+
+def save(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    temporary.replace(path)
+
+
+def load_required_queue(queue_path: Path) -> list[dict[str, Any]]:
+    if not queue_path.is_file():
+        raise RuntimeError(f"artist queue does not exist: {queue_path}")
+    try:
+        queue = json.loads(queue_path.read_text())
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"artist queue is not valid JSON: {queue_path}") from error
+    if not isinstance(queue, list) or not queue:
+        raise RuntimeError(f"artist queue must be a non-empty JSON array: {queue_path}")
+    invalid = []
+    artist_ids = set()
+    handles = set()
+    for index, artist in enumerate(queue):
+        artist_id = str(artist.get("id") or "").strip() if isinstance(artist, dict) else ""
+        handle = (
+            str(artist.get("ig") or "").lstrip("@").strip().lower()
+            if isinstance(artist, dict)
+            else ""
+        )
+        if not artist_id or not handle or artist_id in artist_ids or handle in handles:
+            invalid.append(index)
+            continue
+        artist_ids.add(artist_id)
+        handles.add(handle)
+    if invalid:
+        raise RuntimeError(
+            "artist queue has missing or duplicate id/ig records at indexes: "
+            f"{invalid[:10]}"
+        )
+    return queue
+
+
+def api(token: str, method: str, path: str, body: Any = None, timeout: int = 180) -> Any:
+    url = f"{BASE}{path}"
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode())
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode())
 
 
-def run_actor(actor, inp, poll_max=180):
-    run = api("POST", f"/acts/{actor}/runs", inp)["data"]
-    rid, dsid = run["id"], run["defaultDatasetId"]
-    st = run["status"]
-    for _ in range(poll_max):
-        st = api("GET", f"/actor-runs/{rid}")["data"]["status"]
-        if st in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"):
-            break
-        time.sleep(4)
-    items = api("GET", f"/datasets/{dsid}/items?clean=true")
-    return st, items
+def run_actor(
+    token: str,
+    actor: str,
+    actor_input: dict[str, Any],
+    *,
+    checkpoint: Any,
+    operation: str,
+    poll_max: int = 180,
+    attempt_id: str | None = None,
+):
+    attempt_id = attempt_id or uuid.uuid4().hex
+    checked_at = utc_now()
+    attempt = {
+        "attemptId": attempt_id,
+        "id": None,
+        "actor": actor,
+        "operation": operation,
+        "status": "POSTING",
+        "terminal": False,
+        "usageTotalUsd": None,
+        "startedAt": checked_at,
+        "spendStatus": "ambiguous",
+    }
+    checkpoint(attempt)
+    try:
+        response = api(token, "POST", f"/acts/{actor}/runs", actor_input)
+    except Exception as error:
+        checkpoint({**attempt, "status": "POST_ERROR", "error": str(error)})
+        raise
+
+    run = dict(response.get("data") or {})
+    run_id = run.get("id")
+    dataset_id = run.get("defaultDatasetId")
+    if not run_id or not dataset_id:
+        checkpoint(
+            {
+                **attempt,
+                **run,
+                "status": "MALFORMED_POST_RESPONSE",
+                "terminal": False,
+                "spendStatus": "ambiguous",
+            }
+        )
+        raise RuntimeError("Apify discovery POST returned no run or dataset ID")
+
+    final = {
+        **attempt,
+        **run,
+        "attemptId": attempt_id,
+        "id": run_id,
+        "terminal": str(run.get("status") or "") in TERMINAL_STATUSES,
+        "spendStatus": "identified",
+    }
+    checkpoint(final)
+    if not final["terminal"]:
+        try:
+            for _ in range(poll_max):
+                polled = dict(api(token, "GET", f"/actor-runs/{run_id}")["data"])
+                final = {
+                    **final,
+                    **polled,
+                    "attemptId": attempt_id,
+                    "id": run_id,
+                    "terminal": str(polled.get("status") or "") in TERMINAL_STATUSES,
+                    "spendStatus": "identified",
+                }
+                if final["terminal"]:
+                    checkpoint(final)
+                    break
+                time.sleep(4)
+            else:
+                checkpoint(final)
+        except Exception as error:
+            checkpoint(
+                {
+                    **final,
+                    "status": "POLL_ERROR",
+                    "terminal": False,
+                    "error": str(error),
+                }
+            )
+            raise
+
+    if final.get("status") != "SUCCEEDED":
+        raise RuntimeError(
+            f"Apify discovery actor did not succeed: {final.get('status') or 'UNKNOWN'}"
+        )
+
+    try:
+        items = api(token, "GET", f"/datasets/{dataset_id}/items?clean=true")
+    except Exception as error:
+        checkpoint({**final, "dataError": str(error)})
+        raise
+    return "SUCCEEDED", items
 
 
-def load(p, default): return json.load(open(p)) if os.path.exists(p) else default
-def save(p, o): json.dump(o, open(p, "w"), indent=1)
+def existing_handles(queue_path: Path) -> set[str]:
+    queue = load_required_queue(queue_path)
+    return {
+        str(artist.get("ig", "")).lstrip("@").strip().lower()
+        for artist in queue
+        if artist.get("ig")
+    }
 
 
-def existing_handles():
-    q = json.load(open(QUEUE))
-    return {str(a.get("ig", "")).lstrip("@").strip().lower() for a in q if a.get("ig")}
-
-
-# ---- collectors -----------------------------------------------------------
-def collect_A(seeds, max_items):
-    raw = load(RAW_A, {})
-    for seed in seeds:
-        seed = seed.lstrip("@").strip().lower()
+def collect_followees(
+    token: str,
+    seeds: list[str],
+    max_items: int,
+    raw_path: Path,
+    checkpoint: Any,
+) -> dict[str, list[str]]:
+    raw = load(raw_path, {})
+    failures = []
+    for original in seeds:
+        seed = original.lstrip("@").strip().lower()
         if seed in raw:
-            print(f"[A] {seed}: cached ({len(raw[seed])})"); continue
+            print(f"[followee] {seed}: cached ({len(raw[seed])})")
+            continue
         try:
-            st, items = run_actor(FOLLOW_ACTOR,
-                                  {"username": seed, "scrape_type": "following", "max_items": max_items})
-        except Exception as e:
-            print(f"[A] {seed}: ERROR {e}"); continue
-        handles = []
-        for it in items:
-            h = (it.get("username") or it.get("handle") or it.get("user_name") or "").lstrip("@").lower()
-            if h: handles.append(h)
-        raw[seed] = sorted(set(handles))
-        save(RAW_A, raw)
-        print(f"[A] {seed}: status={st} following_scraped={len(items)} unique={len(raw[seed])}")
+            status, items = run_actor(
+                token,
+                FOLLOW_ACTOR,
+                {"username": seed, "scrape_type": "following", "max_items": max_items},
+                checkpoint=checkpoint,
+                operation=f"collect-followees:{seed}",
+            )
+        except Exception as error:
+            print(f"[followee] {seed}: ERROR {error}")
+            failures.append(seed)
+            continue
+        handles = {
+            str(item.get("username") or item.get("handle") or item.get("user_name") or "")
+            .lstrip("@")
+            .lower()
+            for item in items
+        }
+        raw[seed] = sorted(handle for handle in handles if handle)
+        save(raw_path, raw)
+        print(f"[followee] {seed}: status={status} unique={len(raw[seed])}")
+    if failures:
+        raise RuntimeError(
+            "followee discovery failed and was not cached for: "
+            + ", ".join(failures)
+        )
     return raw
 
 
-def collect_B(tags, limit):
-    raw = load(RAW_B, {})
-    for tag in tags:
-        tag = tag.lstrip("#").strip().lower()
+def collect_hashtags(
+    token: str,
+    tags: list[str],
+    limit: int,
+    raw_path: Path,
+    checkpoint: Any,
+) -> dict[str, list[str]]:
+    raw = load(raw_path, {})
+    failures = []
+    for original in tags:
+        tag = original.lstrip("#").strip().lower()
         if tag in raw:
-            print(f"[B] #{tag}: cached ({len(raw[tag])})"); continue
+            print(f"[hashtag] #{tag}: cached ({len(raw[tag])})")
+            continue
         try:
-            st, items = run_actor(HASHTAG_ACTOR, {"hashtags": [tag], "resultsLimit": limit})
-        except Exception as e:
-            print(f"[B] #{tag}: ERROR {e}"); continue
-        handles, posts = [], 0
-        for it in items:
-            posts += 1
-            h = (it.get("ownerUsername") or it.get("owner_username") or "").lstrip("@").lower()
-            if h: handles.append(h)
-        raw[tag] = sorted(set(handles))
-        save(RAW_B, raw)
-        print(f"[B] #{tag}: status={st} posts={posts} unique_authors={len(raw[tag])}")
+            status, items = run_actor(
+                token,
+                HASHTAG_ACTOR,
+                {"hashtags": [tag], "resultsLimit": limit},
+                checkpoint=checkpoint,
+                operation=f"collect-hashtags:{tag}",
+            )
+        except Exception as error:
+            print(f"[hashtag] #{tag}: ERROR {error}")
+            failures.append(tag)
+            continue
+        handles = {
+            str(item.get("ownerUsername") or item.get("owner_username") or "")
+            .lstrip("@")
+            .lower()
+            for item in items
+        }
+        raw[tag] = sorted(handle for handle in handles if handle)
+        save(raw_path, raw)
+        print(f"[hashtag] #{tag}: status={status} unique={len(raw[tag])}")
+    if failures:
+        raise RuntimeError(
+            "hashtag discovery failed and was not cached for: "
+            + ", ".join(failures)
+        )
     return raw
 
 
-def all_raw_candidates():
-    """Return {handle: {sources:set, seedFrom:set}} across A and B, dedup vs existing."""
-    ex = existing_handles()
-    cand = {}
-    for seed, hs in load(RAW_A, {}).items():
-        for h in hs:
-            if h in ex or h == seed: continue
-            c = cand.setdefault(h, {"sources": set(), "seedFrom": set()})
-            c["sources"].add("A:followee"); c["seedFrom"].add(seed)
-    for tag, hs in load(RAW_B, {}).items():
-        for h in hs:
-            if h in ex: continue
-            c = cand.setdefault(h, {"sources": set(), "seedFrom": set()})
-            c["sources"].add("B:hashtag"); c["seedFrom"].add(f"#{tag}")
-    return cand, ex
+def all_raw_candidates(
+    queue_path: Path,
+    raw_followees_path: Path,
+    raw_hashtags_path: Path,
+) -> dict[str, dict[str, set[str]]]:
+    existing = existing_handles(queue_path)
+    candidates: dict[str, dict[str, set[str]]] = {}
+    raw_followees = load(raw_followees_path, {})
+    raw_hashtags = load(raw_hashtags_path, {})
+    if not isinstance(raw_followees, dict) or not isinstance(raw_hashtags, dict):
+        raise RuntimeError("discovery input artifacts must be JSON objects")
+    if not raw_followees and not raw_hashtags:
+        raise RuntimeError(
+            "no discovery input artifacts found; collect followees or hashtags first"
+        )
+    for seed, handles in raw_followees.items():
+        for handle in handles:
+            if handle in existing or handle == seed:
+                continue
+            item = candidates.setdefault(handle, {"sources": set(), "seedFrom": set()})
+            item["sources"].add("followee")
+            item["seedFrom"].add(seed)
+    for tag, handles in raw_hashtags.items():
+        for handle in handles:
+            if handle in existing:
+                continue
+            item = candidates.setdefault(handle, {"sources": set(), "seedFrom": set()})
+            item["sources"].add("hashtag")
+            item["seedFrom"].add(f"#{tag}")
+    return candidates
 
 
-def enrich(max_profiles):
-    cand, _ = all_raw_candidates()
-    prof = load(PROFILES, {})
-    todo = [h for h in cand if h not in prof][:max_profiles]
-    print(f"candidates(new,deduped)={len(cand)} already_profiled={len(prof)} scraping={len(todo)}")
-    for i in range(0, len(todo), 50):
-        chunk = todo[i:i + 50]
-        st, items = run_actor(PROFILE_ACTOR, {"usernames": chunk})
+def enrich_candidates(
+    token: str,
+    maximum: int,
+    *,
+    queue_path: Path,
+    raw_followees_path: Path,
+    raw_hashtags_path: Path,
+    profiles_path: Path,
+    checkpoint: Any,
+) -> None:
+    candidates = all_raw_candidates(
+        queue_path,
+        raw_followees_path,
+        raw_hashtags_path,
+    )
+    if not candidates:
+        raise RuntimeError("no discovery candidates found in the selected input artifacts")
+    profiles = load(profiles_path, {})
+    if not isinstance(profiles, dict):
+        raise RuntimeError("profile cache must be a JSON object")
+    todo = [handle for handle in candidates if handle not in profiles][:maximum]
+    if not todo:
+        raise RuntimeError("no uncached discovery candidates remain to enrich")
+    print(
+        f"candidates={len(candidates)} cached_profiles={len(profiles)} "
+        f"scraping={len(todo)}"
+    )
+    for offset in range(0, len(todo), 50):
+        chunk = todo[offset : offset + 50]
+        status, items = run_actor(
+            token,
+            PROFILE_ACTOR,
+            {"usernames": chunk},
+            checkpoint=checkpoint,
+            operation=f"enrich-candidates:{offset}:{len(chunk)}",
+        )
         for row in items:
-            u = (row.get("username") or "").lower()
-            if u:
-                prof[u] = {
+            username = str(row.get("username") or "").lower()
+            if username:
+                profiles[username] = {
                     "bio": row.get("biography") or "",
                     "followers": row.get("followersCount"),
                     "fullName": row.get("fullName") or "",
@@ -150,102 +380,161 @@ def enrich(max_profiles):
                     "private": row.get("private"),
                     "verified": row.get("verified"),
                 }
-        save(PROFILES, prof)
-        print(f"  profiled chunk {i//50+1} status={st} rows={len(items)} total={len(prof)}")
+        save(profiles_path, profiles)
+        print(f"profile chunk={offset // 50 + 1} status={status} rows={len(items)}")
 
 
-# ---- quality filter -------------------------------------------------------
-TATTOO_DOER = re.compile(r"tattoo(er|ist|ing)?\b|tattoo\s*artist|tatuador|t[a�]towier|ink slinger|blackwork|fineline|fine line|realism|traditional tattoo|apprentice", re.I)
-BOOK = re.compile(r"book(ing|s)?\b|appt|appointment|dm to book|walk[- ]?in|books?\s*(open|closed)|flash|guest ?spot|resident|inquir|deposit|slots?\b", re.I)
-PIERCE = re.compile(r"pierc", re.I)
-# supply / equipment / ink brands (usually big follower brand accounts, not bookable people)
-SUPPLY = re.compile(r"\b(supply|supplies|cartridge|needles?|ointment|wholesale|distributor|worldwide shipping|shop now|our products?|pigment|machines? for|equipment|official (page|account|store)|®|™)\b", re.I)
-BRAND_NAMES = re.compile(r"\b(electric ?ink|dragonhawk|eternal ?ink|cheyenne|bishop|critical|fusion ink|world famous|villain ?arts|inkjecta|kwadron|dynamic color|stigma)\b", re.I)
-CONVENTION = re.compile(r"convention|expo\b|invitational|tattoo ?fest|festival|tickets? (on|now)|book your booth", re.I)
-# multi-artist SHOP accounts (not an individual bookable artist)
-SHOP_ACCT = re.compile(r"our (artists|team)|resident artists|guest artists|artists:|now hiring|hiring artists|book (with|your artist)|walk[- ]?ins welcome|tattoo (studio|shop|parlou?r|collective) (in|located|est)|@\w+ ?(&|and) ?@\w+", re.I)
+def filter_candidates(
+    *,
+    queue_path: Path,
+    raw_followees_path: Path,
+    raw_hashtags_path: Path,
+    profiles_path: Path,
+    candidates_path: Path,
+) -> None:
+    candidates = all_raw_candidates(
+        queue_path,
+        raw_followees_path,
+        raw_hashtags_path,
+    )
+    profiles = load(profiles_path, {})
+    if not isinstance(profiles, dict) or not profiles:
+        raise RuntimeError("no profile input artifact found; run paid enrichment first")
+    output = []
+    for handle, metadata in candidates.items():
+        profile = profiles.get(handle)
+        if not profile:
+            continue
+        verdict, reason = looks_bookable(profile)
+        bio = str(profile.get("bio") or "").replace("\n", " ").strip()
+        output.append(
+            {
+                "handle": handle,
+                "source": ",".join(sorted(metadata["sources"])),
+                "seedFrom": ",".join(sorted(metadata["seedFrom"])),
+                "bioSnippet": bio[:160],
+                "followers": profile.get("followers"),
+                "looksBookable": verdict,
+                "filterReason": reason,
+            }
+        )
+    output.sort(key=lambda item: (not item["looksBookable"], -(item["followers"] or 0)))
+    if not output:
+        raise RuntimeError("profile input contains none of the selected candidates")
+    save(candidates_path, output)
+    accepted = sum(1 for item in output if item["looksBookable"])
+    print(f"reviewed={len(output)} accepted={accepted} rejected={len(output) - accepted}")
+    print("reasons:", dict(Counter(item["filterReason"] for item in output)))
+    print(f"written -> {candidates_path}")
 
 
-def looks_bookable(prof):
-    bio = (prof.get("bio") or "")
-    name = (prof.get("fullName") or "")
-    txt = f"{bio} {name}"
-    low = txt.lower()
-    fol = prof.get("followers") or 0
-    if prof.get("private"): return False, "private"
-    is_tattooer = bool(TATTOO_DOER.search(txt)) or "tattoo" in low
-    if not is_tattooer: return False, "no-tattoo-signal"
-    if PIERCE.search(txt) and not TATTOO_DOER.search(txt) and "tattoo" not in low:
-        return False, "piercer-only"
-    if BRAND_NAMES.search(txt) or SUPPLY.search(txt): return False, "supply/brand"
-    if CONVENTION.search(txt): return False, "convention/event"
-    # brand-account heuristic: very large account pushing products, not a person
-    if fol > 60000 and (SUPPLY.search(txt) or "official" in low or "products" in low):
-        return False, "brand-account"
-    if SHOP_ACCT.search(txt): return False, "shop-account"
-    has_person = bool(TATTOO_DOER.search(txt))          # names a tattoo-doing craft
-    has_book = bool(BOOK.search(txt))
-    has_link = bool(prof.get("url"))
-    if has_person and (has_book or has_link):
-        return True, "artist+booking"
-    if has_book or has_link:
-        return True, "bookable-signal"
-    return True, "tattoo-artist(weak)"
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--queue", type=Path, required=True)
+    parser.add_argument("--out", type=Path, default=OUT)
+    parser.add_argument("--run-report", type=Path, default=None)
+    parser.add_argument("--sweep-id", default=None)
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="authorize paid Apify actor calls",
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+    followees = commands.add_parser("collect-followees")
+    followees.add_argument("--seeds", required=True)
+    followees.add_argument("--max", type=int, default=100)
+    hashtags = commands.add_parser("collect-hashtags")
+    hashtags.add_argument("--tags", required=True)
+    hashtags.add_argument("--limit", type=int, default=40)
+    enrich = commands.add_parser("enrich")
+    enrich.add_argument("--max", type=int, default=200)
+    commands.add_parser("filter")
+    commands.add_parser("stats")
+    args = parser.parse_args(argv)
+    queue = load_required_queue(args.queue)
+    raw_followees_path = args.out / "raw_followees.json"
+    raw_hashtags_path = args.out / "raw_hashtags.json"
+    profiles_path = args.out / "profiles.json"
+    candidates_path = args.out / "candidates.json"
 
+    if args.command == "filter":
+        filter_candidates(
+            queue_path=args.queue,
+            raw_followees_path=raw_followees_path,
+            raw_hashtags_path=raw_hashtags_path,
+            profiles_path=profiles_path,
+            candidates_path=candidates_path,
+        )
+        return 0
+    if args.command == "stats":
+        print(
+            "raw deduped candidates:",
+            len(
+                all_raw_candidates(
+                    args.queue,
+                    raw_followees_path,
+                    raw_hashtags_path,
+                )
+            ),
+        )
+        return 0
+    if not args.execute:
+        print(
+            f"DRY RUN: no paid actor calls; command={args.command} "
+            f"queue={args.queue}. Pass --execute to run."
+        )
+        return 0
+    if not args.sweep_id:
+        parser.error("--sweep-id is required with --execute")
 
-def do_filter():
-    cand, ex = all_raw_candidates()
-    prof = load(PROFILES, {})
-    out = []
-    for h, meta in cand.items():
-        p = prof.get(h)
-        if not p:
-            continue  # only emit candidates we could profile+judge
-        ok, reason = looks_bookable(p)
-        bio = (p.get("bio") or "").replace("\n", " ").strip()
-        out.append({
-            "handle": h,
-            "source": ",".join(sorted(meta["sources"])),
-            "seedFrom": ",".join(sorted(meta["seedFrom"])),
-            "bioSnippet": bio[:160],
-            "followers": p.get("followers"),
-            "looksBookable": ok,
-            "filterReason": reason,
-        })
-    out.sort(key=lambda x: (not x["looksBookable"], -(x["followers"] or 0)))
-    save(CANDIDATES, out)
-    good = sum(1 for x in out if x["looksBookable"])
-    print(f"\n=== FILTER RESULT ===")
-    print(f"deduped-new candidates with a profile: {len(out)}")
-    print(f"  looksBookable=TRUE : {good}")
-    print(f"  looksBookable=FALSE: {len(out)-good}")
-    from collections import Counter
-    print("  reasons:", dict(Counter(x["filterReason"] for x in out)))
-    # per-source breakdown
-    for src in ("A:followee", "B:hashtag"):
-        sub = [x for x in out if src in x["source"]]
-        g = sum(1 for x in sub if x["looksBookable"])
-        print(f"  [{src}] profiled={len(sub)} bookable={g}")
-    print(f"written -> {CANDIDATES}")
+    token = load_token()
+    run_report_path = args.run_report or args.out / "apify-discovery-run-report.json"
 
+    def checkpoint_actor_run(record: dict[str, Any]) -> None:
+        update_json_locked(
+            run_report_path,
+            {},
+            lambda current: merge_run_report(
+                current,
+                sweep_id=args.sweep_id,
+                checked_at=utc_now(),
+                run_slice={
+                    "command": args.command,
+                    "queueRecords": len(queue),
+                },
+                summary={"command": args.command},
+                actor_runs=[record],
+            ),
+        )
 
-def main():
-    ap = argparse.ArgumentParser()
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    a = sub.add_parser("collectA"); a.add_argument("--seeds", required=True); a.add_argument("--max", type=int, default=100)
-    b = sub.add_parser("collectB"); b.add_argument("--tags", required=True); b.add_argument("--limit", type=int, default=40)
-    e = sub.add_parser("enrich"); e.add_argument("--max", type=int, default=200)
-    sub.add_parser("filter")
-    sub.add_parser("stats")
-    args = ap.parse_args()
-    if args.cmd == "collectA": collect_A(args.seeds.split(","), args.max)
-    elif args.cmd == "collectB": collect_B(args.tags.split(","), args.limit)
-    elif args.cmd == "enrich": enrich(args.max)
-    elif args.cmd == "filter": do_filter()
-    elif args.cmd == "stats":
-        cand, ex = all_raw_candidates()
-        print("raw deduped-new candidate handles:", len(cand))
+    if args.command == "collect-followees":
+        collect_followees(
+            token,
+            args.seeds.split(","),
+            args.max,
+            raw_followees_path,
+            checkpoint_actor_run,
+        )
+    elif args.command == "collect-hashtags":
+        collect_hashtags(
+            token,
+            args.tags.split(","),
+            args.limit,
+            raw_hashtags_path,
+            checkpoint_actor_run,
+        )
+    else:
+        enrich_candidates(
+            token,
+            args.max,
+            queue_path=args.queue,
+            raw_followees_path=raw_followees_path,
+            raw_hashtags_path=raw_hashtags_path,
+            profiles_path=profiles_path,
+            checkpoint=checkpoint_actor_run,
+        )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

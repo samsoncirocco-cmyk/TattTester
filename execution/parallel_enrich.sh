@@ -10,6 +10,8 @@ SHARD=$SCR/data/enrichment/instagram/host-shards
 LOG=$SCR/data/enrichment/instagram/parallel.log
 START=${1:-400}; END=${2:-10427}; NW=${3:-8}
 TS=$(( $(date +%s) * 1000 ))
+# apify_ig_enrich.py requires APIFY_TOKEN in the environment (no .env fallback)
+export APIFY_TOKEN="${APIFY_TOKEN:-$(grep '^APIFY_TOKEN=' /opt/org/.env | cut -d= -f2-)}"
 say(){ echo "[$(date +%H:%M:%S)] $*" >> "$LOG"; }
 
 say "PARALLEL ENRICH start=$START end=$END workers=$NW"
@@ -20,7 +22,7 @@ pids=()
 for w in $(seq 0 $((NW-1))); do
   s=$(( START + w*span )); c=$span
   [ "$s" -ge "$END" ] && break
-  python3 "$SCR/execution/apify_ig_enrich.py" --start "$s" --count "$c" --chunk 100 >> "$LOG" 2>&1 &
+  python3 "$SCR/execution/apify_ig_enrich.py" --execute --queue "$SCR/data/enrichment/instagram/artist-queue.json" --start "$s" --count "$c" --chunk 100 >> "$LOG" 2>&1 &
   pids+=($!)
 done
 say "phase1: ${#pids[@]} scrape workers launched"
