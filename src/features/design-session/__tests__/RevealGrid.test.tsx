@@ -86,9 +86,15 @@ describe('RevealGrid', () => {
     expect(onSelect).toHaveBeenCalledWith('v4');
   });
 
-  it('locked mode: nothing is tappable', () => {
+  it('locked mode: no cut can be picked', () => {
     render(<RevealGrid variations={variations} mode="locked" pickId="v2" />);
-    for (const button of screen.getAllByRole('button')) {
+    // Scoped to the pick targets: since TAT-58 each tile also carries an
+    // expand control, which stays live in locked mode on purpose (the
+    // critique lane's re-cuts render locked and still need reading at full
+    // size). See CutLightbox.test.tsx.
+    const picks = screen.getAllByRole('button', { name: /^Pick design \d+ / });
+    expect(picks).toHaveLength(4);
+    for (const button of picks) {
       expect((button as HTMLButtonElement).disabled).toBe(true);
     }
   });
