@@ -39,6 +39,7 @@
  * object has no fields for yet.
  */
 
+import { resolvePalette } from '../../intake/settledAxes';
 import type { IntakeRecord } from '../../intake/types';
 import type { Variation } from '../types';
 
@@ -63,6 +64,26 @@ export interface DesignState {
    * costing a render was the bug.
    */
   roster: string[];
+  /**
+   * The idea itself, in the customer's visual prose — "an astronaut on the
+   * moon whose glass mask cracked, gasping for his last breath, galaxy and
+   * stars behind".
+   *
+   * Session 2026-08-25 asked for exactly that on their back. The reveal was
+   * right; the first re-cut was a black-and-grey eagle on a woman's back. The
+   * state object had nowhere to put a scene — only a roster of named IP
+   * characters — so a request with nobody to name derived `roster: []` and the
+   * prompt came out as "A tattoo on the back. Palette: blackwork, no color."
+   * The whole idea was gone before the render was even priced, and
+   * `rosterOmissions` could not see it: an empty roster yields zero omissions,
+   * so the ADR-0060 spend guard passed the contradiction through clean.
+   *
+   * This is the richer prose that sits ALONGSIDE the roster, not instead of
+   * it — the same split `subjectClause` keeps in the Council's `structuredMode`
+   * ("one each of Roxas, Sora, Link, and Bowser: <subject>"). The roster is
+   * the lossless cast list; the subject is what they are doing and where.
+   */
+  subject?: string;
   /** Verified character-to-source bindings, parallel to but not the same as `roster`. */
   identities: { name: string; series: string }[];
   /** "tattoo sleeve", "tattoo on the forearm" — the piece and where it sits. */
@@ -110,23 +131,88 @@ export const MAX_DIRECTIVES = 3;
 
 const SLEEVE_PATTERN = /\bsleeve\b/i;
 
-/** Style tags that mean the piece has no chromatic color. */
+/**
+ * Style tags that genuinely mean "no chromatic ink".
+ *
+ * `resolvePalette` (intake) is the shared authority on this question and it is
+ * consulted first; this set only covers what the closed ontology does not —
+ * 'tribal' is an ontology tag `resolvePalette` has never listed, and the
+ * spelling variants are here because a state can be rehydrated from prose that
+ * never went through the ontology resolver.
+ */
 const MONOCHROME_TAGS = new Set([
   'blackwork',
   'black-and-grey',
   'black and grey',
   'blackandgrey',
-  'linework',
-  'fineline',
-  'fine-line',
+  'black-and-gray',
+  'black and gray',
   'dotwork',
   'tribal',
 ]);
 
-function derivePalette(styleTags: readonly string[]): string | undefined {
-  if (styleTags.length === 0) return undefined;
-  const monochrome = styleTags.some((tag) => MONOCHROME_TAGS.has(tag.toLowerCase().trim()));
-  return monochrome ? 'blackwork, no color' : 'full color';
+/**
+ * Tags that describe LINE WEIGHT, not the absence of color.
+ *
+ * Session 2026-08-25 asked for "color and clean lines" — a fine-line COLOR
+ * piece. The reveal was full color. The first re-cut came back monochrome,
+ * because this module treated any tag in its monochrome set as decisive and
+ * 'fine-line' was in it: one line-weight word silently overrode the word
+ * "color" the customer actually said. Fine-line, linework and bold-line say
+ * how thick the strokes are and nothing at all about chroma, so on their own
+ * they no longer decide the palette in either direction.
+ *
+ * This is where the two paths could drift apart, so it is worth being exact
+ * about the difference: `resolvePalette` DOES read 'fine-line' as monochrome,
+ * and it can afford to — `settledAxes` only trusts that reading when the
+ * intake did not list `color-blackwork` as ambiguous, and its own test says so
+ * ("line-style shorthand ... the rung stays spreadable"). This module has no
+ * such backstop: whatever it returns is asserted into the prompt as a positive
+ * instruction. So it declines instead of guessing, which is what an optional
+ * field on this object has always meant.
+ */
+const LINE_WEIGHT_TAGS = new Set([
+  'fine-line',
+  'fine line',
+  'fineline',
+  'linework',
+  'line-work',
+  'line work',
+  'bold-line',
+  'boldline',
+]);
+
+/**
+ * The palette a brief starts with, or undefined when the brief did not settle
+ * one. Two rules, both borrowed rather than invented:
+ *
+ *   1. An axis the intake listed as ambiguous is a question the customer has
+ *      not answered. `settledAxes` refuses to skip that rung for exactly this
+ *      reason; asserting a palette here would answer it for them, in a prompt,
+ *      for money.
+ *   2. Color wins a tag conflict. That is `resolvePalette`'s rule verbatim —
+ *      "naming color is an explicit commitment, while the monochrome tags are
+ *      often just line-style shorthand" — and it is the rule this module used
+ *      to get backwards.
+ */
+function derivePalette(intake: IntakeRecord): string | undefined {
+  const tags = (intake.styleTags ?? []).map((tag) => tag.toLowerCase().trim()).filter(Boolean);
+  if (tags.length === 0) return undefined;
+  if ((intake.ambiguousAxes ?? []).includes('color-blackwork')) return undefined;
+
+  // Line weight is not chroma, so it does not get a vote (see LINE_WEIGHT_TAGS).
+  const chromatic = tags.filter((tag) => !LINE_WEIGHT_TAGS.has(tag));
+  if (chromatic.length === 0) return undefined;
+
+  const resolved = resolvePalette(chromatic);
+  if (resolved === 'color') return 'full color';
+  if (resolved === 'monochrome') return 'blackwork, no color';
+  if (chromatic.some((tag) => MONOCHROME_TAGS.has(tag))) return 'blackwork, no color';
+
+  // Tags that say nothing about chroma at all ('anime', 'illustrative'). The
+  // brief committed to a style and never asked for the color to be taken away,
+  // so color is the reading that matches what the reveal renders.
+  return 'full color';
 }
 
 function deriveMedium(placement: string, meaning: string): string {
@@ -135,6 +221,22 @@ function deriveMedium(placement: string, meaning: string): string {
     return place ? `tattoo sleeve on the ${place}` : 'tattoo sleeve';
   }
   return place ? `tattoo on the ${place}` : 'tattoo';
+}
+
+/**
+ * The idea, off the intake: the extracted subject when there is one, and the
+ * meaning prose when there is not.
+ *
+ * Both are real carriers of the scene. `subject` is intake's structured
+ * reading ("an astronaut on the moon whose glass mask cracked..."), and
+ * `meaning` is what a brief with no nameable IP still says out loud. Reading
+ * neither is how the astronaut session's whole idea reached the renderer as
+ * "A tattoo on the back." — and unlike `visualTarget` or `action`, this is not
+ * a guess: it is the customer's own words, which is exactly what ADR-0010 says
+ * must survive.
+ */
+function deriveSubject(intake: IntakeRecord): string | undefined {
+  return intake.subject?.trim() || intake.meaning?.trim() || undefined;
 }
 
 /**
@@ -157,12 +259,32 @@ export function deriveDesignState(intake: IntakeRecord): DesignState {
 
   return {
     roster,
+    subject: deriveSubject(intake),
     identities,
     medium: deriveMedium(intake.placement, intake.meaning),
-    palette: derivePalette(intake.styleTags),
+    palette: derivePalette(intake),
     exclusions: [],
     directives: [],
   };
+}
+
+/**
+ * Backfill fields added after a state was persisted.
+ *
+ * States written before `subject` existed are sitting on live sessions right
+ * now, and re-deriving the whole object would throw away every critique the
+ * customer has already paid for — the palette they corrected, the composition
+ * they picked. So this fills the gaps from the intake the session already
+ * carries and touches nothing else.
+ *
+ * Returns the SAME object when there was nothing to fill, so a caller can use
+ * identity to decide whether the session needs persisting again.
+ */
+export function hydrateDesignState(state: DesignState, intake: IntakeRecord): DesignState {
+  if (state.subject !== undefined) return state;
+  const subject = deriveSubject(intake);
+  if (!subject) return state;
+  return { ...state, subject };
 }
 
 /**
@@ -440,31 +562,94 @@ function countWord(n: number): string {
 }
 
 /**
+ * Flash art on white, front-loaded, asserted positively — duplicated verbatim
+ * from `PRESENTATION_LEAD` in `src/services/council/internal/structuredMode.ts`.
+ * Read the comment there before touching this one; it carries the measurements.
+ *
+ * The short version: it is a hard product dependency, not a preference. The
+ * placement preview strips the near-white background to real alpha and
+ * composites onto the customer's own photo, so an on-skin render has nothing
+ * to strip and `assessBackdrop` refuses it outright. And the phrasing this
+ * function used to open with — "A tattoo on the <placement>" — measured 0/12
+ * against that guard on the reveal path: every render came back a photograph
+ * of a tattoo on a limb, because an explicit positive instruction to draw a
+ * body at roughly token five beats any later correction.
+ *
+ * The re-cut path never got that fix, which is why the astronaut session's
+ * re-cuts were photographs of a woman's back. It opened `A tattoo on the
+ * back.` — the exact sentence the Council had already measured and deleted.
+ *
+ * Copied rather than imported on purpose: `structuredMode` does not export it,
+ * and reaching into a council internal from here would pull the Council's
+ * prompt builder into a module whose whole value is being pure and cheap to
+ * test. `presentationConstraint.test.ts` already keeps its own copy of the
+ * clause for the same reason. If the Council's lead changes, this changes with
+ * it — the shared test string is the thread between them.
+ */
+export const PRESENTATION_LEAD =
+  'Flash art tattoo design on a pure white background — a flat scan of the ' +
+  'artwork alone, centered with clean white margins on all sides.';
+
+/**
+ * Meaning prose is often a dedication ("for my grandfather"), not a scene, and
+ * "depicting for my grandfather" is not a sentence. The Council draws the same
+ * line in `subjectClause` — a subject is `depicting ...`, a bare meaning is
+ * `expressing "..."` — so the lead keeps both readable.
+ */
+const DEDICATION_PATTERN = /^(?:for|to|about|in memory of|in honou?r of|because)\b/i;
+
+/** The subject as it leads the prompt, with the roster it has to share with. */
+function subjectLead(state: DesignState): string {
+  const subject = state.subject?.trim().replace(/[.\s]+$/, '');
+
+  if (state.roster.length > 1) {
+    const n = state.roster.length;
+    // Roster first, then the scene, mirroring `subjectClause`: the cast list is
+    // the thing that must survive verbatim, and the subject is the prose that
+    // says what they are doing.
+    const cast =
+      `A tattoo design depicting exactly ${countWord(n)} distinct figures, one each of ` +
+      `${naturalList(state.roster)}${subject ? `: ${subject}` : ''}.`;
+    return (
+      `${cast} No duplicates and no omissions; all ${countWord(n)} ` +
+      'figures are fully visible and readable.'
+    );
+  }
+
+  if (state.roster.length === 1) {
+    // The name stays even when the subject prose repeats it: it is what
+    // `rosterOmissions` checks, and a guard that reads its own render is only
+    // worth anything if the render is unambiguous.
+    return `A tattoo design depicting ${state.roster[0]}${subject ? `: ${subject}` : ''}.`;
+  }
+
+  if (!subject) return 'A tattoo design.';
+  return DEDICATION_PATTERN.test(subject)
+    ? `A tattoo design expressing "${subject}".`
+    : `A tattoo design depicting ${subject}.`;
+}
+
+/**
  * The prompt for a state — a pure function of the object, and the reason a
  * re-cut is now reproducible: the same state yields the same prompt, and a
  * diff between two states explains exactly what changed.
  *
  * Order is load-bearing. The lane weights the front of a prompt far more
  * heavily than the end (`structuredMode` documents this), so the things that
- * kept getting lost go first: the roster, then the customer's newest
- * directions, then the look. Boilerplate that never changes goes last, where
- * being weighted lightly costs nothing.
+ * kept getting lost go first: the presentation the AR preview depends on, then
+ * the idea and the roster, then the customer's newest directions, then the
+ * look. Boilerplate that never changes goes last, where being weighted lightly
+ * costs nothing.
+ *
+ * The medium is the one field that moved DOWN. It carries a body part, and
+ * naming a body part early is what produced photographs of skin (see
+ * `PRESENTATION_LEAD`). It still renders — a sleeve is a different composition
+ * from a shoulder piece and the state has no other field that says so — but it
+ * renders as an instruction about how to compose the artwork, at the tail,
+ * where the Council keeps its own placement guidance.
  */
 export function renderStatePrompt(state: DesignState): string {
-  const parts: string[] = [];
-
-  if (state.roster.length > 1) {
-    const n = state.roster.length;
-    parts.push(
-      `A ${state.medium} depicting exactly ${countWord(n)} distinct figures, one each of ` +
-        `${naturalList(state.roster)}. No duplicates and no omissions; all ${countWord(n)} ` +
-        'figures are fully visible and readable.'
-    );
-  } else if (state.roster.length === 1) {
-    parts.push(`A ${state.medium} depicting ${state.roster[0]}.`);
-  } else {
-    parts.push(`A ${state.medium}.`);
-  }
+  const parts: string[] = [PRESENTATION_LEAD, subjectLead(state)];
 
   if (state.identities.length > 0) {
     parts.push(
@@ -487,6 +672,8 @@ export function renderStatePrompt(state: DesignState): string {
   if (state.exclusions.length > 0) {
     parts.push(`Avoid: ${naturalList(state.exclusions)}.`);
   }
+
+  parts.push(`Composed for a ${state.medium}.`);
 
   parts.push(
     'Clean readable forms with deliberate focal hierarchy, composed to read at tattoo scale ' +
@@ -516,4 +703,51 @@ export function rosterOmissions(state: DesignState, prompt: string): string[] {
     if (!escaped) return false;
     return !new RegExp(`\\b${escaped}\\b`, 'i').test(haystack);
   });
+}
+
+/** Whitespace-insensitive containment, so a re-wrapped prompt is not a miss. */
+function carries(prompt: string, phrase: string): boolean {
+  const flatten = (text: string) => text.replace(/\s+/g, ' ').trim().toLowerCase();
+  return flatten(prompt).includes(flatten(phrase));
+}
+
+/** Everything a state holds that its own prompt failed to say. */
+export interface StateOmissions {
+  /** Roster members the prompt fails to name — `rosterOmissions`, unchanged. */
+  roster: string[];
+  /** The subject, when the state has one and the prompt does not carry it. */
+  subject?: string;
+}
+
+/**
+ * The full contradiction check: roster AND subject.
+ *
+ * `rosterOmissions` answers ADR-0060's question — "a state object naming four
+ * characters and a prompt mentioning two is a detectable contradiction" — and
+ * it is kept exactly as it was, because the orchestrator's spend guard calls
+ * it by name.
+ *
+ * What it cannot answer is the astronaut session. That brief named no IP
+ * character at all, so the roster was empty, so the guard found zero omissions
+ * and waved through a prompt with no astronaut, no moon, no cracked mask and
+ * no galaxy in it. An empty roster made the check vacuous exactly when the
+ * whole idea had gone missing. A dropped subject is the same defect as a
+ * dropped roster member and deserves the same refusal before the money moves.
+ *
+ * Subject matching is verbatim containment rather than word overlap on
+ * purpose: `renderStatePrompt` inserts the subject as written, so any prompt
+ * that does not carry it verbatim was built by something other than the state
+ * — which is the contradiction worth catching. A looser check would score
+ * paraphrases, and scoring a paraphrase is how you end up arguing with a
+ * threshold instead of fixing a renderer.
+ */
+export function stateOmissions(state: DesignState, prompt: string): StateOmissions {
+  // Trailing punctuation is dropped on the way into the prompt, so it is
+  // dropped here too — the guard must compare the same string the renderer
+  // wrote, not the one the field happens to store.
+  const subject = state.subject?.trim().replace(/[.\s]+$/, '');
+  return {
+    roster: rosterOmissions(state, prompt),
+    subject: subject && !carries(prompt || '', subject) ? state.subject?.trim() : undefined,
+  };
 }

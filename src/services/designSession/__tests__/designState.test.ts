@@ -12,10 +12,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   MAX_DIRECTIVES,
+  PRESENTATION_LEAD,
   applyCritique,
   deriveDesignState,
+  hydrateDesignState,
   renderStatePrompt,
   rosterOmissions,
+  stateOmissions,
   withPickedCut,
 } from '../internal/designState';
 import type { DesignState } from '../internal/designState';
@@ -376,14 +379,20 @@ describe('the prompt is a pure function of the state', () => {
       references: [],
       ambiguousAxes: [],
     });
-    expect(renderStatePrompt(state)).toContain('A tattoo on the forearm.');
+    const prompt = renderStatePrompt(state);
+    // A dedication is not a scene, so it is expressed rather than depicted —
+    // the same line `subjectClause` draws. "depicting for my grandfather" is
+    // not a sentence.
+    expect(prompt).toContain('A tattoo design expressing "for my grandfather".');
+    // The placement still reaches the prompt; it just no longer opens it.
+    expect(prompt).toContain('Composed for a tattoo on the forearm.');
   });
 
   it('one character reads as one character, not as a list of one', () => {
     const state = deriveDesignState(
       smashIntake({ requestedCharacters: ['Sora'], characterIdentities: [] })
     );
-    expect(renderStatePrompt(state)).toContain('depicting Sora.');
+    expect(renderStatePrompt(state)).toContain('A tattoo design depicting Sora');
     expect(renderStatePrompt(state)).not.toContain('exactly one distinct figures');
   });
 
@@ -403,5 +412,201 @@ describe('the prompt is a pure function of the state', () => {
     expect(prompt).toContain('Sora — Kingdom Hearts');
     expect(prompt).toContain('; Kirby.');
     expect(prompt).not.toContain('Kirby — ');
+  });
+});
+
+/**
+ * Session 2026-08-25 — "an astronaut on the moon whose glass mask cracked,
+ * gasping for his last breath, galaxy and stars behind", on the back, in
+ * color with clean lines.
+ *
+ * The reveal was right. The first re-cut was a black-and-grey eagle on a
+ * woman's back, from this prompt:
+ *
+ *   A tattoo on the back. Palette: blackwork, no color. Customer direction:
+ *   "The bold one". Clean readable forms with deliberate focal hierarchy...
+ *
+ * Three defects in one sentence: the idea is gone, the prompt asks for a
+ * photograph of skin, and a line-weight tag turned a color piece monochrome.
+ * The tests above all use a roster of named IP characters, which is exactly
+ * why this shipped — every guard in the module was vacuous for a brief with
+ * nobody to name.
+ */
+function astronautIntake(overrides: Partial<IntakeRecord> = {}): IntakeRecord {
+  return {
+    placement: 'back',
+    styleTags: ['color', 'fine-line'],
+    meaning: 'an astronaut on the moon whose glass mask cracked, gasping for his last breath, galaxy and stars behind',
+    subject: 'an astronaut on the moon whose glass mask cracked, gasping for his last breath, galaxy and stars behind',
+    references: [],
+    ambiguousAxes: [],
+    ...overrides,
+  };
+}
+
+describe('the subject is the design (2026-08-25)', () => {
+  it('a brief with no named character still has a state that holds its idea', () => {
+    const state = deriveDesignState(astronautIntake());
+    expect(state.roster).toEqual([]);
+    expect(state.subject).toContain('astronaut on the moon');
+  });
+
+  it('falls back to the meaning when intake extracted no structured subject', () => {
+    const state = deriveDesignState(astronautIntake({ subject: undefined }));
+    expect(state.subject).toContain('glass mask cracked');
+  });
+
+  it('renders the idea — the defect was a prompt with no astronaut in it', () => {
+    const prompt = renderStatePrompt(deriveDesignState(astronautIntake()));
+    for (const fragment of ['astronaut', 'moon', 'glass mask cracked', 'galaxy and stars']) {
+      expect(prompt).toContain(fragment);
+    }
+  });
+
+  it('leads with the idea, ahead of everything the broken prompt led with', () => {
+    // Early tokens win. The subject goes first because it is the design; the
+    // palette, the customer's direction and the boilerplate all follow it.
+    const state = applyCritique(deriveDesignState(astronautIntake()), 'The bold one').state;
+    const prompt = renderStatePrompt(state);
+    const subject = prompt.indexOf('astronaut');
+    expect(subject).toBeGreaterThan(-1);
+    expect(subject).toBeLessThan(prompt.indexOf('Palette:'));
+    expect(subject).toBeLessThan(prompt.indexOf('Customer direction:'));
+    expect(subject).toBeLessThan(prompt.indexOf('Clean readable forms'));
+  });
+
+  it('sits alongside a roster rather than replacing it', () => {
+    // Both, the way `subjectClause` does it: the roster is the lossless cast
+    // list, the subject is the prose that says what they are doing.
+    const prompt = renderStatePrompt(deriveDesignState(smashIntake()));
+    expect(prompt).toContain(
+      'one each of Roxas, Sora, Link, and Bowser: Roxas and Sora fighting Link and Bowser.'
+    );
+    expect(prompt).toContain('No duplicates and no omissions');
+  });
+
+  it('hydrates a state persisted before the field existed', () => {
+    const legacy: DesignState = {
+      ...deriveDesignState(astronautIntake()),
+      subject: undefined,
+    };
+    expect(hydrateDesignState(legacy, astronautIntake()).subject).toContain('astronaut');
+  });
+
+  it('hydration returns the same object when there is nothing to fill', () => {
+    const state = deriveDesignState(astronautIntake());
+    expect(hydrateDesignState(state, astronautIntake())).toBe(state);
+    // And an intake with no idea in it cannot invent one.
+    const bare: DesignState = { ...state, subject: undefined };
+    expect(hydrateDesignState(bare, { ...astronautIntake(), subject: undefined, meaning: '' })).toBe(
+      bare
+    );
+  });
+});
+
+describe('the prompt asks for artwork, not a photograph of skin (ADR-0023)', () => {
+  it('front-loads the flash-art presentation the AR preview depends on', () => {
+    // The placement preview strips near-white to alpha; an on-skin render has
+    // nothing to strip, so `assessBackdrop` refuses it. The reveal path was
+    // fixed for this; the re-cut path never was.
+    const prompt = renderStatePrompt(deriveDesignState(astronautIntake()));
+    expect(prompt.startsWith(PRESENTATION_LEAD)).toBe(true);
+  });
+
+  it('never opens with "A tattoo on the <placement>" — that measured 0/12', () => {
+    for (const state of [
+      deriveDesignState(astronautIntake()),
+      deriveDesignState(smashIntake()),
+      deriveDesignState(smashIntake({ requestedCharacters: ['Sora'], characterIdentities: [] })),
+    ]) {
+      const prompt = renderStatePrompt(state);
+      expect(prompt).not.toMatch(/^A tattoo on the/);
+      expect(prompt).not.toContain('A tattoo on the back.');
+    }
+  });
+
+  it('keeps the placement, demoted to a composition instruction at the tail', () => {
+    // Losing it entirely would cost the sleeve/back distinction, which nothing
+    // else in the state carries. It just no longer sits at token five.
+    const prompt = renderStatePrompt(deriveDesignState(astronautIntake()));
+    expect(prompt).toContain('Composed for a tattoo on the back.');
+    expect(prompt.indexOf('Composed for a tattoo on the back.')).toBeGreaterThan(
+      prompt.indexOf('astronaut')
+    );
+  });
+});
+
+describe('line weight is not a palette (2026-08-25)', () => {
+  it('"color and clean lines" is a COLOR piece', () => {
+    // The reveal rendered full color. The re-cut came back monochrome because
+    // 'fine-line' was read as "no color".
+    expect(deriveDesignState(astronautIntake()).palette).toBe('full color');
+    expect(renderStatePrompt(deriveDesignState(astronautIntake()))).toContain(
+      'Palette: full color.'
+    );
+  });
+
+  it('a line-weight tag on its own settles nothing either way', () => {
+    for (const tag of ['fine-line', 'linework', 'fineline']) {
+      expect(deriveDesignState(astronautIntake({ styleTags: [tag] })).palette).toBeUndefined();
+    }
+  });
+
+  it('genuinely monochrome tags still mean monochrome', () => {
+    for (const tag of ['blackwork', 'black-and-grey', 'dotwork', 'tribal']) {
+      expect(deriveDesignState(astronautIntake({ styleTags: [tag] })).palette).toBe(
+        'blackwork, no color'
+      );
+      // Even beside a line-weight tag — the line weight is silent, not a veto.
+      expect(deriveDesignState(astronautIntake({ styleTags: [tag, 'fine-line'] })).palette).toBe(
+        'blackwork, no color'
+      );
+    }
+  });
+
+  it('color wins a tag conflict, which is resolvePalette\'s rule verbatim', () => {
+    expect(deriveDesignState(astronautIntake({ styleTags: ['blackwork', 'color'] })).palette).toBe(
+      'full color'
+    );
+  });
+
+  it('never answers a palette question the intake left open', () => {
+    // `settledAxes` refuses to skip an ambiguous rung for this exact reason;
+    // asserting a palette here would answer it for the customer, in a prompt,
+    // for money.
+    const open = astronautIntake({ styleTags: ['blackwork'], ambiguousAxes: ['color-blackwork'] });
+    expect(deriveDesignState(open).palette).toBeUndefined();
+    expect(renderStatePrompt(deriveDesignState(open))).not.toContain('Palette:');
+  });
+});
+
+describe('a dropped subject is as detectable as a dropped roster member', () => {
+  it('rosterOmissions is vacuous when nobody was named — hence the sibling', () => {
+    const state = deriveDesignState(astronautIntake());
+    // The broken prompt, verbatim. Zero omissions: the spend guard waved it
+    // through, and the customer paid for an eagle.
+    const broken =
+      'A tattoo on the back. Palette: blackwork, no color. Customer direction: "The bold one".';
+    expect(rosterOmissions(state, broken)).toEqual([]);
+    expect(stateOmissions(state, broken).subject).toContain('astronaut on the moon');
+  });
+
+  it('is clean for the prompt the state actually renders', () => {
+    const state = applyCritique(deriveDesignState(astronautIntake()), 'The bold one').state;
+    expect(stateOmissions(state, renderStatePrompt(state))).toEqual({
+      roster: [],
+      subject: undefined,
+    });
+  });
+
+  it('still reports a dropped roster member, exactly as before', () => {
+    const state = deriveDesignState(smashIntake());
+    const half = 'a color anime piece on your sleeve — Roxas and Sora';
+    expect(stateOmissions(state, half).roster).toEqual(['Link', 'Bowser']);
+  });
+
+  it('says nothing about a state that has no subject to drop', () => {
+    const state: DesignState = { ...deriveDesignState(smashIntake()), subject: undefined };
+    expect(stateOmissions(state, renderStatePrompt(state)).subject).toBeUndefined();
   });
 });
