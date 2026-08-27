@@ -44,7 +44,7 @@ import {
   stripChromaticWords,
   truncateWords,
 } from '../../council';
-import { resolvePalette } from '../../intake/settledAxes';
+import { sessionPalette } from '../../intake/settledAxes';
 import type { IntakeRecord } from '../../intake/types';
 import type { Variation } from '../types';
 
@@ -158,7 +158,7 @@ const SLEEVE_PATTERN = /\bsleeve\b/i;
 /**
  * Monochrome style tags the closed ontology does not carry.
  *
- * `resolvePalette` (intake) is the authority and answers first; this set is
+ * `sessionPalette` (intake) is the authority and answers first; this set is
  * only the fallback for tags that never went through the ontology resolver —
  * 'tribal' is an ontology id `resolvePalette` has never listed, and the
  * spelling variants exist because a state can be rehydrated from prose.
@@ -176,7 +176,7 @@ const MONOCHROME_TAGS = new Set([
 
 /**
  * The palette a brief starts with, delegated to the same resolver the reveal
- * uses (`resolvePalette`, intake) so the two lanes cannot answer the same
+ * uses (`sessionPalette`, intake) so the two lanes cannot answer the same
  * question differently.
  *
  * Session 2026-08-25 asked for "color and clean lines" — a fine-line COLOR
@@ -195,25 +195,23 @@ const MONOCHROME_TAGS = new Set([
  * style and never asked for the color to be taken away.
  */
 function derivePalette(intake: IntakeRecord): string | undefined {
-  // An axis the intake left open outranks anything the tags imply. The
-  // customer has a live color question in front of them — the conversation
-  // may even have deliberately reopened it so they can SEE both poles — and a
-  // prompt that asserts a palette answers that question on their behalf,
-  // silently, in the one place they cannot see it. Say nothing instead.
-  //
-  // This is also the guard that keeps line-style shorthand honest: 'fine-line'
-  // reads monochrome to `resolvePalette`, which is the right default when
-  // nothing else is known and the wrong one when the palette is exactly what
-  // is still being asked. `settledAxes` draws the same line for the same
-  // reason (see its condition 2).
-  if (intake.ambiguousAxes?.includes('color-blackwork')) return undefined;
-
   const tags = intake.styleTags.map((tag) => tag.toLowerCase().trim()).filter(Boolean);
-  if (tags.length === 0) return undefined;
 
-  const resolved = resolvePalette(tags);
+  // The precedence — customer answer > open question > tag inference — is
+  // written once, in `sessionPalette` (ADR-0061, #382). This module only
+  // translates its verdict into state-prompt wording, plus the rehydration
+  // fallback below for tags that never went through the ontology resolver.
+  const resolved = sessionPalette({ ...intake, styleTags: tags });
   if (resolved === 'color') return 'full color';
   if (resolved === 'monochrome') return 'blackwork, no color';
+
+  // 'unresolved' with the question still OPEN (flagged ambiguous, no
+  // answer): say nothing. The customer has a live color question in front
+  // of them, and a prompt that asserts a palette answers it on their
+  // behalf, silently, in the one place they cannot see it.
+  if (intake.ambiguousAxes?.includes('color-blackwork')) return undefined;
+
+  if (tags.length === 0) return undefined;
   if (tags.some((tag) => MONOCHROME_TAGS.has(tag))) return 'blackwork, no color';
   return 'full color';
 }

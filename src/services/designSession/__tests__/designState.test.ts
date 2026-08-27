@@ -644,6 +644,24 @@ describe('the palette is one decision, not two (2026-08-25)', () => {
     }
   });
 
+  it('a customer ANSWER outranks the open flag and the tags (ADR-0061)', () => {
+    // The ask-flow got its answer; the lingering ambiguous flag and the
+    // monochrome-leaning tag both lose to what the customer actually said.
+    const state = deriveDesignState(
+      astronautIntake({
+        styleTags: ['fine-line'],
+        ambiguousAxes: ['color-blackwork'],
+        paletteAnswer: 'color',
+      })
+    );
+    expect(state.palette).toBe('full color');
+    expect(
+      deriveDesignState(
+        astronautIntake({ styleTags: ['color'], paletteAnswer: 'monochrome' })
+      ).palette
+    ).toBe('blackwork, no color');
+  });
+
   it('an ambiguous axis that is not the palette changes nothing', () => {
     expect(
       deriveDesignState(

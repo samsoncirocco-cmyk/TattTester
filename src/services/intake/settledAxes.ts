@@ -48,6 +48,35 @@ export function resolvePalette(styleTags: readonly string[]): Palette {
   return 'unresolved';
 }
 
+/**
+ * The palette a SESSION runs under — the record-level answer, as opposed to
+ * `resolvePalette`, which only reads tags. Three states, in strict
+ * precedence (ADR-0061, issue #382):
+ *
+ *   1. The customer's answer to "black ink or color?" wins outright. It is
+ *      customer voice: it outranks a lingering ambiguous flag (intake may
+ *      have flagged the axis before the answer arrived) and it outranks
+ *      whatever the tags imply.
+ *   2. An OPEN question — `color-blackwork` in `ambiguousAxes` with no
+ *      answer — is 'unresolved', no matter what the tags say. The reveal
+ *      spreads the axis; nothing asserts a palette on the customer's
+ *      behalf. This is what keeps line-style shorthand ('fine-line' reads
+ *      monochrome to `resolvePalette`) from swallowing a color question
+ *      the customer never answered.
+ *   3. Otherwise the tags decide, via `resolvePalette`.
+ *
+ * This precedence is written HERE and only here. A caller that needs the
+ * session's palette calls this; a caller that re-derives it from tags or
+ * re-checks `ambiguousAxes` inline is growing a second copy of the rule,
+ * which is how the reveal and the re-cut lane once answered the same
+ * question differently (#382).
+ */
+export function sessionPalette(record: IntakeRecord): Palette {
+  if (record.paletteAnswer) return record.paletteAnswer;
+  if ((record.ambiguousAxes ?? []).includes('color-blackwork')) return 'unresolved';
+  return resolvePalette(record.styleTags);
+}
+
 /** The only ontology tag that commits a pole of bold-fine (there is no 'bold' tag). */
 const FINE_TAGS = new Set(['fine-line']);
 
@@ -72,7 +101,10 @@ const ORNATE_TAGS = new Set(['ornamental']);
  *      does when the customer asks to SEE both poles) stays spreadable no
  *      matter what the tags suggest. This is also what keeps line-style
  *      shorthand ("fine-line" reads monochrome to resolvePalette) from
- *      swallowing a palette question the customer never answered.
+ *      swallowing a palette question the customer never answered. For
+ *      color-blackwork specifically, this condition lives inside
+ *      `sessionPalette` — where a customer ANSWER (ADR-0061) can settle
+ *      the axis over a lingering ambiguous flag.
  *
  * An explicitly requested axis (IntakeRecord.requestedAxis) is the caller's
  * concern, not this one's: round-one selection lets the request win over a
@@ -83,7 +115,8 @@ export function settledAxes(record: IntakeRecord): VariationAxis[] {
   const tags = record.styleTags;
   const settled = new Set<VariationAxis>();
 
-  if (resolvePalette(tags) !== 'unresolved') settled.add('color-blackwork');
+  const palette = sessionPalette(record);
+  if (palette !== 'unresolved') settled.add('color-blackwork');
   if (tags.some(tag => FINE_TAGS.has(tag))) settled.add('bold-fine');
   if (
     (record.subject ?? '').trim() ||
@@ -95,5 +128,11 @@ export function settledAxes(record: IntakeRecord): VariationAxis[] {
     settled.add('minimal-ornate');
   }
 
-  return [...settled].filter(axis => !record.ambiguousAxes.includes(axis));
+  // color-blackwork is exempt from the ambiguous filter because
+  // `sessionPalette` already folded the ambiguity in (a customer ANSWER
+  // settles the axis even while the stale ambiguous flag lingers); every
+  // other axis keeps condition 2 verbatim.
+  return [...settled].filter(
+    axis => axis === 'color-blackwork' || !record.ambiguousAxes.includes(axis)
+  );
 }

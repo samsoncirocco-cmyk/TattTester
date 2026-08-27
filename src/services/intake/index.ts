@@ -31,7 +31,7 @@ export type {
 export { VARIATION_AXIS_POOL } from './types';
 // Pure and client-safe, like the types themselves: the council, the round
 // orchestrator, and the reveal UI all skip the same settled rungs (ADR-0049).
-export { resolvePalette, settledAxes } from './settledAxes';
+export { resolvePalette, sessionPalette, settledAxes } from './settledAxes';
 export type { Palette } from './settledAxes';
 
 export interface IntakeAnswers {

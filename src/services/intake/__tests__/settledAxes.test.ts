@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { IntakeRecord } from '../types';
-import { resolvePalette, settledAxes } from '../settledAxes';
+import { resolvePalette, sessionPalette, settledAxes } from '../settledAxes';
 
 const record = (overrides: Partial<IntakeRecord>): IntakeRecord => ({
   placement: 'forearm',
@@ -56,6 +56,58 @@ describe('settledAxes — the palette rung (the live-bug axis)', () => {
       requestedAxis: 'bold-fine',
     });
     expect(settledAxes(reopened)).not.toContain('bold-fine');
+  });
+});
+
+describe('sessionPalette — one precedence, written once (ADR-0061, #382)', () => {
+  it('a customer answer outranks the ambiguous flag', () => {
+    // Intake flagged the axis before the ask-flow got its answer; the
+    // answer is customer voice and wins over the stale flag.
+    expect(
+      sessionPalette(
+        record({ ambiguousAxes: ['color-blackwork'], paletteAnswer: 'color' })
+      )
+    ).toBe('color');
+    expect(
+      sessionPalette(
+        record({ ambiguousAxes: ['color-blackwork'], paletteAnswer: 'monochrome' })
+      )
+    ).toBe('monochrome');
+  });
+
+  it('a customer answer outranks anything the tags imply', () => {
+    // 'blackwork' reads monochrome to resolvePalette; the customer said
+    // color out loud, and what they said wins.
+    expect(
+      sessionPalette(record({ styleTags: ['blackwork'], paletteAnswer: 'color' }))
+    ).toBe('color');
+  });
+
+  it('an OPEN question (flagged, unanswered) outranks the tags', () => {
+    // The line-style-shorthand case: 'fine-line' reads monochrome, but the
+    // color question is live in front of the customer — nothing answers it
+    // on their behalf.
+    expect(
+      sessionPalette(record({ styleTags: ['fine-line'], ambiguousAxes: ['color-blackwork'] }))
+    ).toBe('unresolved');
+  });
+
+  it('with no answer and no open flag, the tags decide via resolvePalette', () => {
+    expect(sessionPalette(record({ styleTags: ['blackwork'] }))).toBe('monochrome');
+    expect(sessionPalette(record({ styleTags: ['watercolor'] }))).toBe('color');
+    expect(sessionPalette(record({ styleTags: ['illustrative'] }))).toBe('unresolved');
+  });
+
+  it('an ANSWERED axis is settled even while the ambiguous flag lingers', () => {
+    // The answer settles color-blackwork (ADR-0061: it must survive to the
+    // reveal like any settled axis); other axes keep the ambiguous filter.
+    const answered = record({
+      styleTags: ['fine-line'],
+      ambiguousAxes: ['color-blackwork', 'bold-fine'],
+      paletteAnswer: 'monochrome',
+    });
+    expect(settledAxes(answered)).toContain('color-blackwork');
+    expect(settledAxes(answered)).not.toContain('bold-fine');
   });
 });
 

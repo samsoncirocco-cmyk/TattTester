@@ -17,7 +17,7 @@ import type {
   VariationAxis,
 } from '../../intake/types';
 import { VARIATION_AXIS_POOL, ROUND_AXIS_LADDER } from '../../intake/types';
-import { resolvePalette, settledAxes } from '../../intake/settledAxes';
+import { sessionPalette, settledAxes } from '../../intake/settledAxes';
 import type { Palette } from '../../intake/settledAxes';
 import { getBaseNegativePrompt, validatePromptLength } from './councilService';
 import { resolvePlacement } from '@/lib/placement';
@@ -359,21 +359,46 @@ export function selectAxes(record: IntakeRecord): AxisSelection {
 }
 
 /*
- * Palette resolution (resolvePalette, re-imported from the intake module —
- * it now lives beside the record it reads, because the round-axis ladder
- * skips settled rungs off the same decision). The palette drives two things
- * here: the front-loaded palette clause and the negative prompt.
- * Presentation is NOT one of them — it is pinned to flash art for every
- * session, see presentationClause(). Flux weights the front of a prompt far
- * more heavily than a trailing negative, which is why the palette leads
- * rather than being folded into "Avoid:".
+ * Palette resolution (sessionPalette, imported from the intake module — it
+ * lives beside the record it reads, because the round-axis ladder skips
+ * settled rungs off the same decision, and because the customer-answer >
+ * open-question > tag-inference precedence must be written exactly once,
+ * #382/ADR-0061). The palette drives two things here: the palette rider in
+ * the opening sentence and the negative prompt. Presentation is NOT one of
+ * them — it is pinned to flash art for every session. Flux weights the
+ * front of a prompt far more heavily than a trailing negative, which is why
+ * the palette rides the opening sentence rather than being folded into
+ * "Avoid:" — but it rides BEHIND the presentation instruction, which is the
+ * clause ADR-0023 measured 0/12 without and must own the very first tokens.
  */
 
-/** Front-loaded palette clause — first words of every prompt tier. */
-function paletteClause(palette: Palette): string {
-  if (palette === 'color') return 'Vibrant color, clean ink saturation, tattoo-quality color rendering. ';
-  if (palette === 'monochrome') return 'Monochrome, black and grey ink only, zero color. ';
+/**
+ * Palette rider, folded into the presentation sentence (never its own
+ * leading sentence — the prompt must OPEN on the flash-art instruction).
+ */
+function paletteRider(palette: Palette): string {
+  if (palette === 'color') {
+    return 'rendered in vibrant color with clean ink saturation and tattoo-quality color rendering';
+  }
+  if (palette === 'monochrome') {
+    return 'rendered in monochrome — black and grey ink only, zero color';
+  }
   return '';
+}
+
+/**
+ * The opening of every prompt tier: the flash-art presentation instruction
+ * first, with the palette riding the same sentence when the session (or the
+ * cut's own color-blackwork pole) has one. A palette-first opening let the
+ * palette clause occupy the tokens ADR-0023 proved the presentation needs;
+ * a palette-less opening on a color-blackwork spread made the two poles
+ * open identically, which made the customer's round-one choice fake at the
+ * most heavily weighted position (#382).
+ */
+function presentationLead(palette: Palette): string {
+  const rider = paletteRider(palette);
+  if (!rider) return PRESENTATION_LEAD;
+  return PRESENTATION_LEAD.replace(/\.\s*$/, `, ${rider}. `);
 }
 
 /**
@@ -503,7 +528,7 @@ function buildContext(record: IntakeRecord): PromptContext {
   return {
     styleDesc: record.styleTags.length > 0 ? record.styleTags.join(', ') : 'tattoo',
     placement,
-    palette: resolvePalette(record.styleTags),
+    palette: sessionPalette(record),
     subject: record.subject?.trim() || undefined,
     meaningShort: truncateWords(record.meaning, 60),
     aspectGuidance,
@@ -615,8 +640,23 @@ function buildQuadrantVariation(
   const phrases = specs.map(spec => spec.phrase).join(', ');
   const details = specs.map(spec => spec.detail).join('; ');
 
-  const lead = paletteClause(ctx.palette) + PRESENTATION_LEAD;
-  const simple = `${lead}A tattoo design in a ${ctx.styleDesc} style, ${subjectClause(ctx)} Rendered with ${phrases}.`;
+  // When this cut carries a color-blackwork pole — the round is spreading
+  // the axis, or a later round holds it locked — the POLE is the cut's
+  // palette, and it overrides the session's. This is what stops a
+  // session-level monochrome verdict commanding "zero color" on the cut
+  // whose whole job is to be the colour pole (#382), and it also keys the
+  // chromatic-word strip to the cut: the blackwork pole must not front-load
+  // an orange gi the colour pole is entitled to keep.
+  const polePalette = axisPosition['color-blackwork'];
+  const cutCtx: PromptContext =
+    polePalette === 'color'
+      ? { ...ctx, palette: 'color' }
+      : polePalette === 'blackwork'
+        ? { ...ctx, palette: 'monochrome' }
+        : ctx;
+
+  const lead = presentationLead(cutCtx.palette);
+  const simple = `${lead}A tattoo design in a ${ctx.styleDesc} style, ${subjectClause(cutCtx)} Rendered with ${phrases}.`;
   const detailed =
     `${simple} Treatment: ${details}. Composition follows ${ctx.aspectGuidance}.`;
   const ultra =
@@ -630,7 +670,10 @@ function buildQuadrantVariation(
         styleTags: ctx.styleTags,
       }),
     ...specs.map(spec => spec.negative),
-    ...paletteNegatives(ctx.palette),
+    // When a color-blackwork pole rides this cut, its PoleSpec negative
+    // already carries the palette exclusions — adding paletteNegatives for
+    // the pole would duplicate them verbatim.
+    ...(polePalette ? [] : paletteNegatives(ctx.palette)),
     PRESENTATION_NEGATIVES,
   ].join(', ');
 
@@ -649,7 +692,7 @@ function buildCompositionalVariation(
   treatment: CompositionalTreatment,
   ctx: PromptContext
 ): StructuredVariation {
-  const lead = paletteClause(ctx.palette) + PRESENTATION_LEAD;
+  const lead = presentationLead(ctx.palette);
   const simple = `${lead}A tattoo design in a ${ctx.styleDesc} style, ${subjectClause(ctx)} Use a ${treatment.phrase}.`;
   const detailed =
     `${simple} Treatment: ${treatment.detail}. Composition follows ${ctx.aspectGuidance}.`;
