@@ -1,6 +1,14 @@
 'use client';
 
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+
+const MIN_HEIGHT_PX = 48;
+const MAX_HEIGHT_PX = 256;
+
+function resizeTextarea(textarea: HTMLTextAreaElement) {
+  textarea.style.height = 'auto';
+  textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, MIN_HEIGHT_PX), MAX_HEIGHT_PX)}px`;
+}
 
 /**
  * Free-text reply line for the conversation. Space Mono body text — the
@@ -27,7 +35,7 @@ export function ChatInput({
   prefill?: { text: string; nonce: number };
 }) {
   const [value, setValue] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Adopt a new prefill during render (the React "adjust state when props
   // change" pattern — no cascading effect render); focus is the one true
@@ -42,6 +50,14 @@ export function ChatInput({
     if (prefill) inputRef.current?.focus();
   }, [prefill]);
 
+  // `scrollHeight` reflects typed text, a pasted paragraph, and a tap-to-fix
+  // prefill. Resize after each committed value so no input event is special.
+  // The cap keeps a long paste from pushing the send button off a small screen;
+  // beyond it the textarea scrolls normally.
+  useLayoutEffect(() => {
+    if (inputRef.current) resizeTextarea(inputRef.current);
+  }, [value]);
+
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     const text = value.trim();
@@ -50,17 +66,27 @@ export function ChatInput({
     setValue('');
   };
 
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Preserve the chat's Enter-to-send convention, while Shift+Enter gives
+    // people an intentional line break in longer prompts.
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      e.currentTarget.form?.requestSubmit();
+    }
+  };
+
   return (
     <form onSubmit={handleSubmit} className="flex gap-2">
-      <input
+      <textarea
         ref={inputRef}
-        type="text"
+        rows={1}
         value={value}
         onChange={(e) => setValue(e.target.value)}
+        onKeyDown={handleKeyDown}
         placeholder={placeholder}
         aria-label={ariaLabel}
         disabled={disabled}
-        className="flex-1 min-w-0 bg-transparent border hairline-white px-4 py-3 font-body text-[16px] text-white placeholder:text-white/30 focus:outline-none focus:border-pink"
+        className="flex-1 min-w-0 resize-none overflow-y-auto bg-transparent border hairline-white px-4 py-3 font-body text-[16px] leading-6 text-white placeholder:text-white/30 focus:outline-none focus:border-pink"
       />
       <button
         type="submit"
