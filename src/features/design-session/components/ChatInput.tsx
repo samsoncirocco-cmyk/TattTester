@@ -77,6 +77,9 @@ export function ChatInput({
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // An IME uses Enter to commit a candidate word; that Enter must not send
+    // the message mid-composition (keyCode 229 covers older Safari).
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       submit();
