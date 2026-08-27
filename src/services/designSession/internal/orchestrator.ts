@@ -41,7 +41,7 @@ import { deriveRefinementQuestion, adjustPromptForAnswer } from './refinement';
 import { derivePlacementNotes } from './placementNotes';
 import { deriveStencil } from './stencil';
 import { durableRender } from './durableImage';
-import { guardRenderBytes } from '@/lib/renderGuard';
+import { observeRenderedImage } from '@/lib/observeRender';
 import { referenceImagePaths } from './references';
 import { deleteReferencePhotos, signedReferenceUrls } from './referencePhotos';
 import { recordImageSpend } from './spend';
@@ -281,77 +281,6 @@ export async function startSession(request: StartSessionRequest): Promise<Stored
 }
 
 /**
- * The pixel guard, at the acceptance point (ADR-0023's question, asked of the
- * bytes instead of the prompt).
- *
- * `designBackdrop` has always known how to tell flash art on white from a
- * photograph of skin, but it only ran on opt-in surfaces the customer might
- * never open — the AR preview, the SMS composite — minutes to days after the
- * render was paid for. A re-cut that came back as somebody's forearm sailed
- * into the reveal grid unremarked. This runs the same measurement the moment
- * the provider answers, inside the render closure so a reused staged image is
- * not re-measured: it was guarded when it was bought.
- *
- * IT MEASURES; IT DOES NOT REJECT. The bytes are already billed against
- * BUDGET_MAX_SPEND_CENTS and a re-cut costs again, so discarding on this
- * verdict trades a possible bad image for a certain double charge — the
- * renderGuard header makes that argument and it is not this change's to
- * overturn. What arming buys is knowing at acceptance time instead of never;
- * `border_backdrop_fraction` is logged so an operator (and the nightly
- * review) can answer "how close to the line" without re-fetching anything.
- *
- * ONLY INLINE RENDERS ARE MEASURED, and the gap is logged rather than hidden.
- * Vertex returns `data:` URLs — the bytes are already in memory, so the check
- * costs a decode and no network. Replicate returns a hosted URL, and
- * measuring it would mean fetching an image we are about to copy anyway, from
- * inside a paid render path. Rather than let that lane report a quiet green,
- * it reports `not-measured` with the reason: a guard that cannot see
- * something must say so, which is the whole lesson of the roster-only net.
- *
- * Never throws. A guard must not be the reason a paid render fails to reach
- * the customer.
- */
-async function guardRenderedImage(
-  sessionId: string,
-  tag: string,
-  image: string | undefined
-): Promise<void> {
-  try {
-    if (!image || !image.startsWith('data:')) {
-      logger.info({
-        event_type: 'design_session.render_guard',
-        session_id: sessionId,
-        cut_id: tag,
-        measured: false,
-        reason: image
-          ? 'render guard skipped: provider returned a hosted URL, not inline bytes'
-          : 'render guard skipped: provider returned no image',
-      });
-      return;
-    }
-    const bytes = Buffer.from(image.slice(image.indexOf(',') + 1), 'base64');
-    const verdict = await guardRenderBytes(new Uint8Array(bytes));
-    logger[verdict.passed ? 'info' : 'warn']({
-      event_type: 'design_session.render_guard',
-      session_id: sessionId,
-      cut_id: tag,
-      measured: true,
-      passed: verdict.passed,
-      kind: verdict.kind,
-      border_backdrop_fraction: verdict.borderBackdropFraction,
-      reason: verdict.reason,
-    });
-  } catch (err) {
-    logger.warn({
-      event_type: 'design_session.render_guard_errored',
-      session_id: sessionId,
-      cut_id: tag,
-      error: (err as Error)?.message ?? String(err),
-    });
-  }
-}
-
-/**
  * Render one image and capture it durably (TAT-57). Nothing a provider hands
  * back is persistable as-is: Replicate URLs expire within the hour and Vertex
  * inline base64 blows past Firestore's ~1MB document cap. Every URL that
@@ -391,7 +320,13 @@ async function renderDurably(
     },
     async () => {
       const result = await generate(request);
-      await guardRenderedImage(session.id, tag, result.images[0]);
+      // The pixel guard, at the acceptance point — inside the closure so a
+      // reused staged image is not re-measured: it was guarded when it was
+      // bought. Measures and logs, never rejects; see @/lib/observeRender.
+      await observeRenderedImage(result.images[0], {
+        eventType: 'design_session.render_guard',
+        fields: { session_id: session.id, cut_id: tag },
+      });
       // Optional-chained on purpose: this is a BILLING read, and spend.ts's
       // rule is that the ledger must never break a render. A provider always
       // returns metadata, so the fallback is for malformed results only —

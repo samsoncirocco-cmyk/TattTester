@@ -26,7 +26,10 @@ vi.mock('../internal/durableImage', () => ({
   ),
 }));
 
+vi.mock('@/lib/observeRender', () => ({ observeRenderedImage: vi.fn() }));
+
 import { deriveStencil, stencilPromptStrength } from '../internal/stencil';
+import { observeRenderedImage } from '@/lib/observeRender';
 import { generate } from '../../generation';
 import { durableRender } from '../internal/durableImage';
 
@@ -137,5 +140,38 @@ describe('stencilPromptStrength', () => {
 
     vi.stubEnv('STENCIL_PROMPT_STRENGTH', 'banana');
     expect(stencilPromptStrength()).toBe(0.9);
+  });
+});
+
+/**
+ * #389 armed the pixel guard inside the orchestrator's render closure. This
+ * function has its OWN durableRender closure, so it was never reached — a
+ * paid render nothing measured (#392). A stencil is line art on a clean
+ * field, so the backdrop question applies here at least as strongly: a
+ * stencil that comes back as a photograph of skin is exactly as wrong as a
+ * re-cut that does.
+ */
+describe('the pixel guard reaches this lane too', () => {
+  it('observes the render it just bought, tagged as the stencil', async () => {
+    await deriveStencil('s1', 'v3-refined', SOURCE);
+
+    expect(observeRenderedImage).toHaveBeenCalledTimes(1);
+    const [image, observation] = vi.mocked(observeRenderedImage).mock.calls[0];
+    expect(image).toBe('https://replicate.delivery/pbxt/stencil.png');
+    // Tagged distinctly from the cut it derives from, or the two renders are
+    // indistinguishable in the log they both write to.
+    expect(observation).toMatchObject({
+      eventType: 'design_session.render_guard',
+      fields: { session_id: 's1', cut_id: 'v3-refined-stencil' },
+    });
+  });
+
+  it('is not consulted when derivation is switched off and nothing is bought', async () => {
+    vi.stubEnv('STENCIL_DERIVATION_ENABLED', 'false');
+
+    await deriveStencil('s1', 'v3-refined', SOURCE);
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(observeRenderedImage).not.toHaveBeenCalled();
   });
 });

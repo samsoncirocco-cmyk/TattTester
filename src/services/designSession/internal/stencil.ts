@@ -20,6 +20,7 @@
 import { generate, STENCIL_SHIELD_TOKENS } from '../../generation';
 import { durableRender } from './durableImage';
 import { logger } from '@/lib/logger';
+import { observeRenderedImage } from '@/lib/observeRender';
 
 /**
  * Only flux-dev accepts an image-to-image input (see the generation module's
@@ -121,6 +122,15 @@ export async function deriveStencil(
           // Only flux-dev can honor sourceImage; falling back to a model
           // that cannot would silently return a different design.
           allowProviderFallback: false,
+        });
+        // A stencil is line art on a clean field, so the backdrop question
+        // applies here at least as strongly as it does to a re-cut: a stencil
+        // that comes back as a photograph of skin is exactly as wrong. This
+        // closure is its own render path and therefore missed #389's wiring
+        // entirely — it bought renders nothing measured (#392).
+        await observeRenderedImage(result.images[0], {
+          eventType: 'design_session.render_guard',
+          fields: { session_id: sessionId, cut_id: `${tag}-stencil` },
         });
         return { image: result.images[0] };
       }

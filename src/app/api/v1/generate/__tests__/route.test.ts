@@ -6,6 +6,7 @@ import { NextRequest } from 'next/server';
 
 const {
   generateMock,
+  observeRenderedImageMock,
   recordSpendMock,
   checkBudgetMock,
   rateLimitMock,
@@ -15,6 +16,7 @@ const {
   releaseGenerationCreditMock,
 } = vi.hoisted(() => ({
   generateMock: vi.fn(),
+  observeRenderedImageMock: vi.fn(),
   recordSpendMock: vi.fn(),
   checkBudgetMock: vi.fn(),
   rateLimitMock: vi.fn(),
@@ -62,6 +64,8 @@ vi.mock('@/lib/logger', () => ({
     error: vi.fn()
   })
 }));
+
+vi.mock('@/lib/observeRender', () => ({ observeRenderedImage: observeRenderedImageMock }));
 
 import { POST } from '../route';
 
@@ -297,5 +301,58 @@ describe('/api/v1/generate route adapter', () => {
     expect(json.code).toBe('INVALID_PROMPT');
     expect(generateMock).not.toHaveBeenCalled();
     expect(recordSpendMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #389 armed the pixel guard inside the design-session orchestrator. This
+ * endpoint reserves a customer credit and calls `generate` directly, so it
+ * never went through that wiring — a paid render nothing measured (#392).
+ */
+describe('the pixel guard reaches this lane too', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    verifyApiAuthMock.mockResolvedValue(null);
+    verifyFirebaseTokenMock.mockResolvedValue({ uid: 'uid_customer' });
+    reserveGenerationCreditMock.mockResolvedValue({ source: 'free', freeRemaining: 24, paidRemaining: 0 });
+    rateLimitMock.mockResolvedValue({ allowed: true });
+    checkBudgetMock.mockResolvedValue({ allowed: true });
+    recordSpendMock.mockResolvedValue(undefined);
+  });
+
+  it('observes every image it charged for, not just the first', async () => {
+    generateMock.mockResolvedValueOnce(vertexResult(2));
+
+    await POST(makeRequest({ prompt: 'dragon tattoo', sampleCount: 2 }));
+
+    // Two images were billed; two were measured. A per-request check would
+    // report clean over a second image nobody looked at.
+    expect(observeRenderedImageMock).toHaveBeenCalledTimes(2);
+    expect(observeRenderedImageMock.mock.calls[0][0]).toBe('data:image/png;base64,img0');
+    expect(observeRenderedImageMock.mock.calls[1][0]).toBe('data:image/png;base64,img1');
+  });
+
+  it('records a failing verdict here as an observation, not a warning', async () => {
+    generateMock.mockResolvedValueOnce(vertexResult(1));
+
+    await POST(makeRequest({ prompt: 'a photo of a forearm', sampleCount: 1 }));
+
+    // This endpoint renders whatever prompt the caller sends, so it never
+    // asserted the ADR-0023 flash-art presentation the design-session lanes
+    // pin. A low backdrop fraction is therefore an observation, not a defect,
+    // and warning on it would train people to ignore the event.
+    expect(observeRenderedImageMock.mock.calls[0][1]).toMatchObject({
+      eventType: 'generate_api.render_guard',
+      warnOnFail: false,
+      fields: { uid: 'uid_customer', image_index: 0 },
+    });
+  });
+
+  it('does not measure a render that was never bought', async () => {
+    generateMock.mockRejectedValueOnce(new Error('provider exploded'));
+
+    await POST(makeRequest({ prompt: 'dragon tattoo', sampleCount: 1 }));
+
+    expect(observeRenderedImageMock).not.toHaveBeenCalled();
   });
 });
