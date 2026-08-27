@@ -155,6 +155,22 @@ export interface SessionStore {
    * transaction, mirroring claimRound).
    */
   claimOwnership(id: string, uid: string, stamp: boolean): Promise<ClaimOwnershipResult>;
+  /**
+   * Sessions touched since `sinceIso`, newest first, capped at `limit`.
+   *
+   * The only read on this interface that is not keyed by a session id. It
+   * exists for the review cron (/api/cron/session-review), which has no id to
+   * start from — its whole job is to sweep what recently happened and say what
+   * went wrong. Deliberately narrow: an ISO lower bound plus a hard cap, so a
+   * sweep can never walk the whole collection as the corpus grows.
+   *
+   * `updatedAt` is an ISO-8601 UTC string on every stored session, and ISO-8601
+   * in that form sorts lexically the same way it sorts chronologically, so a
+   * plain string range works and needs no schema change. Ordering by the same
+   * field the range filters on also keeps this on Firestore's single-field
+   * index — no composite index to provision before the cron can run.
+   */
+  listRecentlyUpdated(sinceIso: string, limit: number): Promise<StoredSession[]>;
 }
 
 /**
@@ -276,6 +292,13 @@ export const memorySessionStore: SessionStore = {
     session.ownerUid = uid;
     return 'stamped';
   },
+  async listRecentlyUpdated(sinceIso, limit) {
+    return Array.from(sessions.values())
+      .filter((session) => session.updatedAt >= sinceIso)
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
+      .slice(0, Math.max(0, limit))
+      .map((session) => structuredClone(session));
+  },
 };
 
 /** Test hook: reset the in-memory store between cases. */
@@ -347,6 +370,16 @@ export const firestoreSessionStore: SessionStore = {
       tx.update(ref, { ownerUid: uid });
       return 'stamped';
     });
+  },
+  async listRecentlyUpdated(sinceIso, limit) {
+    const { getFirestore } = await import('firebase-admin/firestore');
+    const snap = await getFirestore()
+      .collection(COLLECTION)
+      .where('updatedAt', '>=', sinceIso)
+      .orderBy('updatedAt', 'desc')
+      .limit(Math.max(0, limit))
+      .get();
+    return snap.docs.map((doc) => doc.data() as StoredSession);
   },
 };
 
