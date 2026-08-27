@@ -38,6 +38,10 @@ import {
   reviewSession,
   summarizeReviews,
 } from '@/services/designSession/internal/sessionReview';
+import {
+  resolveReviewStore,
+  type SessionReviewRun,
+} from '@/services/designSession/internal/sessionReviewStore';
 import type { SessionReviewReport } from '@/services/designSession/internal/sessionReview';
 
 export const runtime = 'nodejs';
@@ -114,11 +118,37 @@ async function handle(req: NextRequest) {
   const flagged = reports.filter((report) => report.findings.length > 0);
   const counts = summarizeReviews(reports);
 
+  const run: SessionReviewRun = {
+    ranAt: new Date(now).toISOString(),
+    window: { sinceIso, hours, limit },
+    scanned: sessions.length,
+    reviewed: reports.length,
+    flagged: flagged.length,
+    counts,
+    sessions: flagged,
+  };
+
+  // Persist before logging, because the log line is the copy that expires.
+  // Vercel discards a cron's response body and retains runtime logs for about
+  // an hour, so a daily job that only logs has written its findings into a
+  // window that closed long before anyone reads it. A failure here is recorded
+  // and swallowed: the review already happened, and throwing it away because
+  // storage was unavailable would be strictly worse than keeping it in the log.
+  let persisted = false;
+  try {
+    await resolveReviewStore().save(run);
+    persisted = true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[cron/session-review] failed to persist the review run:', message);
+  }
+
   console.log(
     `[cron/session-review] reviewed ${reports.length} session(s) since ${sinceIso}: ` +
       `${flagged.length} flagged — ${counts.promptContract} contract, ` +
       `${counts.promptContractAdvisory} advisory, ${counts.zeroRenderStall} zero-render, ` +
-      `${counts.contractNotCheckable} uncheckable.`
+      `${counts.contractNotCheckable} uncheckable.` +
+      (persisted ? '' : ' NOT PERSISTED — this log line is the only copy.')
   );
 
   return NextResponse.json({
@@ -127,6 +157,12 @@ async function handle(req: NextRequest) {
     reviewed: reports.length,
     flagged: flagged.length,
     counts,
+    /**
+     * Whether the run survived past this response. False means the findings
+     * exist only in the log line above, which expires — worth saying out loud
+     * rather than letting a 200 imply the report was kept.
+     */
+    persisted,
     // Only the sessions with something to say. A green session's counts are
     // already folded into `reviewed`; echoing every clean document back would
     // bury the findings this job exists to surface.

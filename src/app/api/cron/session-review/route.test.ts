@@ -12,14 +12,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesignState } from '@/services/designSession/internal/designState';
 import type { StoredSession } from '@/services/designSession/internal/store';
 
-const { listRecentlyUpdatedMock } = vi.hoisted(() => ({
+const { listRecentlyUpdatedMock, saveRunMock } = vi.hoisted(() => ({
   listRecentlyUpdatedMock: vi.fn(),
+  saveRunMock: vi.fn(),
 }));
 
 vi.mock('@/services/designSession/internal/store', () => ({
   resolveSessionStore: () => ({
     listRecentlyUpdated: listRecentlyUpdatedMock,
   }),
+}));
+
+vi.mock('@/services/designSession/internal/sessionReviewStore', () => ({
+  resolveReviewStore: () => ({ save: saveRunMock }),
 }));
 
 import { reviewSession } from '@/services/designSession/internal/sessionReview';
@@ -80,6 +85,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   process.env.CRON_SECRET = SECRET;
   listRecentlyUpdatedMock.mockResolvedValue([]);
+  saveRunMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -420,5 +426,81 @@ describe('cron/session-review — findings', () => {
     expect(body.counts.promptContract).toBe(1);
     // v1 and c1 still show up, honestly labelled as what they are.
     expect(body.counts.promptContractAdvisory).toBeGreaterThan(0);
+  });
+});
+
+// The findings have to outlive the run. Vercel discards a cron's response body
+// and keeps runtime logs about an hour, so a daily job that only logs has put
+// its output somewhere that is empty by the time anyone looks — a review loop
+// that reads as coverage while retaining nothing.
+describe('a sweep is persisted, and says so when it is not', () => {
+  it('writes the run, findings and all, before it answers', async () => {
+    listRecentlyUpdatedMock.mockResolvedValue([
+      session({
+        id: 'stalled-1',
+        phase: 'intake',
+        variations: [],
+        conversation: {
+          transcript: [
+            { role: 'bot', text: 'what are we making?' },
+            { role: 'user', text: 'an astronaut with a cracked visor' },
+          ],
+          turnCount: 2,
+          record: {},
+          turnLogs: [],
+          stage: 'chatting',
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      }),
+    ]);
+
+    const body = await (await POST(makeRequest(`Bearer ${SECRET}`))).json();
+
+    expect(saveRunMock).toHaveBeenCalledTimes(1);
+    const run = saveRunMock.mock.calls[0][0];
+    expect(run.ranAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(run.flagged).toBe(1);
+    // Not just the counts — the findings themselves, or a later sweep cannot
+    // tell a new problem from yesterday's.
+    expect(run.sessions[0].sessionId).toBe('stalled-1');
+    expect(run.sessions[0].findings.length).toBeGreaterThan(0);
+    expect(run.window.sinceIso).toBe(body.window.sinceIso);
+    expect(body.persisted).toBe(true);
+  });
+
+  it('still returns the review when the write fails, and does not claim it was kept', async () => {
+    saveRunMock.mockRejectedValue(new Error('firestore unavailable'));
+    listRecentlyUpdatedMock.mockResolvedValue([
+      session({
+        id: 'stalled-2',
+        phase: 'intake',
+        variations: [],
+        conversation: {
+          transcript: [
+            { role: 'bot', text: 'what are we making?' },
+            { role: 'user', text: 'an astronaut with a cracked visor' },
+          ],
+          turnCount: 2,
+          record: {},
+          turnLogs: [],
+          stage: 'chatting',
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      }),
+    ]);
+
+    const res = await POST(makeRequest(`Bearer ${SECRET}`));
+    const body = await res.json();
+
+    // The reviewing already happened; storage being down must not discard it.
+    expect(res.status).toBe(200);
+    expect(body.flagged).toBe(1);
+    // But the response must not imply the report survived.
+    expect(body.persisted).toBe(false);
+  });
+
+  it('does not write anything for a caller it refused', async () => {
+    await POST(makeRequest('Bearer wrong-secret'));
+    expect(saveRunMock).not.toHaveBeenCalled();
   });
 });
