@@ -5,6 +5,7 @@ import { rateLimit, rateLimitResponse } from '@/lib/rate-limit';
 import { checkBudget, recordSpend, VERTEX_IMAGEN_COST_CENTS } from '@/lib/budget-tracker';
 import { createRequestLogger } from '@/lib/logger';
 import { DEMO_MOCK_IMAGES } from '@/lib/demo-images';
+import { observeRenderedImage } from '@/lib/observeRender';
 import { verifyFirebaseToken } from '@/lib/auth-dal';
 import {
     GenerationCreditsExhaustedError,
@@ -138,6 +139,30 @@ export async function POST(req: NextRequest) {
             }
         });
         generationSucceeded = true;
+
+        // The pixel guard, on the lane that reserves a customer credit and
+        // renders directly. #389 armed it inside the design-session
+        // orchestrator, which this endpoint does not go through — so it bought
+        // renders nothing measured (#392). Measure-and-log only, exactly as
+        // there: the credit is already reserved and the bytes already billed,
+        // so a verdict must never cost the caller their generation.
+        //
+        // warnOnFail is FALSE here on purpose. The design-session lanes pin the
+        // ADR-0023 flash-art presentation, so a failing backdrop verdict there
+        // is a real defect. This endpoint renders whatever prompt the caller
+        // sends, so the backdrop expectation was never asserted — a low
+        // fraction is an observation, not a violation, and warning on it would
+        // train people to ignore the event. The measurement is recorded either
+        // way; only the level differs.
+        await Promise.all(
+            (result.images ?? []).map((image, index) =>
+                observeRenderedImage(image, {
+                    eventType: 'generate_api.render_guard',
+                    fields: { uid: user.uid, image_index: index },
+                    warnOnFail: false,
+                })
+            )
+        );
 
         // ─── Cross-provider fallback result ───────────────────────────────
         // The module fell back to Replicate after a Vertex failure.
