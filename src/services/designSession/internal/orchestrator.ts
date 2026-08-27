@@ -1465,9 +1465,12 @@ export async function critique(
     // And when NOTHING has been held — the whole conversation so far is
     // addresses that resolved to no request — an empty hold is the truthful
     // outcome. Stashing the contentless turn as if it were content meant a
-    // later bare-address answer rendered it: "the other one" became the
-    // entire Customer direction of a paid render (Sonnet grill, 2026-08-27),
-    // the same money-for-an-address defect this commit's headline kills.
+    // later bare-address answer rendered it: "cut 9" (an address naming a
+    // cut that does not exist, so it reaches this arm) became the entire
+    // Customer direction of a paid render (Sonnet grill, 2026-08-27) — the
+    // same money-for-an-address defect this commit's headline kills. Not
+    // every contentless phrase gets here: "the other one" matches
+    // REROLL_PATTERN and leaves on the reroll lane first.
     // settle() already deletes the stash when handed an empty list.
     const held = answerAddsRequest(message) ? [...pending, message] : pending;
     return settle(
