@@ -39,7 +39,11 @@
  * object has no fields for yet.
  */
 
-import { PRESENTATION_LEAD as COUNCIL_PRESENTATION_LEAD, stripChromaticWords } from '../../council';
+import {
+  PRESENTATION_LEAD as COUNCIL_PRESENTATION_LEAD,
+  stripChromaticWords,
+  truncateWords,
+} from '../../council';
 import { resolvePalette } from '../../intake/settledAxes';
 import type { IntakeRecord } from '../../intake/types';
 import type { Variation } from '../types';
@@ -85,6 +89,18 @@ export interface DesignState {
    * the lossless cast list; the subject is what they are doing and where.
    */
   subject?: string;
+  /**
+   * What the piece is FOR, in the customer's own words — capped at
+   * MEANING_MAX_WORDS.
+   *
+   * Deliberately NOT merged with `subject`. A meaning is often not a scene:
+   * "it just goes hard" is a complete answer to the meaning question (TAT-51),
+   * and rendering it through the subject clause produces "A tattoo design
+   * depicting it just goes hard." The field the words arrived in decides how
+   * they render — `depicting <subject>` versus `expressing "<meaning>"` — and
+   * neither ever falls back to the other.
+   */
+  meaning?: string;
   /** Verified character-to-source bindings, parallel to but not the same as `roster`. */
   identities: { name: string; series: string }[];
   /** "tattoo sleeve", "tattoo on the forearm" — the piece and where it sits. */
@@ -127,6 +143,13 @@ export interface DesignState {
 
 /** How many free-text directives a state carries before the oldest fall off. */
 export const MAX_DIRECTIVES = 3;
+
+/**
+ * Word cap on the freeform meaning before it rides a prompt. Same bound the
+ * Council uses on the same prose, for the same reason: an unbounded brief
+ * blows the token budget of the prompt it is embedded in.
+ */
+export const MEANING_MAX_WORDS = 60;
 
 /* ── Deriving the first state ────────────────────────────────────────────── */
 
@@ -171,8 +194,21 @@ const MONOCHROME_TAGS = new Set([
  * ('anime', 'illustrative') stays 'full color' — the brief committed to a
  * style and never asked for the color to be taken away.
  */
-function derivePalette(styleTags: readonly string[]): string | undefined {
-  const tags = styleTags.map((tag) => tag.toLowerCase().trim()).filter(Boolean);
+function derivePalette(intake: IntakeRecord): string | undefined {
+  // An axis the intake left open outranks anything the tags imply. The
+  // customer has a live color question in front of them — the conversation
+  // may even have deliberately reopened it so they can SEE both poles — and a
+  // prompt that asserts a palette answers that question on their behalf,
+  // silently, in the one place they cannot see it. Say nothing instead.
+  //
+  // This is also the guard that keeps line-style shorthand honest: 'fine-line'
+  // reads monochrome to `resolvePalette`, which is the right default when
+  // nothing else is known and the wrong one when the palette is exactly what
+  // is still being asked. `settledAxes` draws the same line for the same
+  // reason (see its condition 2).
+  if (intake.ambiguousAxes?.includes('color-blackwork')) return undefined;
+
+  const tags = intake.styleTags.map((tag) => tag.toLowerCase().trim()).filter(Boolean);
   if (tags.length === 0) return undefined;
 
   const resolved = resolvePalette(tags);
@@ -196,19 +232,41 @@ function deriveMedium(placement: string, meaning: string): string {
 }
 
 /**
- * The idea, off the intake: the extracted subject when there is one, and the
- * meaning prose when there is not.
+ * The scene to draw, off the intake — intake's structured visual reading, and
+ * ONLY that. "an astronaut on the moon whose glass mask cracked..."
  *
- * Both are real carriers of the scene. `subject` is intake's structured
- * reading ("an astronaut on the moon whose glass mask cracked..."), and
- * `meaning` is what a brief with no nameable IP still says out loud. Reading
- * neither is how the astronaut session's whole idea reached the renderer as
- * "A tattoo on the back." — and unlike `visualTarget` or `action`, this is not
- * a guess: it is the customer's own words, which is exactly what ADR-0010 says
- * must survive.
+ * Reading neither this nor the meaning is how the astronaut session's whole
+ * idea reached the renderer as "A tattoo on the back." — and unlike
+ * `visualTarget` or `action`, neither is a guess: they are the customer's own
+ * words, which is exactly what ADR-0010 says must survive.
  */
 function deriveSubject(intake: IntakeRecord): string | undefined {
-  return intake.subject?.trim() || intake.meaning?.trim() || undefined;
+  return intake.subject?.trim() || undefined;
+}
+
+/**
+ * What the piece is FOR, off the intake — kept in its own field rather than
+ * collapsed into `subject`.
+ *
+ * These two are not interchangeable and must never fall back to one another.
+ * A meaning is frequently not a scene at all: TAT-51 makes "it just goes hard"
+ * a complete answer to the meaning question, and a brief can just as easily
+ * say "for my grandfather". Rendered through the subject clause, either
+ * becomes "A tattoo design depicting it just goes hard." — a sentence that is
+ * not English, asked of an image model as if it were a description.
+ *
+ * Which field the words came from is the signal, and it is a fact rather than
+ * an inference. An earlier pass here sniffed the prose with a
+ * `/^(?:for|to|about|in memory of)\b/` pattern to guess which reading applied;
+ * that is a second answer to a question the intake already answered, and it
+ * silently mis-reads every vibe that does not open with a preposition. Gone.
+ *
+ * Capped at 60 words, the same bound and for the same reason the Council caps
+ * it: freeform prose must not blow the token budget of the prompt it rides in.
+ */
+function deriveMeaning(intake: IntakeRecord): string | undefined {
+  const meaning = intake.meaning?.trim();
+  return meaning ? truncateWords(meaning, MEANING_MAX_WORDS) : undefined;
 }
 
 /**
@@ -232,9 +290,10 @@ export function deriveDesignState(intake: IntakeRecord): DesignState {
   return {
     roster,
     subject: deriveSubject(intake),
+    meaning: deriveMeaning(intake),
     identities,
     medium: deriveMedium(intake.placement, intake.meaning),
-    palette: derivePalette(intake.styleTags),
+    palette: derivePalette(intake),
     exclusions: [],
     directives: [],
   };
@@ -253,10 +312,30 @@ export function deriveDesignState(intake: IntakeRecord): DesignState {
  * identity to decide whether the session needs persisting again.
  */
 export function hydrateDesignState(state: DesignState, intake: IntakeRecord): DesignState {
-  if (state.subject !== undefined) return state;
-  const subject = deriveSubject(intake);
-  if (!subject) return state;
-  return { ...state, subject };
+  // Both idea fields, independently. A state can legitimately carry one and
+  // not the other — they come from different intake fields and never fall back
+  // to each other — so a single `subject !== undefined` early return would
+  // strand every pure-vibe brief on an empty lead clause forever.
+  const next = { ...state };
+  let filled = false;
+
+  if (next.subject === undefined) {
+    const subject = deriveSubject(intake);
+    if (subject) {
+      next.subject = subject;
+      filled = true;
+    }
+  }
+
+  if (next.meaning === undefined) {
+    const meaning = deriveMeaning(intake);
+    if (meaning) {
+      next.meaning = meaning;
+      filled = true;
+    }
+  }
+
+  return filled ? next : state;
 }
 
 /** The color-blackwork poles a round spreads (ADR-0049), in this object's words. */
@@ -595,14 +674,6 @@ function countWord(n: number): string {
 export const PRESENTATION_LEAD = COUNCIL_PRESENTATION_LEAD.trim();
 
 /**
- * Meaning prose is often a dedication ("for my grandfather"), not a scene, and
- * "depicting for my grandfather" is not a sentence. The Council draws the same
- * line in `subjectClause` — a subject is `depicting ...`, a bare meaning is
- * `expressing "..."` — so the lead keeps both readable.
- */
-const DEDICATION_PATTERN = /^(?:for|to|about|in memory of|in honou?r of|because)\b/i;
-
-/**
  * The subject exactly as the prompt says it: trimmed, and with its chromatic
  * words removed when the design is monochrome.
  *
@@ -655,10 +726,15 @@ function subjectLead(state: DesignState): string {
     return `A tattoo design depicting ${state.roster[0]}${subject ? `: ${subject}` : ''}.`;
   }
 
-  if (!subject) return 'A tattoo design.';
-  return DEDICATION_PATTERN.test(subject)
-    ? `A tattoo design expressing "${subject}".`
-    : `A tattoo design depicting ${subject}.`;
+  if (subject) return `A tattoo design depicting ${subject}.`;
+
+  // No scene, but the customer still told us what it is for. Quoted and
+  // "expressing", never "depicting" — the Council draws this exact line in
+  // `subjectClause`, and the field the words arrived in is what decides it.
+  const meaning = state.meaning?.trim().replace(/[.\s]+$/, '');
+  if (meaning) return `A tattoo design expressing "${meaning}".`;
+
+  return 'A tattoo design.';
 }
 
 /**
@@ -749,6 +825,19 @@ export interface StateOmissions {
   roster: string[];
   /** The subject, when the state has one and the prompt does not carry it. */
   subject?: string;
+  /**
+   * The meaning, when it is the ONLY idea the state holds and the prompt does
+   * not carry it.
+   *
+   * Splitting `meaning` out of `subject` created a whole class of brief this
+   * guard could not see: a pure-vibe request ("it just goes hard") has an
+   * empty roster AND no subject, so both other checks return nothing and a
+   * prompt with no idea in it would price cleanly — the exact blind spot that
+   * let the astronaut session buy two images. Only checked when there is no
+   * subject, because a state carrying both renders the subject and quite
+   * correctly leaves the meaning out of the lead.
+   */
+  meaning?: string;
 }
 
 /**
@@ -779,8 +868,10 @@ export function stateOmissions(state: DesignState, prompt: string): StateOmissio
   // not the raw field. A guard that checks for words the renderer is supposed
   // to remove reports a defect every time the renderer does its job.
   const subject = promptSubject(state);
+  const meaning = subject ? undefined : state.meaning?.trim();
   return {
     roster: rosterOmissions(state, prompt),
     subject: subject && !carries(prompt || '', subject) ? state.subject?.trim() : undefined,
+    meaning: meaning && !carries(prompt || '', meaning) ? meaning : undefined,
   };
 }

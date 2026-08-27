@@ -1567,10 +1567,11 @@ export async function critique(
   // all — twice, for real money. An empty roster is not evidence that nothing
   // was dropped.
   const omissions = stateOmissions(nextState, adjustedPrompt);
-  if (omissions.roster.length > 0 || omissions.subject) {
+  if (omissions.roster.length > 0 || omissions.subject || omissions.meaning) {
     const dropped = [
       ...omissions.roster,
       ...(omissions.subject ? [`the subject (${omissions.subject})`] : []),
+      ...(omissions.meaning ? [`the meaning (${omissions.meaning})`] : []),
     ];
     throw new Error(
       `designState render dropped ${dropped.join(', ')} from a state carrying ` +

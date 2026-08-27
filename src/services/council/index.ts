@@ -28,7 +28,7 @@ export type {
 // comment at their definition, and a re-cut that keeps its own copy of either
 // is a second answer waiting to drift from this one. Re-exported so the
 // boundary in ADR-0002 stays the only door in.
-export { PRESENTATION_LEAD, stripChromaticWords } from './internal/structuredMode';
+export { PRESENTATION_LEAD, stripChromaticWords, truncateWords } from './internal/structuredMode';
 
 export interface CouncilEnhanceRequest {
   /** The user's rough tattoo idea, in their own words. */

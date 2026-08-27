@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   MAX_DIRECTIVES,
+  MEANING_MAX_WORDS,
   PRESENTATION_LEAD,
   applyCritique,
   deriveDesignState,
@@ -456,9 +457,16 @@ describe('the subject is the design (2026-08-25)', () => {
     expect(state.subject).toContain('astronaut on the moon');
   });
 
-  it('falls back to the meaning when intake extracted no structured subject', () => {
+  it('does NOT fall back to the meaning when intake extracted no subject', () => {
+    // This asserted the opposite until the team review: `subject` used to
+    // borrow `meaning` when it was empty. That reads fine for a meaning that
+    // happens to be a scene, and produces "depicting it just goes hard" for
+    // one that is not. The words still survive — on `meaning`, rendered as
+    // the clause that fits them — but the two fields never fill each other.
     const state = deriveDesignState(astronautIntake({ subject: undefined }));
-    expect(state.subject).toContain('glass mask cracked');
+    expect(state.subject).toBeUndefined();
+    expect(state.meaning).toContain('glass mask cracked');
+    expect(renderStatePrompt(state)).toContain('expressing "an astronaut on the moon');
   });
 
   it('renders the idea — the defect was a prompt with no astronaut in it', () => {
@@ -590,11 +598,9 @@ describe('the palette is one decision, not two (2026-08-25)', () => {
     );
   });
 
-  it('never disagrees with the resolver the reveal uses', () => {
-    // The regression that matters. Any tag set resolvePalette has an opinion
-    // about must get that same opinion here — one rule, one answer, no second
-    // copy to drift.
-    const TAG_SETS = [
+  // Shared by the drift test and the ambiguity-deference test below: the
+  // deference has to hold for EVERY set, not just the one that motivated it.
+  const TAG_SETS = [
       ['color'],
       ['color', 'fine-line'],
       ['blackwork'],
@@ -606,8 +612,13 @@ describe('the palette is one decision, not two (2026-08-25)', () => {
       ['watercolor'],
       ['neo-traditional'],
       ['new-school'],
-      ['anime', 'illustrative'],
-    ];
+    ['anime', 'illustrative'],
+  ];
+
+  it('never disagrees with the resolver the reveal uses', () => {
+    // The regression that matters. Any tag set resolvePalette has an opinion
+    // about must get that same opinion here — one rule, one answer, no second
+    // copy to drift.
     for (const tags of TAG_SETS) {
       const resolved = resolvePalette(tags);
       if (resolved === 'unresolved') continue;
@@ -615,6 +626,30 @@ describe('the palette is one decision, not two (2026-08-25)', () => {
         resolved === 'color' ? 'full color' : 'blackwork, no color'
       );
     }
+  });
+
+  it('defers to an OPEN color question over anything the tags imply', () => {
+    // The one case that outranks the resolver, and it outranks it for every
+    // tag set. The customer has a live color question in front of them; a
+    // prompt that asserts a palette answers it on their behalf, in the one
+    // place they cannot see it. 'fine-line' is the sharp end — it reads
+    // monochrome to resolvePalette, which is the right default when nothing
+    // else is known and the wrong one when the palette is what is being asked.
+    for (const tags of TAG_SETS) {
+      const state = deriveDesignState(
+        astronautIntake({ styleTags: tags, ambiguousAxes: ['color-blackwork'] })
+      );
+      expect(state.palette).toBeUndefined();
+      expect(renderStatePrompt(state)).not.toMatch(/Palette:/);
+    }
+  });
+
+  it('an ambiguous axis that is not the palette changes nothing', () => {
+    expect(
+      deriveDesignState(
+        astronautIntake({ styleTags: ['blackwork'], ambiguousAxes: ['bold-fine'] })
+      ).palette
+    ).toBe('blackwork, no color');
   });
 
   it('a brief that resolved no style at all still commits to nothing', () => {
@@ -770,5 +805,73 @@ describe('a dropped subject is as detectable as a dropped roster member', () => 
   it('says nothing about a state that has no subject to drop', () => {
     const state: DesignState = { ...deriveDesignState(smashIntake()), subject: undefined };
     expect(stateOmissions(state, renderStatePrompt(state)).subject).toBeUndefined();
+  });
+});
+
+
+describe('subject and meaning are different questions', () => {
+  /** TAT-51: "it just goes hard" is a COMPLETE answer to the meaning question. */
+  const vibeIntake = (): IntakeRecord =>
+    astronautIntake({ subject: undefined, meaning: 'it just goes hard' });
+
+  it('never renders a pure vibe as something to depict', () => {
+    const prompt = renderStatePrompt(deriveDesignState(vibeIntake()));
+    // The sentence this whole split exists to prevent.
+    expect(prompt).not.toContain('depicting it just goes hard');
+    expect(prompt).not.toMatch(/depicting/);
+    expect(prompt).toContain('A tattoo design expressing "it just goes hard".');
+  });
+
+  it('keeps the two fields apart on the state, with no fallback either way', () => {
+    const vibe = deriveDesignState(vibeIntake());
+    expect(vibe.subject).toBeUndefined();
+    expect(vibe.meaning).toBe('it just goes hard');
+
+    // A scene with no meaning is the mirror case: subject set, meaning empty.
+    const sceneOnly = deriveDesignState(astronautIntake({ meaning: '' }));
+    expect(sceneOnly.subject).toContain('astronaut on the moon');
+    expect(sceneOnly.meaning).toBeUndefined();
+  });
+
+  it('a subject outranks a meaning in the lead, and the meaning stays held', () => {
+    const state = deriveDesignState(
+      astronautIntake({ meaning: 'for my grandfather, who taught me the constellations' })
+    );
+    const prompt = renderStatePrompt(state);
+    expect(prompt).toContain('depicting an astronaut on the moon');
+    // Held on the state for the brief, but not competing with the scene in the
+    // clause that says what to draw.
+    expect(state.meaning).toContain('grandfather');
+    expect(prompt).not.toContain('expressing');
+  });
+
+  it('caps the meaning at 60 words before it ever reaches a prompt', () => {
+    const long = Array.from({ length: 120 }, (_, i) => `word${i + 1}`).join(' ');
+    const state = deriveDesignState(astronautIntake({ subject: undefined, meaning: long }));
+    const words = (state.meaning ?? '').split(/\s+/).filter(Boolean);
+    // The cap counts words; the ellipsis rides the last one rather than
+    // standing as its own token.
+    expect(words).toHaveLength(MEANING_MAX_WORDS);
+    expect(state.meaning).toContain('word60');
+    expect(state.meaning).not.toContain('word61');
+    expect(state.meaning?.endsWith('…')).toBe(true);
+  });
+
+  it('backfills a meaning-only brief that was persisted before the field existed', () => {
+    const intake = vibeIntake();
+    const stale = deriveDesignState(intake);
+    delete stale.meaning;
+    const hydrated = hydrateDesignState(stale, intake);
+    expect(hydrated.meaning).toBe('it just goes hard');
+    expect(renderStatePrompt(hydrated)).toContain('expressing "it just goes hard"');
+  });
+
+  it('guards a meaning-only brief against a prompt that drops it', () => {
+    const state = deriveDesignState(vibeIntake());
+    // The blind spot this closes: empty roster, no subject — both other checks
+    // return nothing, so a prompt with no idea in it would price clean.
+    const gutted = 'Flash art tattoo design on a pure white background. A tattoo design.';
+    expect(stateOmissions(state, gutted)).toMatchObject({ roster: [], meaning: 'it just goes hard' });
+    expect(stateOmissions(state, renderStatePrompt(state)).meaning).toBeUndefined();
   });
 });
