@@ -701,6 +701,27 @@ function promptSubject(state: DesignState): string | undefined {
   return stripChromaticWords(subject) || undefined;
 }
 
+/**
+ * The meaning exactly as the prompt quotes it — trailing punctuation dropped,
+ * chromatic words stripped on a monochrome design.
+ *
+ * Same shape and same reason as `promptSubject`, and it exists as its own
+ * function for the reason that one does: TWO callers have to agree on this
+ * string. `subjectLead` writes it, and `stateOmissions` checks the prompt for
+ * it. When only the renderer stripped, the guard hunted the prompt for the
+ * very color word the renderer had just been told to remove, found it gone,
+ * and reported the meaning as dropped — and that guard does not warn, it
+ * throws and refuses to buy the render. A blackwork brief meaning "in bright
+ * red, for my late father" could not be re-cut at all.
+ */
+function promptMeaning(state: DesignState): string | undefined {
+  const meaning = state.meaning?.trim().replace(/[.\s]+$/, '');
+  if (!meaning) return undefined;
+  if (!isMonochrome(state.palette)) return meaning;
+  // A meaning that was nothing but color words leaves nothing to quote.
+  return stripChromaticWords(meaning) || undefined;
+}
+
 /** The subject as it leads the prompt, with the roster it has to share with. */
 function subjectLead(state: DesignState): string {
   const subject = promptSubject(state);
@@ -735,13 +756,8 @@ function subjectLead(state: DesignState): string {
   // red, for my late father" on a blackwork design would otherwise put the
   // one positive color word in the prompt on the one path with no subject to
   // strip. A meaning that was nothing but color words leaves nothing to quote.
-  const meaning = state.meaning?.trim().replace(/[.\s]+$/, '');
-  if (meaning) {
-    const quotable = isMonochrome(state.palette)
-      ? stripChromaticWords(meaning)
-      : meaning;
-    if (quotable) return `A tattoo design expressing "${quotable}".`;
-  }
+  const meaning = promptMeaning(state);
+  if (meaning) return `A tattoo design expressing "${meaning}".`;
 
   return 'A tattoo design.';
 }
@@ -877,7 +893,7 @@ export function stateOmissions(state: DesignState, prompt: string): StateOmissio
   // not the raw field. A guard that checks for words the renderer is supposed
   // to remove reports a defect every time the renderer does its job.
   const subject = promptSubject(state);
-  const meaning = subject ? undefined : state.meaning?.trim();
+  const meaning = subject ? undefined : promptMeaning(state);
   return {
     roster: rosterOmissions(state, prompt),
     subject: subject && !carries(prompt || '', subject) ? state.subject?.trim() : undefined,

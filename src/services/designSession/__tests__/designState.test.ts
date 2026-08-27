@@ -907,3 +907,26 @@ describe('subject and meaning are different questions', () => {
     expect(stateOmissions(state, renderStatePrompt(state)).meaning).toBeUndefined();
   });
 });
+
+
+describe('the monochrome meaning strip and its guard agree', () => {
+  it('does not report a false omission when the strip did its job', () => {
+    // da4bffe taught subjectLead to strip chromatic words from a monochrome
+    // meaning clause. The guard has to read the SAME string the renderer
+    // wrote, or it reports the words the renderer was told to remove — and
+    // this guard does not warn, it throws and refuses to spend the render.
+    const state = deriveDesignState(
+      astronautIntake({
+        subject: undefined,
+        meaning: 'in bright red, for my late father',
+        styleTags: ['blackwork'],
+      })
+    );
+    const prompt = renderStatePrompt(state);
+    expect(state.palette).toBe('blackwork, no color');
+    // Precise: the color word is gone from the QUOTED clause. ('red' as a
+    // bare substring also lives inside "centered" in the boilerplate.)
+    expect(prompt).toContain('expressing "in bright, for my late father"');
+    expect(stateOmissions(state, prompt).meaning).toBeUndefined();
+  });
+});
