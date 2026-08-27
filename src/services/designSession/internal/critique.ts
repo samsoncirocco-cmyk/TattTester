@@ -12,15 +12,31 @@
  */
 import {
   ALL_CUT_NAMES,
+  allCuts,
   cutIdentity,
   messageNamesCut,
+  normalizeCutName,
   sessionCutIdentities,
 } from '../cutIdentity';
-import type { DesignSession, Variation } from '../types';
+import { currentRound } from '../roundPlan';
+import type { DesignSession, PendingCritique, Variation } from '../types';
+
+// The canonical cut order lives beside the names it numbers (see
+// `allCuts` in ../cutIdentity) — both channels count from it, and the
+// resolver's ordinals have to agree with what they printed.
+export { allCuts } from '../cutIdentity';
 
 /* ── Which cut ───────────────────────────────────────────────────────────── */
 
-/** "the third one", "#2", "cut two", "number 4", "the 1st". */
+/**
+ * "the third one", "#2", "cut two", "number 4", "the 1st".
+ *
+ * Runs past four because the numbers a customer is given run past four: SMS
+ * captions every image "Cut N of M" over the whole session (`cutCaption` in
+ * sketchbotSms/internal/render.ts), and the web numbers its critique grid from
+ * `variations.length` up. A texter told "Cut 3 of 3" and then answered "cut 3"
+ * used to be told that cut did not exist.
+ */
 const ORDINAL_WORDS: Record<string, number> = {
   first: 1,
   '1st': 1,
@@ -34,12 +50,24 @@ const ORDINAL_WORDS: Record<string, number> = {
   fourth: 4,
   '4th': 4,
   four: 4,
+  fifth: 5,
+  '5th': 5,
+  five: 5,
+  sixth: 6,
+  '6th': 6,
+  six: 6,
+  seventh: 7,
+  '7th': 7,
+  seven: 7,
+  eighth: 8,
+  '8th': 8,
+  eight: 8,
 };
 
 // The `#` alternative carries no leading \b — `#` is not a word character, so
 // a shared \b would never match "#2".
 const ORDINAL_PATTERN = new RegExp(
-  `(?:\\bthe\\s+|\\bcut\\s+|\\bdesign\\s+|\\bnumber\\s+|\\bno\\.?\\s*|#\\s*)(${Object.keys(ORDINAL_WORDS).join('|')}|[1-4])\\b`,
+  `(?:\\bthe\\s+|\\bcut\\s+|\\bdesign\\s+|\\bnumber\\s+|\\bno\\.?\\s*|#\\s*)(${Object.keys(ORDINAL_WORDS).join('|')}|\\d{1,2})\\b`,
   'i'
 );
 
@@ -54,14 +82,6 @@ const POLE_WORD: Record<string, RegExp> = {
   minimal: /\bminimal(ist)?\b/i,
   ornate: /\bornate\b|\bintricate\b/i,
 };
-
-/**
- * Every cut the session can be talking about: every round's cuts in render
- * order, then any cuts critique already produced.
- */
-export function allCuts(session: Pick<DesignSession, 'variations' | 'critiqueCuts'>): Variation[] {
-  return [...session.variations, ...(session.critiqueCuts ?? [])];
-}
 
 /**
  * What a critique turn is about.
@@ -98,7 +118,8 @@ export type CritiqueTarget =
  *   2. the designed name the grid showed under the cut ("the totem")
  *   3. a pole word only one reveal cut carries ("the blackwork one")
  *   4. the most recent cut critique produced — the user is still fixing it
- *   5. the session's pick, once one exists
+ *   5. the cut tapped in the LIVE round — the one wearing YOUR PICK
+ *   6. the session's pick, once LOCK IT IN has been pressed
  *
  * 1–3 are the allowlist, and they are exact matches on normalized text: no
  * stemming, no edit distance, no semantics. A reference that misses is not
@@ -107,7 +128,7 @@ export type CritiqueTarget =
  * rendering the wrong design.
  */
 export function resolveCritiqueTarget(
-  session: Pick<DesignSession, 'variations' | 'critiqueCuts' | 'pickId'>,
+  session: Pick<DesignSession, 'variations' | 'critiqueCuts' | 'pickId' | 'rounds'>,
   message: string
 ): CritiqueTarget {
   const text = (message || '').trim();
@@ -115,12 +136,20 @@ export function resolveCritiqueTarget(
   // An ordinal is an unambiguous reference. Out of range is still a reference —
   // "the fourth one" against a two-cut round is a miss to ask about, never a
   // reason to fall through to something they did not name.
+  //
+  // Counted over `allCuts`, which is the ONE order both channels number from:
+  // SMS captions each image "Cut N of M" across the whole session and the web
+  // grid numbers its re-cuts from `variations.length` up. Counting the reveal
+  // cuts only meant a texter who was told "Cut 3 of 3" and answered "cut 3"
+  // was told that cut did not exist — the product denying a number it had just
+  // printed, which is the "the totem" failure wearing different clothes.
   const ordinal = text.match(ORDINAL_PATTERN);
   if (ordinal) {
     const token = ordinal[1].toLowerCase();
     const index = (ORDINAL_WORDS[token] ?? Number(token)) - 1;
-    if (index >= 0 && index < session.variations.length) {
-      return { kind: 'cut', variation: session.variations[index], via: 'reference' };
+    const cuts = allCuts(session);
+    if (index >= 0 && index < cuts.length) {
+      return { kind: 'cut', variation: cuts[index], via: 'reference' };
     }
     return { kind: 'missed' };
   }
@@ -130,8 +159,17 @@ export function resolveCritiqueTarget(
   const named = sessionCutIdentities(session).filter(({ identity }) =>
     messageNamesCut(text, identity.name)
   );
-  if (named.length === 1) {
-    return { kind: 'cut', variation: named[0].variation, via: 'reference' };
+  // …except when one of those names CONTAINS another. "the bold one, take 2"
+  // carries "the bold one" inside it, so a take always matches its own base as
+  // well, and treating that as a tie would make every take name a miss — the
+  // take names would be unusable the day they shipped. The longest match is
+  // the most specific one the customer could have typed, which is the same
+  // rule the pole-word block below already keeps: more words can only narrow.
+  // A genuine tie (two different names, same length, both matched) still asks.
+  const longest = Math.max(0, ...named.map(({ identity }) => identity.name.length));
+  const mostSpecific = named.filter(({ identity }) => identity.name.length === longest);
+  if (mostSpecific.length === 1) {
+    return { kind: 'cut', variation: mostSpecific[0].variation, via: 'reference' };
   }
   if (named.length > 1) return { kind: 'missed' };
 
@@ -151,6 +189,11 @@ export function resolveCritiqueTarget(
     .map(([pole]) => pole);
 
   if (matchedPoles.length > 0) {
+    // Reveal cuts only, deliberately. A re-cut copies its target's poles — it
+    // is the same treatment, one take later — so widening this to `allCuts`
+    // would make "the bold one" ambiguous the moment a bold cut was re-cut,
+    // and turn a working reference into a question. Takes are separated by
+    // NAME ("the bold one, take 2"), which is checked above and is exact.
     const carrying = session.variations.filter((variation) => {
       const poles = Object.values(variation.axisPosition);
       return matchedPoles.every((pole) => poles.includes(pole));
@@ -185,6 +228,22 @@ export function resolveCritiqueTarget(
     return { kind: 'cut', variation: critiqueCuts[critiqueCuts.length - 1], via: 'context' };
   }
 
+  // The cut wearing YOUR PICK right now (ADR-0049). `session.pickId` is only
+  // written by LOCK IT IN; a tap on a cut records the LIVE ROUND's pick, and
+  // that is the badge the customer can see on their screen. Reading only the
+  // locked-in pick is why the astronaut session asked "which one am i fixing?"
+  // at a customer who had visibly just answered that question with their
+  // thumb — the badge and the resolver disagreed about what a pick was.
+  //
+  // Ranked below the newest re-cut (a fix in progress is the closer context)
+  // and above the locked-in pick (a later tap is a fresher signal than an
+  // older lock).
+  const roundPickId = currentRound(session.rounds)?.pickedId;
+  if (roundPickId) {
+    const tapped = allCuts(session).find((variation) => variation.id === roundPickId);
+    if (tapped) return { kind: 'cut', variation: tapped, via: 'context' };
+  }
+
   if (session.pickId) {
     const picked = allCuts(session).find((variation) => variation.id === session.pickId);
     if (picked) return { kind: 'cut', variation: picked, via: 'context' };
@@ -202,12 +261,128 @@ export function resolveCritiqueTarget(
  * failure unreadable: the reply said a name the resolver had no concept of.
  */
 export function cutLabel(
-  session: Pick<DesignSession, 'variations'>,
+  session: Pick<DesignSession, 'variations' | 'critiqueCuts'>,
   variation: Variation
 ): string {
-  const index = session.variations.findIndex((candidate) => candidate.id === variation.id);
+  // Over `allCuts`, so a re-cut has a name here too. It used to search the
+  // reveal cuts alone, so every critique cut fell through to "that last one" —
+  // the reply speaking a vocabulary the grid did not have and the resolver
+  // could not accept, which is exactly what this module's header says was
+  // fixed. "that last one" survives only for a cut that is genuinely not in
+  // the session (a refined regen), where there is no name to speak.
+  const cuts = allCuts(session);
+  const index = cuts.findIndex((candidate) => candidate.id === variation.id);
   if (index < 0) return 'that last one';
   return cutIdentity(variation, index).name;
+}
+
+/* ── A critique waiting on "which one?" ──────────────────────────────────── */
+
+/**
+ * How long an unanswered "which one am i fixing?" keeps the sentence that
+ * caused it.
+ *
+ * A session sits open for days; a critique lane turn is a conversation. Thirty
+ * minutes is the outer edge of "they went to find a photo and came back" and
+ * well inside "they opened this again tomorrow with something else in mind".
+ * The turn-index bound below is the real fence — this one exists so a stashed
+ * sentence cannot sit on a session indefinitely waiting for an unrelated turn
+ * that happens to land in the right slot (an SMS turn superseded mid-flight
+ * never records a turn at all, so the index alone would hold it forever).
+ */
+export const PENDING_CRITIQUE_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * How many unanswered sentences a session holds. Matches designState's
+ * `MAX_DIRECTIVES` in spirit: past three, the oldest is not what this re-cut
+ * is about any more.
+ */
+export const MAX_PENDING_CRITIQUES = 3;
+
+/**
+ * Stash the critique we could not place, bound to the turn that must answer it.
+ *
+ * `turnIndex` is the position the ANSWERING turn will occupy — i.e. the number
+ * of turns recorded once the asking turn has settled. Only a turn landing at
+ * exactly that index may inherit these words.
+ */
+export function stashPendingCritique(
+  messages: readonly string[],
+  turnsAfterAsking: number,
+  askedAt: string
+): PendingCritique {
+  const kept = messages
+    .map((entry) => entry.trim())
+    .filter((entry, index, all) => entry && all.indexOf(entry) === index)
+    .slice(-MAX_PENDING_CRITIQUES);
+  return { messages: kept, turnIndex: turnsAfterAsking, askedAt };
+}
+
+/**
+ * The pending critique this turn is allowed to apply, if any.
+ *
+ * Two fences, both explicit: the turn now being recorded must be the one the
+ * ask was waiting for, and the ask must not have gone cold. Everything else —
+ * a re-roll in between, a superseded SMS turn, a session picked up tomorrow —
+ * fails one of them and the words are dropped rather than pasted into a render
+ * the customer was not talking about.
+ */
+export function readPendingCritique(
+  session: Pick<DesignSession, 'critiqueTurns' | 'pendingCritique'>,
+  now: number = Date.now()
+): string[] {
+  const pending = session.pendingCritique;
+  if (!pending?.messages?.length) return [];
+  if ((session.critiqueTurns?.length ?? 0) !== pending.turnIndex) return [];
+  const askedAt = Date.parse(pending.askedAt);
+  if (!Number.isFinite(askedAt) || now - askedAt > PENDING_CRITIQUE_TTL_MS) return [];
+  return [...pending.messages];
+}
+
+/** Words that carry no request of their own once the cut reference is gone. */
+const FILLER_WORDS = new Set([
+  'a', 'an', 'and', 'the', 'that', 'this', 'those', 'these', 'it', 'its',
+  'one', 'ones', 'cut', 'design', 'number', 'no', 'take', 'is', 'was', 'be',
+  'please', 'pls', 'ok', 'okay', 'yeah', 'yes', 'yep', 'yup', 'sure', 'thanks',
+  'thanks!', 'thx', 'i', 'im', 'mean', 'meant', 'want', 'wanted', 'lets', 'let',
+  'go', 'with', 'do', 'my', 'me', 'you',
+]);
+
+/** "the bold one", "the fine-line, full-color one", "that one". */
+const CUT_REFERENCE_PHRASE = /\b(?:the|that|this)\s+(?:[a-z-]+\s+){0,4}ones?\b/gi;
+
+/**
+ * Does this answer to "which one am i fixing?" ask for anything, once the cut
+ * reference is taken out of it?
+ *
+ * "The bold one" does not: it is an address. Rendering an address is the
+ * astronaut session's defect in one line — a customer paid for a picture of
+ * the words "The bold one" while the sentence they had written went nowhere.
+ * So a bare address contributes nothing to the design, and the held sentence
+ * is the whole critique.
+ *
+ * "the bold one, and lose the background" does: that customer said two things
+ * and both are theirs, so both are applied — separately and whole (ADR-0010),
+ * never glued into one sentence, because the state object reads each message
+ * as a description of the design and one message that says two things resolves
+ * to one field.
+ *
+ * `referenceLabel` is the designed name the answer resolved to, stripped
+ * before the check so a customer who TYPES the label gets the same result as
+ * one who taps it.
+ */
+export function answerAddsRequest(answer: string, referenceLabel?: string): boolean {
+  let residue = normalizeCutName(answer);
+  if (!residue) return false;
+  if (referenceLabel) {
+    const label = normalizeCutName(referenceLabel);
+    if (label) residue = residue.split(label).join(' ');
+  }
+  return residue
+    .replace(CUT_REFERENCE_PHRASE, ' ')
+    .replace(ORDINAL_PATTERN, ' ')
+    .split(/\s+/)
+    .some((word) => word && !FILLER_WORDS.has(word) && !/^\d+$/.test(word));
 }
 
 /* ── What kind of turn is this? ──────────────────────────────────────────── */
@@ -236,17 +411,45 @@ const WHOLE_PIECE_PATTERN =
   /\b(?:look|style|vibe|feel|aesthetic|energy|mood)\b|\b(?:more|less)\s+like\b|\bin the style of\b|\bkind of\b.*\b(?:like|feel)\b/i;
 
 /**
+ * The render came back as something else entirely, and the customer is saying
+ * so (astronaut session, 2026-08-26).
+ *
+ * "what happened to my astonaught this is a laadys back and an eagle" was read
+ * as a brief and rendered: `Customer direction: "what happened to my
+ * astonaught this is a laadys back and an eagle"` — the customer's DESCRIPTION
+ * OF THE WRONG OUTPUT became the desired output, and the second render was a
+ * second lady's back with an eagle. They paid for both.
+ *
+ * The signal is a report about the picture rather than a request for one: a
+ * missing subject ("what happened to my X", "where'd my X go") or a naming of
+ * what arrived instead ("this is a X", "that's not what i asked for").
+ *
+ * Deliberately narrow. "this is too busy" carries no article and does not
+ * match; neither does "this is better". A false positive here costs a re-cut
+ * that ignores one sentence, which is the same cost the old behavior paid on
+ * EVERY sentence of this shape — but it is still a cost, so the pattern asks
+ * for the two shapes we have actually seen and no more.
+ */
+const WRONG_RENDER_PATTERN =
+  /\bwhat happened to (?:my|the|our)\b|\bwhere(?:'?s| is| did| have)\b[^.?!]{0,40}\b(?:go|gone|went)\b|\bthis (?:is|looks like)\s+(?:a|an|some)\b|\bthat(?:'?s| is)\s+(?:a|an|some)\b|\bthis (?:is ?n'?t|isn'?t|ain'?t)\b|\bnot what i (?:asked|wanted|said|meant)\b|\bthat(?:'?s| is) not (?:my|the|what)\b|\bwrong (?:subject|design|image|picture|person)\b/i;
+
+/**
  * What this post-reveal turn is asking for, in ADR-0056's vocabulary.
  *
  * `reroll-set` carries `styleHint` — the customer's own words when they asked
  * for a direction as well as new pictures. Empty for a bare re-roll. Both are
  * the same outcome (a fresh round under the same Idea); the hint only rides
  * along additively into the round's prompt.
+ *
+ * `iterate-cut` carries a `reading`, because two very different turns land on
+ * the same cut: `apply` folds the customer's words into the design, and
+ * `regenerate` renders the state again WITHOUT them (ADR-0060 — "regenerate
+ * from state, the state is already right").
  */
 export type CritiqueIntent =
   | { kind: 'commentary' }
   | { kind: 'reroll-set'; styleHint: string }
-  | { kind: 'iterate-cut'; target: Variation }
+  | { kind: 'iterate-cut'; target: Variation; reading: 'apply' | 'regenerate' }
   | { kind: 'ambiguous'; because: 'unplaceable-name' | 'no-cut-named' };
 
 /**
@@ -281,7 +484,12 @@ export type CritiqueIntent =
  * Only a cut reached by *context* can be re-read as being about the whole
  * piece, which is exactly what `CritiqueTarget.via` exists to tell us.
  *
- * Below that guard, re-roll is checked before whole-piece, and whole-piece
+ * Between that guard and the destructive readings sits the wrong-render arm:
+ * a customer saying the picture came back as something else has told us about
+ * THIS cut, not asked for a different one, so it must be read before "throw
+ * the set away" gets a look at the same sentence.
+ *
+ * Below that, re-roll is checked before whole-piece, and whole-piece
  * before per-cut-by-context. "new ones, more cinematic" is a re-roll carrying
  * a hint, not a whole-piece fix — so among messages that name no cut, the more
  * destructive reading still wins on explicit signal.
@@ -304,7 +512,7 @@ export type CritiqueIntent =
  * the descriptor writes this should eventually produce.
  */
 export function classifyCritiqueTurn(
-  session: Pick<DesignSession, 'variations' | 'critiqueCuts' | 'pickId'>,
+  session: Pick<DesignSession, 'variations' | 'critiqueCuts' | 'pickId' | 'rounds'>,
   message: string
 ): CritiqueIntent {
   const text = (message || '').trim();
@@ -325,7 +533,16 @@ export function classifyCritiqueTurn(
 
   // They named a cut. That is the narrowest reading and it wins outright.
   if (target.kind === 'cut' && target.via === 'reference') {
-    return { kind: 'iterate-cut', target: target.variation };
+    return { kind: 'iterate-cut', target: target.variation, reading: readingFor(text) };
+  }
+
+  // "what happened to my astronaut, this is a lady's back and an eagle" is a
+  // report about the cut on screen, so it is a fix to THAT cut — checked here,
+  // ahead of the two readings that throw the round away, because a customer
+  // telling us the render is wrong has not asked for a different design. It is
+  // the same design, again, from the state that still describes it.
+  if (target.kind === 'cut' && WRONG_RENDER_PATTERN.test(text)) {
+    return { kind: 'iterate-cut', target: target.variation, reading: 'regenerate' };
   }
 
   if (REROLL_PATTERN.test(text)) {
@@ -336,9 +553,31 @@ export function classifyCritiqueTurn(
 
   if (WHOLE_PIECE_PATTERN.test(text)) return { kind: 'reroll-set', styleHint: text };
 
-  if (target.kind === 'cut') return { kind: 'iterate-cut', target: target.variation };
+  if (target.kind === 'cut') {
+    return { kind: 'iterate-cut', target: target.variation, reading: readingFor(text) };
+  }
 
   return { kind: 'ambiguous', because: 'no-cut-named' };
+}
+
+/**
+ * Is this turn a direction to apply, or a report that the render came back
+ * wrong?
+ *
+ * ## Why this decision lives here and not in the cue table
+ *
+ * `DIRECTIVE_CUES` in ./designState.ts has a "missing / left out / forgot" cue
+ * that produces exactly the right directive for this complaint, and it would
+ * be one regex to teach it "what happened to my X". That would not fix this.
+ * `asDirective` returns `${their words} — apply this as: ${directive}`, so the
+ * customer's description of the WRONG image still lands in the prompt as
+ * Customer direction, still at the front where the lane weights it hardest.
+ * The cue table decides what a direction MEANS; it cannot decide that a
+ * sentence is not a direction at all. That is a routing question, so it is
+ * answered at the routing layer — here, once, before the state is touched.
+ */
+function readingFor(text: string): 'apply' | 'regenerate' {
+  return WRONG_RENDER_PATTERN.test(text) ? 'regenerate' : 'apply';
 }
 
 /* ── Is it a fix request? ────────────────────────────────────────────────── */

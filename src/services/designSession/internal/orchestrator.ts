@@ -48,18 +48,24 @@ import {
   allCuts,
   cutLabel,
   classifyCritiqueTurn,
+  answerAddsRequest,
+  readPendingCritique,
+  stashPendingCritique,
 } from './critique';
+import { nextTake } from '../cutIdentity';
 import type { DesignState } from './designState';
 import {
   applyCritique,
   deriveDesignState,
+  hydrateDesignState,
   renderStatePrompt,
-  rosterOmissions,
+  stateOmissions,
   withPickedCut,
 } from './designState';
 import {
   ALLOWANCE_SPENT_LINE,
   CHATTER_LINE,
+  NAMED_BUT_NO_CHANGE_LINE,
   NO_SUCH_CUT_LINE,
   REROLL_DOWNGRADED_NOTE,
   REROLL_DOWNGRADED_REFUNDED_NOTE,
@@ -70,6 +76,7 @@ import {
   fixLandedLine,
   fixesLeftLine,
   rerollLandedLine,
+  wrongRenderLine,
 } from './critiqueVoice';
 
 export type DesignSessionErrorCode =
@@ -1222,16 +1229,40 @@ export async function critique(
   const used = session.fixesUsed ?? 0;
   const remainingBefore = Math.max(0, allowance - used);
 
+  /**
+   * The sentence a previous turn could not place, if THIS is the turn that was
+   * asked to place it (astronaut session, 2026-08-26).
+   *
+   * Read before anything else so every arm below sees the same answer, and
+   * cleared unconditionally in `settle` — a pending critique is one turn's
+   * patience, not a standing instruction. Sessions stored before this field
+   * existed simply have none.
+   */
+  const pending = readPendingCritique(session);
+
   /** Record the turn and persist without spending anything. */
   const settle = async (
     reply: string,
-    extra: { targetId?: string; cutId?: string } = {}
+    extra: { targetId?: string; cutId?: string; pendingCritique?: string[] } = {}
   ) => {
     const now = new Date().toISOString();
+    const { pendingCritique, ...turnFields } = extra;
     session.critiqueTurns = [
       ...(session.critiqueTurns ?? []),
-      { message, reply, ...extra, at: now },
+      { message, reply, ...turnFields, at: now },
     ];
+    // Every turn either consumes the held sentence or drops it. Only an arm
+    // that just asked "which one?" hands one back, bound to the turn that must
+    // answer it — the index it is bound to is the one THIS turn just filled.
+    if (pendingCritique?.length) {
+      session.pendingCritique = stashPendingCritique(
+        pendingCritique,
+        session.critiqueTurns.length,
+        now
+      );
+    } else {
+      delete session.pendingCritique;
+    }
     session.updatedAt = now;
     await store.save(session);
     const remaining = Math.max(0, allowance - (session.fixesUsed ?? 0));
@@ -1275,7 +1306,10 @@ export async function critique(
     // same reason the turn does.
     let rerolledState: DesignState | undefined;
     if (styleHint.trim()) {
-      const applied = applyCritique(session.state ?? deriveDesignState(session.intake), styleHint);
+      const applied = applyCritique(
+        hydrateDesignState(session.state ?? deriveDesignState(session.intake), session.intake),
+        styleHint
+      );
       if (applied.unresolvedStyle) {
         // Nothing was rendered and nothing will be, so this settle owns the
         // save — writing the resolved fields here is safe and keeps the
@@ -1361,6 +1395,10 @@ export async function critique(
 
     const fresh = outcome.session;
     const now = new Date().toISOString();
+    // `fresh` was loaded and saved by rerollRound from its own read, so the
+    // clear `settle` would have done never reached it. A re-roll is a new set;
+    // a sentence held against the old one has no cut left to land on.
+    delete fresh.pendingCritique;
     // The look the customer just asked for is state, not a property of this
     // round — the next per-cut fix has to render with it too (ADR-0060).
     if (rerolledState) fresh.state = rerolledState;
@@ -1408,12 +1446,86 @@ export async function critique(
     // they named a cut we could not place — asking "which one am i fixing?"
     // there reads as not listening, and guessing costs a paid render on a
     // design they did not ask for (the "totem" turn).
+    //
+    // Either way the sentence is HELD (astronaut session, 2026-08-26). Asking
+    // the question used to throw the critique away: the customer answered by
+    // tapping, the client sent the tapped cut's name as the next message, and
+    // the words "The bold one" became the entire Customer direction of a paid
+    // render, while "i'm thinking more realistic looking and i wanna be able
+    // to see the artists face" reached no model at all. Holding a sentence
+    // costs nothing, so this stays a free turn.
+    //
+    // A second unplaceable turn ADDS to what is held rather than replacing it:
+    // "riku's missing", then "and make it bigger", both said before any cut is
+    // named, are two requests and the customer said both. A turn that only
+    // tries (and fails) to name a cut adds nothing to hold. Either way the
+    // held set is re-bound to the turn that comes next, and nothing carries
+    // past it (readPendingCritique).
+    //
+    // And when NOTHING has been held — the whole conversation so far is
+    // addresses that resolved to no request — an empty hold is the truthful
+    // outcome. Stashing the contentless turn as if it were content meant a
+    // later bare-address answer rendered it: "cut 9" (an address naming a
+    // cut that does not exist, so it reaches this arm) became the entire
+    // Customer direction of a paid render (Sonnet grill, 2026-08-27) — the
+    // same money-for-an-address defect this commit's headline kills. Not
+    // every contentless phrase gets here: "the other one" matches
+    // REROLL_PATTERN and leaves on the reroll lane first.
+    // settle() already deletes the stash when handed an empty list.
+    const held = answerAddsRequest(message) ? [...pending, message] : pending;
     return settle(
-      intent.because === 'unplaceable-name' ? NO_SUCH_CUT_LINE : WHICH_CUT_LINE
+      intent.because === 'unplaceable-name' ? NO_SUCH_CUT_LINE : WHICH_CUT_LINE,
+      { pendingCritique: held }
     );
   }
 
   const target = intent.target;
+
+  /**
+   * The words this re-cut is built from — which are not always the words of
+   * this turn (astronaut session, 2026-08-26).
+   *
+   * - `regenerate`: the turn reported that the render came back as the wrong
+   *   thing. Their description of OUR mistake is not a brief, so nothing from
+   *   it reaches the state; the state already says what the design is and the
+   *   answer is to draw it again. Deliberately whole-sentence rather than
+   *   "keep the field updates and drop the rest": every field resolver in
+   *   designState reads the sentence as a description of the DESIGN, so
+   *   "that's not what i asked for" mines an exclusion of "what i asked for",
+   *   and a report of the wrong image describes the wrong image into the
+   *   state. If they also wanted a change, the next turn carries it — for
+   *   free, since this arm never asks them to repeat themselves.
+   * - a held critique: they answered "which one am i fixing?" and the ANSWER
+   *   is an address, not a request. The held sentence is the critique; the
+   *   answer is applied beside it only when it asks for something of its own.
+   *
+   * Applied as SEPARATE turns, never concatenated: `applyCritique` reads one
+   * message as one change, so "more realistic" glued to "and lose the flag"
+   * resolves to the exclusion alone and silently drops the sentence we were
+   * holding — the same disappearance this fix exists to end, one layer down.
+   */
+  const answerAsks = answerAddsRequest(message, cutLabel(session, target));
+  const critiqueTexts: string[] =
+    intent.reading === 'regenerate'
+      ? pending
+      : pending.length > 0
+        ? answerAsks
+          ? [...pending, message]
+          : pending
+        : [message];
+
+  // An address with no request behind it, and nothing held to put on it —
+  // "the bold one" and nothing else. There is no change to make, so there is
+  // nothing to buy: ask the question that is actually missing, for free.
+  //
+  // This is the money hole under the astronaut session, closed at the bottom.
+  // A tap that reaches this lane as the words "The bold one" used to resolve a
+  // cut, find no field to move, and fall through to a paid render whose entire
+  // Customer direction was the name of a cut. Whatever any channel does with a
+  // tap, a turn that asks for nothing can no longer cost anything.
+  if (intent.reading === 'apply' && pending.length === 0 && !answerAsks) {
+    return settle(NAMED_BUT_NO_CHANGE_LINE, { targetId: target.id });
+  }
 
   // ADR-0060: the re-cut is rendered from the WHOLE state, not from the
   // target's prompt with the critique bolted on the end. The critique moves a
@@ -1422,37 +1534,72 @@ export async function critique(
   // Sessions revealed before ADR-0060 have no state — derive one from their
   // intake rather than leaving them on the old append path, so the fix reaches
   // sessions that are already open.
-  const priorState = session.state ?? deriveDesignState(session.intake);
+  //
+  // hydrate on top of that, for the sessions in between: revealed WITH a state
+  // object, but before that object had a `subject`. Deriving does not reach
+  // them — they have a state, so `??` never fires — and without the backfill
+  // their next re-cut renders the subject-less prompt that cost the astronaut
+  // session two paid images. The fix has to reach a design already open in
+  // someone's browser, not just the ones started after the deploy.
+  const priorState = hydrateDesignState(
+    session.state ?? deriveDesignState(session.intake),
+    session.intake
+  );
   // The cut they are fixing is the composition they chose; that becomes state
   // and stays attached to every re-cut after it.
-  const applied = applyCritique(withPickedCut(priorState, target), message);
+  let nextState = withPickedCut(priorState, target);
+  let unresolvedStyle: string | undefined;
+  for (const text of critiqueTexts) {
+    const applied = applyCritique(nextState, text);
+    nextState = applied.state;
+    unresolvedStyle ??= applied.unresolvedStyle;
+  }
 
   // A look we have no translation for. Ask — do not paste it into the prompt
   // and charge for a render of a guess (ADR-0060). Free, like every other
   // arm that does not buy an image, and the field updates that DID resolve
   // are still persisted so the customer never has to say them twice.
-  if (applied.unresolvedStyle) {
-    session.state = applied.state;
+  if (unresolvedStyle) {
+    session.state = nextState;
     return settle(UNTRANSLATED_LOOK_LINE);
   }
 
-  const nextState = applied.state;
   const adjustedPrompt = renderStatePrompt(nextState);
 
   // A state naming four characters and a prompt naming two is the exact
   // contradiction that made this ADR, and it is detectable before the money
   // is spent. Renderer bug if it ever fires — fail loudly rather than buy the
   // broken image and let the customer find it.
-  const omissions = rosterOmissions(nextState, adjustedPrompt);
-  if (omissions.length > 0) {
+  //
+  // The SUBJECT is checked by the same guard and for the same reason. A roster
+  // -only check could never have caught the astronaut session: that request
+  // named no franchise character, so the roster was empty, zero members went
+  // missing, and this guard waved through a prompt with no subject in it at
+  // all — twice, for real money. An empty roster is not evidence that nothing
+  // was dropped.
+  const omissions = stateOmissions(nextState, adjustedPrompt);
+  if (omissions.roster.length > 0 || omissions.subject || omissions.meaning) {
+    const dropped = [
+      ...omissions.roster,
+      ...(omissions.subject ? [`the subject (${omissions.subject})`] : []),
+      ...(omissions.meaning ? [`the meaning (${omissions.meaning})`] : []),
+    ];
     throw new Error(
-      `designState render dropped ${omissions.join(', ')} from a roster of ` +
-        `${nextState.roster.length} — refusing to spend a render on a prompt that ` +
-        'contradicts the state object (ADR-0060).'
+      `designState render dropped ${dropped.join(', ')} from a state carrying ` +
+        `${nextState.roster.length} roster member(s)${nextState.subject ? ' and a subject' : ''} — ` +
+        'refusing to spend a render on a prompt that contradicts the state object (ADR-0060).'
     );
   }
 
   const cutId = `${target.id}-fix${used + 1}`;
+  // A re-cut is a TAKE of the cut it revises, not a nameless copy of it. The
+  // poles still describe the treatment — same design, one take later — so they
+  // are still copied below; what changes is that the take number rides with
+  // them, so `cutIdentity` can call this "the bold one, take 2" instead of a
+  // second "the bold one". Two cuts sharing a name is a `missed` in the
+  // resolver, which is how the astronaut session's re-cuts ended up reachable
+  // by neither name nor number.
+  const take = nextTake(session, target);
 
   let imageUrl: string | undefined;
   if (isDemoMode()) {
@@ -1499,6 +1646,10 @@ export async function critique(
     prompt: adjustedPrompt,
     negativePrompt: target.negativePrompt,
     imageUrl,
+    // The lineage root, so a take of a take still points at the cut the whole
+    // line came from.
+    revisionOf: target.revisionOf ?? target.id,
+    revision: take,
   };
   session.critiqueCuts = [...(session.critiqueCuts ?? []), cut];
   // The state that produced this cut is the state the session carries forward
@@ -1510,8 +1661,17 @@ export async function critique(
   session.fixesUsed = used + 1;
 
   const remainingAfter = Math.max(0, allowance - session.fixesUsed);
+  // Named with the same string the grid puts under the cut — including a take
+  // number, now that re-cuts have one. The reply used to say "that last one"
+  // for every re-cut, because `cutLabel` searched the reveal cuts only: the
+  // one vocabulary this lane is supposed to share with the grid, unshared.
+  const targetName = cutLabel(session, target);
   const settled = await settle(
-    `${fixLandedLine(cutLabel(session, target))} ${fixesLeftLine(remainingAfter)}`,
+    `${
+      intent.reading === 'regenerate'
+        ? wrongRenderLine(targetName)
+        : fixLandedLine(targetName)
+    } ${fixesLeftLine(remainingAfter)}`,
     { targetId: target.id, cutId }
   );
   return { ...settled, cut, generated: true };

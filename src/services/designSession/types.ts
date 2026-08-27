@@ -21,6 +21,25 @@ export interface Variation {
   prompt: string;
   negativePrompt?: string;
   imageUrl?: string;
+  /**
+   * Set on a critique re-cut (ADR-0039): the cut it revises. The lineage
+   * ROOT, not the immediate parent — a re-cut of a re-cut still points at the
+   * reveal cut the whole line came from, so "which design is this" has one
+   * answer however many takes deep it goes.
+   */
+  revisionOf?: string;
+  /**
+   * Which take of that design this is — 2 for the first re-cut, 3 for the
+   * next. Absent on an original cut.
+   *
+   * It is stored rather than counted at render time because `cutIdentity`
+   * names a cut from the variation alone (the reveal grid runs it in the
+   * browser with no session to count against), and because a name that
+   * changed when a later cut landed would be worse than the duplicate name it
+   * replaced. Additive optional field — cuts stored before takes existed
+   * simply lack it and stay named exactly as they were.
+   */
+  revision?: number;
 }
 
 /**
@@ -68,6 +87,32 @@ export interface CritiqueTurn {
   /** The cut this turn produced; absent when the turn spent nothing. */
   cutId?: string;
   at: string;
+}
+
+/**
+ * An unresolved critique waiting for the customer to say which cut it is
+ * about (ADR-0039). One turn's patience, explicitly bounded — see
+ * `DesignSession.pendingCritique`.
+ */
+export interface PendingCritique {
+  /**
+   * The customer's own words, verbatim and unjoined (ADR-0010), oldest first.
+   *
+   * A list because the question can be asked twice — "riku's missing", then
+   * "and make it bigger", both before any cut is named — and both sentences
+   * are requests. They stay separate because a re-cut applies each as its own
+   * change; glued into one sentence they resolve to one field and the rest is
+   * dropped. Capped, so an unanswered question cannot silt up a prompt.
+   */
+  messages: string[];
+  /**
+   * How many critique turns the session held when we asked. The answering
+   * turn is the one that lands AT this index; anything later is a different
+   * conversation and must not inherit these words.
+   */
+  turnIndex: number;
+  /** When we asked (server clock, ISO) — drives the expiry. */
+  askedAt: string;
 }
 
 export interface DesignSession {
@@ -120,6 +165,28 @@ export interface DesignSession {
   critiqueCuts?: Variation[];
   /** Post-reveal critique turns, oldest first (ADR-0039). */
   critiqueTurns?: CritiqueTurn[];
+  /**
+   * A critique we asked "which one am i fixing?" about and have not applied
+   * yet (astronaut session, 2026-08-26).
+   *
+   * The customer typed "i'm thinking more realistic looking and i wanna be
+   * able to see the artists face", got asked which cut, and answered by
+   * tapping. The answer — the bare words "The bold one" — became the whole of
+   * the render's Customer direction, and the sentence they actually paid for
+   * was never sent to any model. So the unresolved sentence waits here until
+   * the disambiguating turn names a cut, and rides that turn's render.
+   *
+   * Bound to the IMMEDIATELY following critique turn, two ways: `turnIndex` is
+   * the position the answering turn must occupy, and `askedAt` expires it, so
+   * a sentence left hanging can never ambush a conversation resumed hours
+   * later. See `readPendingCritique` in internal/critique.ts.
+   *
+   * Server-private: deliberately NOT projected by `toDesignSession`, whose
+   * whitelist keeps it off the wire. It is on this interface rather than on
+   * `StoredSession` only because the store module was another agent's during
+   * the fix; it belongs on `StoredSession` next time that file is open.
+   */
+  pendingCritique?: PendingCritique;
   /** Fixes spent in the critique lane — the server-side allowance ledger. */
   fixesUsed?: number;
   /** Variation id the user chose. */

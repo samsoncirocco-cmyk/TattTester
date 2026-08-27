@@ -27,7 +27,14 @@ import { recordSpend } from '@/lib/budget-tracker';
 import type { IntakeRecord } from '../../intake/types';
 
 vi.mock('../../intake', () => ({ extractIntake: vi.fn() }));
-vi.mock('../../council', () => ({ enhanceStructured: vi.fn() }));
+// Partial mock: the paid council calls are stubbed, but the module's pure
+// exports (PRESENTATION_LEAD, stripChromaticWords) stay real — designState
+// renders prompts from them, so a stubbed constant would make prompt
+// assertions assert the test's own invention.
+vi.mock('../../council', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  enhanceStructured: vi.fn(),
+}));
 vi.mock('../../generation', () => ({ generate: vi.fn(), routeGeneration: vi.fn() }));
 vi.mock('@/lib/firebase-admin', () => ({ ensureAdminApp: vi.fn(() => false) }));
 vi.mock('@/services/storage/imageStorageService', () => ({
