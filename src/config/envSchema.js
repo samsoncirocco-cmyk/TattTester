@@ -479,7 +479,7 @@ export const ENV_SECTIONS = [
       },
       {
         name: 'CRON_SECRET', type: 'string', required: false,
-        purpose: 'Bearer secret the Vercel cron uses to authenticate the expire-deposits endpoint.',
+        purpose: 'Bearer secret the Vercel cron uses to authenticate the scheduled endpoints (expire-deposits, session-review).',
       },
     ],
   },

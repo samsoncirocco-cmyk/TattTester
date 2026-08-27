@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/expire-deposits",
       "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/session-review",
+      "schedule": "0 10 * * *"
     }
   ]
 }
