@@ -25,20 +25,29 @@
  * contradiction, and it is worth detecting BEFORE the provider call, because
  * afterwards it costs money to discover and a customer to report.
  *
- * ## NOTHING CALLS THIS YET — read this before trusting it
+ * ## WHERE THIS RUNS, AND WHAT IT IS ALLOWED TO DO THERE
  *
- * This module is BUILT AND TESTED BUT NOT WIRED IN. Its call site is the
- * pre-spend point in the re-cut lane (`internal/orchestrator.ts`, immediately
- * before `generate()`), and that file is owned by a concurrent workstream, so
- * arming the guard is a deliberate follow-up rather than part of this change.
- * Until that lands, the only thing running this check is the post-hoc review
- * cron (`internal/sessionReview.ts`), which re-asks the question AFTER the
- * money was spent.
+ * Two callers, asking the same question with different authority:
  *
- * Which means: the astronaut hole described above is still open in the product
- * today. Everything below is written in the present tense because it describes
- * what the function does when it is called — not how often it is called, which
- * is currently once per session, a day late, by a cron.
+ * 1. The pre-spend point in the re-cut lane (`internal/orchestrator.ts`,
+ *    immediately after `renderStatePrompt` and before the render is bought).
+ *    A CONTRADICTION on a field in that call site's `CONTRACT_BLOCKING_FIELDS`
+ *    — subject, roster, identities, palette, medium — throws and the render is
+ *    never purchased. Every other violation is logged with the full report.
+ * 2. The post-hoc review cron (`internal/sessionReview.ts`), which re-asks it
+ *    over prompts already persisted on cuts, a day late, and can only report.
+ *
+ * The split is not squeamishness, it is measured. Term-level matching cannot
+ * tell which clause a word belongs to, and the fixed presentation lead
+ * (ADR-0023) opens every prompt with "a flat scan of the artwork alone": a
+ * state carrying the built-in exclusion 'flat cel-shaded outlines', rendered
+ * correctly as "Avoid: flat cel-shaded outlines.", still reports
+ * contradicted:["flat"]. That is a false positive on the happy path — #388
+ * tracks the clause-scoped polarity fix. Fields whose values are prose with
+ * innocently recurring words are therefore logged rather than blocking, and
+ * the blocking set widens on logged evidence.
+ *
+ * Everything below is written in the present tense and now means it.
  *
  * ## What this module is not
  *
@@ -51,12 +60,14 @@
  *
  * ## The subject field, and why the read is structural
  *
- * `DesignState` on `origin/main` has no `subject` field. That absence *is* the
- * astronaut defect, and it is being fixed separately; `designState.ts` is
- * owned elsewhere and is not edited from here. So this module reads a subject
- * structurally — if the state carries one, it is checked; if it does not, the
- * report says so in as many words rather than quietly reporting "no subject
- * violations", which is precisely the reassuring silence that shipped the bug.
+ * `DesignState` carries a `subject` field as of #380 — its absence *was* the
+ * astronaut defect. This module still reads the subject STRUCTURALLY rather
+ * than assuming the field: if the state carries one it is checked, and if it
+ * does not the report says so in as many words rather than quietly reporting
+ * "no subject violations", which is precisely the reassuring silence that
+ * shipped the bug. States rehydrated from before that fix, and any future
+ * state shape that drops the field, get the honest answer instead of a green
+ * one.
  * `subjectAssertion` distinguishes the three states a caller actually needs to
  * tell apart: `'not-asserted'`, `'present'`, `'missing'`.
  *

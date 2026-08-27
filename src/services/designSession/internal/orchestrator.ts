@@ -41,6 +41,7 @@ import { deriveRefinementQuestion, adjustPromptForAnswer } from './refinement';
 import { derivePlacementNotes } from './placementNotes';
 import { deriveStencil } from './stencil';
 import { durableRender } from './durableImage';
+import { guardRenderBytes } from '@/lib/renderGuard';
 import { referenceImagePaths } from './references';
 import { deleteReferencePhotos, signedReferenceUrls } from './referencePhotos';
 import { recordImageSpend } from './spend';
@@ -62,6 +63,11 @@ import {
   stateOmissions,
   withPickedCut,
 } from './designState';
+import {
+  checkPromptContract,
+  explainPromptContract,
+  type PromptContractField,
+} from './promptContract';
 import {
   ALLOWANCE_SPENT_LINE,
   CHATTER_LINE,
@@ -175,6 +181,29 @@ export async function claimSessionOwnership(
 }
 
 /**
+ * The prompt-contract fields whose CONTRADICTION refuses a paid render.
+ *
+ * Deliberately a subset. A contradiction on these is a flat disagreement
+ * about the design itself — a monochrome state against a prompt commanding
+ * colour, a forearm state against a prompt placing it on the back, a subject
+ * the prompt denies — and their terms are distinctive enough that a term-level
+ * read is trustworthy. `exclusions`, `composition`, `action`, `aspect`,
+ * `visualTarget` and `directives` are held to the same check but only LOGGED,
+ * because their values are prose whose individual words recur innocently
+ * elsewhere in the prompt (see the measured 'flat' collision at the call
+ * site). Widening this set is a decision to make on logged evidence that a
+ * field's contradictions are real, not on the principle that more guarding is
+ * better: a false refusal costs the customer their re-cut.
+ */
+const CONTRACT_BLOCKING_FIELDS = new Set<PromptContractField>([
+  'subject',
+  'roster',
+  'identities',
+  'palette',
+  'medium',
+]);
+
+/**
  * A generation request pinned to the session's resolved model (ADR-0016).
  * Passing modelId explicitly skips routing, and provider fallback is off:
  * a failed render must surface, never silently cross providers mid-session
@@ -252,6 +281,77 @@ export async function startSession(request: StartSessionRequest): Promise<Stored
 }
 
 /**
+ * The pixel guard, at the acceptance point (ADR-0023's question, asked of the
+ * bytes instead of the prompt).
+ *
+ * `designBackdrop` has always known how to tell flash art on white from a
+ * photograph of skin, but it only ran on opt-in surfaces the customer might
+ * never open — the AR preview, the SMS composite — minutes to days after the
+ * render was paid for. A re-cut that came back as somebody's forearm sailed
+ * into the reveal grid unremarked. This runs the same measurement the moment
+ * the provider answers, inside the render closure so a reused staged image is
+ * not re-measured: it was guarded when it was bought.
+ *
+ * IT MEASURES; IT DOES NOT REJECT. The bytes are already billed against
+ * BUDGET_MAX_SPEND_CENTS and a re-cut costs again, so discarding on this
+ * verdict trades a possible bad image for a certain double charge — the
+ * renderGuard header makes that argument and it is not this change's to
+ * overturn. What arming buys is knowing at acceptance time instead of never;
+ * `border_backdrop_fraction` is logged so an operator (and the nightly
+ * review) can answer "how close to the line" without re-fetching anything.
+ *
+ * ONLY INLINE RENDERS ARE MEASURED, and the gap is logged rather than hidden.
+ * Vertex returns `data:` URLs — the bytes are already in memory, so the check
+ * costs a decode and no network. Replicate returns a hosted URL, and
+ * measuring it would mean fetching an image we are about to copy anyway, from
+ * inside a paid render path. Rather than let that lane report a quiet green,
+ * it reports `not-measured` with the reason: a guard that cannot see
+ * something must say so, which is the whole lesson of the roster-only net.
+ *
+ * Never throws. A guard must not be the reason a paid render fails to reach
+ * the customer.
+ */
+async function guardRenderedImage(
+  sessionId: string,
+  tag: string,
+  image: string | undefined
+): Promise<void> {
+  try {
+    if (!image || !image.startsWith('data:')) {
+      logger.info({
+        event_type: 'design_session.render_guard',
+        session_id: sessionId,
+        cut_id: tag,
+        measured: false,
+        reason: image
+          ? 'render guard skipped: provider returned a hosted URL, not inline bytes'
+          : 'render guard skipped: provider returned no image',
+      });
+      return;
+    }
+    const bytes = Buffer.from(image.slice(image.indexOf(',') + 1), 'base64');
+    const verdict = await guardRenderBytes(new Uint8Array(bytes));
+    logger[verdict.passed ? 'info' : 'warn']({
+      event_type: 'design_session.render_guard',
+      session_id: sessionId,
+      cut_id: tag,
+      measured: true,
+      passed: verdict.passed,
+      kind: verdict.kind,
+      border_backdrop_fraction: verdict.borderBackdropFraction,
+      reason: verdict.reason,
+    });
+  } catch (err) {
+    logger.warn({
+      event_type: 'design_session.render_guard_errored',
+      session_id: sessionId,
+      cut_id: tag,
+      error: (err as Error)?.message ?? String(err),
+    });
+  }
+}
+
+/**
  * Render one image and capture it durably (TAT-57). Nothing a provider hands
  * back is persistable as-is: Replicate URLs expire within the hour and Vertex
  * inline base64 blows past Firestore's ~1MB document cap. Every URL that
@@ -291,6 +391,7 @@ async function renderDurably(
     },
     async () => {
       const result = await generate(request);
+      await guardRenderedImage(session.id, tag, result.images[0]);
       // Optional-chained on purpose: this is a BILLING read, and spend.ts's
       // rule is that the ledger must never break a render. A provider always
       // returns metadata, so the fallback is for malformed results only —
@@ -316,6 +417,7 @@ async function renderDurably(
   if (outcome.metadata.downgradeReason) {
     onDowngrade?.(outcome.metadata.downgradeReason);
   }
+
   return outcome.imageUrl;
 }
 
@@ -1588,6 +1690,54 @@ export async function critique(
       `designState render dropped ${dropped.join(', ')} from a state carrying ` +
         `${nextState.roster.length} roster member(s)${nextState.subject ? ' and a subject' : ''} — ` +
         'refusing to spend a render on a prompt that contradicts the state object (ADR-0060).'
+    );
+  }
+
+  // The same pre-spend question, widened. `stateOmissions` above is verbatim
+  // containment over three fields; the contract asks it at term level over
+  // every field the state asserts — palette, medium, composition, aspect,
+  // exclusions, directives — and distinguishes a term that VANISHED from one
+  // the prompt says with the opposite polarity. A roster-only net blessed the
+  // astronaut prompt; a three-field net still blesses a state asserting
+  // "blackwork, no color" against a prompt commanding "full color fills".
+  //
+  // WHY ONLY SOME CONTRADICTIONS REFUSE THE SPEND. Term-level matching cannot
+  // tell which clause a word belongs to, and the fixed presentation lead
+  // (ADR-0023) opens every prompt with "a flat scan of the artwork alone".
+  // Measured on this branch: a state carrying the built-in exclusion
+  // 'flat cel-shaded outlines' renders correctly as "Avoid: flat cel-shaded
+  // outlines." and STILL reports contradicted:["flat"], because the word is
+  // asserted elsewhere about the scan rather than the outlines. That is a
+  // false positive on the happy path, and a guard that breaks live sessions
+  // on one is a guard someone switches off. So the refusal is scoped to the
+  // fields whose terms are distinctive enough for the read to be trustworthy;
+  // everything else is logged with the same detail and escalates on evidence,
+  // not on principle (#388 tracks the clause-scoped polarity fix).
+  const contract = checkPromptContract(nextState, adjustedPrompt);
+  const blocking = contract.violations.filter(
+    violation =>
+      violation.contradicted.length > 0 && CONTRACT_BLOCKING_FIELDS.has(violation.field)
+  );
+  if (contract.violations.length > 0) {
+    // checked_fields rides along because "1 violation" over one checked field
+    // and over eight are different claims about how much was verified.
+    logger.warn({
+      event_type: 'design_session.prompt_contract_violation',
+      session_id: session.id,
+      cut_id: target.id,
+      blocking: blocking.length > 0,
+      fields: contract.violations.map(violation => violation.field),
+      checked_fields: contract.checkedFields,
+      unverifiable_fields: contract.unverifiableFields,
+      subject_assertion: contract.subjectAssertion,
+      detail: explainPromptContract(contract),
+    });
+  }
+  if (blocking.length > 0) {
+    throw new Error(
+      `designState render contradicts the state object on ${blocking
+        .map(violation => violation.field)
+        .join(', ')} — refusing to spend a render. ${explainPromptContract(contract)}`
     );
   }
 
