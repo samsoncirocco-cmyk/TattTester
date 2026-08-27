@@ -544,6 +544,42 @@ describe('critique — the orchestrator turn', () => {
     expect(mockGenerate).not.toHaveBeenCalled();
   });
 
+  it('holds NOTHING when the ambiguous turn itself asked for nothing', async () => {
+    // Sonnet grill, 2026-08-27. "the other one" before any pick resolves to
+    // no cut AND adds no request — answerAddsRequest says so. The old
+    // fallback stashed the contentless turn anyway, so the customer's next
+    // bare-address answer (a tap) rendered a paid re-cut whose entire
+    // Customer direction was an address: the headline defect, reopened in
+    // the one corner where both turns carry zero content.
+    await seed();
+    const result = await critique('sess-critique', { message: 'cut 9' });
+
+    expect(result.generated).toBe(false);
+    expect(result.reply).toBe(NO_SUCH_CUT_LINE);
+    expect(mockGenerate).not.toHaveBeenCalled();
+    expect(mockRecordSpend).not.toHaveBeenCalled();
+
+    // The truthful hold after a contentless turn is no hold at all.
+    const stored = await memorySessionStore.get('sess-critique');
+    expect(stored?.pendingCritique).toBeUndefined();
+  });
+
+  it('settles the bare-address ANSWER free too — no render built from an address', async () => {
+    // The full money path of the reopened defect (Opus verification,
+    // 2026-08-27): contentless ambiguous turn, then a contentless placeable
+    // answer. With the stash truthfully empty, the answer has nothing to
+    // render and must cost nothing — under the old fallback it rendered
+    // `Customer direction: "the other one"`.
+    await seed();
+    await critique('sess-critique', { message: 'cut 9' });
+    const answer = await critique('sess-critique', { message: 'cut 1' });
+
+    expect(answer.generated).toBe(false);
+    expect(mockGenerate).not.toHaveBeenCalled();
+    expect(mockRecordSpend).not.toHaveBeenCalled();
+    expect(answer.fixesRemaining).toBe(DEFAULT_STUDIO_FIX_ALLOWANCE);
+  });
+
   it('SPENDS NOTHING on a cut name it cannot place, even with a pick to fall back on', async () => {
     // The money path of the 0f6234e9 failure. A pick exists, so the old
     // resolver had a target to return and returned it — a paid render on a
