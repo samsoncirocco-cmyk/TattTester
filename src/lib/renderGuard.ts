@@ -58,20 +58,29 @@
  * decode is exactly the codec quirk this module promises never to turn into a
  * lost generation, so it is checked explicitly rather than trusted.
  *
- * ## NOT YET WIRED — read this before trusting it
+ * ## WHERE THIS RUNS, AND WHAT IT IS ALLOWED TO DO THERE
  *
- * Nothing calls this module. `grep -rn renderGuard src/` finds the file and
- * its test and nothing else. The call site is the acceptance point in the
- * re-cut lane (`services/designSession/internal/orchestrator.ts`, where a
- * provider response becomes a `Variation`), and that file is owned by a
- * concurrent workstream, so arming the guard is a deliberate follow-up rather
- * than part of this change.
+ * `guardRenderBytes` is called from `renderDurably`'s render closure
+ * (`services/designSession/internal/orchestrator.ts`) the moment a provider
+ * answers — the single choke point every PAID render in that file passes
+ * through, reveal and re-cut alike, and inside the closure so a reused staged
+ * image is not re-measured. It MEASURES AND LOGS; it does not reject.
  *
- * Which means the failure described at the top — a re-cut coming back as a
- * photograph of skin and sailing into the reveal grid — is still fully live in
- * the product. The prose below is written in the present tense because it
- * describes what these functions do when called; today the answer to "how
- * often are they called" is never.
+ * Only inline renders are measured. Vertex hands back `data:` URLs, so the
+ * bytes are already in memory and the check costs a decode and no network;
+ * Replicate hands back a hosted URL, and `guardRenderUrl` on it would mean
+ * fetching an image the caller is about to copy anyway, from inside a paid
+ * render path. That lane logs `measured: false` with the reason rather than a
+ * quiet green — a guard that cannot see something has to say so.
+ *
+ * That is the fail-open argument above taken to its conclusion rather than a
+ * half-arming. The bytes in hand were already billed; discarding them on this
+ * verdict buys a certain double charge against a possible bad image. What the
+ * call site changes is WHEN the measurement exists: at acceptance, in a log
+ * line carrying `borderBackdropFraction` beside the threshold, instead of
+ * whenever a customer happens to open an opt-in preview surface — or never.
+ * Turning the verdict into a refusal is a separate, evidence-led decision,
+ * and the logged fractions are the evidence it needs.
  */
 import {
   assessBackdrop,
