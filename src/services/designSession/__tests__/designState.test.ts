@@ -857,6 +857,38 @@ describe('subject and meaning are different questions', () => {
     expect(state.meaning?.endsWith('…')).toBe(true);
   });
 
+  it('strips chromatic words from a meaning on a monochrome design', () => {
+    // The measured failure promptSubject exists for — an explicit positive
+    // color word beats a negative prompt every time — through the one path
+    // that has no subject to strip: a meaning-only brief on blackwork.
+    const state = deriveDesignState(
+      astronautIntake({
+        subject: undefined,
+        styleTags: ['blackwork'],
+        meaning: 'in bright red, for my late father',
+      })
+    );
+    const prompt = renderStatePrompt(state);
+    // Word boundary: "centered" in the flash-art lead contains "red".
+    expect(prompt).not.toMatch(/\bred\b/);
+    expect(prompt).toContain('for my late father');
+    // The field itself keeps the customer's words; only the render strips.
+    expect(state.meaning).toContain('bright red');
+  });
+
+  it('a meaning that was nothing but color words leaves nothing to quote', () => {
+    const state = deriveDesignState(
+      astronautIntake({
+        subject: undefined,
+        styleTags: ['blackwork'],
+        meaning: 'red gold',
+      })
+    );
+    const prompt = renderStatePrompt(state);
+    expect(prompt).not.toContain('expressing');
+    expect(prompt).toContain('A tattoo design.');
+  });
+
   it('backfills a meaning-only brief that was persisted before the field existed', () => {
     const intake = vibeIntake();
     const stale = deriveDesignState(intake);

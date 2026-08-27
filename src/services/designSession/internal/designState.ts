@@ -731,8 +731,17 @@ function subjectLead(state: DesignState): string {
   // No scene, but the customer still told us what it is for. Quoted and
   // "expressing", never "depicting" — the Council draws this exact line in
   // `subjectClause`, and the field the words arrived in is what decides it.
+  // The same monochrome rule as `promptSubject`: a meaning like "in bright
+  // red, for my late father" on a blackwork design would otherwise put the
+  // one positive color word in the prompt on the one path with no subject to
+  // strip. A meaning that was nothing but color words leaves nothing to quote.
   const meaning = state.meaning?.trim().replace(/[.\s]+$/, '');
-  if (meaning) return `A tattoo design expressing "${meaning}".`;
+  if (meaning) {
+    const quotable = isMonochrome(state.palette)
+      ? stripChromaticWords(meaning)
+      : meaning;
+    if (quotable) return `A tattoo design expressing "${quotable}".`;
+  }
 
   return 'A tattoo design.';
 }
