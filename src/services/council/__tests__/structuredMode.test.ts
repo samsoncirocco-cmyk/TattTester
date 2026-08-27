@@ -156,23 +156,28 @@ describe('enhanceStructured - palette (color vs monochrome)', () => {
   const color: IntakeRecord = { ...baseRecord, styleTags: ['color', 'anime'] };
   const unresolved: IntakeRecord = { ...baseRecord, styleTags: ['illustrative'] };
 
-  it('front-loads monochrome and renders monochrome sessions as flash art on white', async () => {
+  it('rides the monochrome command in the opening sentence, behind the flash-art lead', async () => {
     const result = await enhanceStructured(monochrome);
 
     for (const variation of result.variations) {
       const prompt = variation.prompts.simple || '';
-      expect(prompt.startsWith('Monochrome, black and grey ink only, zero color.')).toBe(true);
-      expect(prompt).toContain(FLASH_ART_LEAD);
+      // The presentation instruction owns the very first tokens (ADR-0023
+      // measured 0/12 without it); the palette rides the SAME sentence so it
+      // still lands before the subject can front-load color words.
+      expect(prompt.startsWith(FLASH_ART_LEAD)).toBe(true);
+      const openingSentence = prompt.split('.')[0];
+      expect(openingSentence).toContain('black and grey ink only, zero color');
       expect(variation.negativePrompt || '').toContain('color ink, saturated hues');
     }
   });
 
-  it('front-loads color but still presents as flash art, never saying monochrome', async () => {
+  it('rides color in the opening sentence but still presents as flash art, never saying monochrome', async () => {
     const result = await enhanceStructured(color);
 
     for (const variation of result.variations) {
       const prompt = variation.prompts.ultra || variation.prompts.simple || '';
-      expect(prompt.startsWith('Vibrant color, clean ink saturation, tattoo-quality color rendering.')).toBe(true);
+      expect(prompt.startsWith(FLASH_ART_LEAD)).toBe(true);
+      expect(prompt.split('.')[0]).toContain('vibrant color');
       // Palette and presentation are separate decisions: color sessions are
       // still flash art on white, so the placement preview can strip the
       // background and composite onto the user's own photo.
@@ -207,6 +212,25 @@ describe('enhanceStructured - palette (color vs monochrome)', () => {
       );
       expect(new Set(presentations).size).toBe(1);
       expect(presentations[0]).toBe(true);
+    }
+  });
+
+  it('an answered color question settles the axis and rides the answer (ADR-0061)', async () => {
+    // The ask-flow's answer is customer voice: the axis is no longer spread
+    // even though the ambiguous flag lingers, and every cut carries the
+    // answered palette — not the 'fine-line' tag's monochrome reading.
+    const result = await enhanceStructured({
+      ...baseRecord,
+      styleTags: ['fine-line'],
+      ambiguousAxes: ['color-blackwork', 'literal-abstract'],
+      paletteAnswer: 'color',
+    });
+
+    expect(result.axisSelection.axes).not.toContain('color-blackwork');
+    for (const variation of result.variations) {
+      const prompt = variation.prompts.simple || '';
+      expect(prompt.split('.')[0]).toContain('vibrant color');
+      expect(prompt).not.toContain('zero color');
     }
   });
 

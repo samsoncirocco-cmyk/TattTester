@@ -84,6 +84,15 @@ export interface IntakeRecord {
   /** Axes the intake left ambiguous — drives variation-axis selection (ADR-0012). */
   ambiguousAxes: VariationAxis[];
   /**
+   * The customer's answer to the open color question ("black ink or
+   * color?", ADR-0061). Customer voice: it outranks BOTH an ambiguous
+   * flag on color-blackwork and anything the style tags imply, and it
+   * settles the axis (`sessionPalette` is the one place that precedence
+   * is written). Absent until the ask-flow records an answer — absence
+   * means the question is still open or was never raised.
+   */
+  paletteAnswer?: 'color' | 'monochrome';
+  /**
    * An axis the customer EXPLICITLY asked to see spread ("can I see both
    * color and blackwork?"). Round one honors it ahead of the fixed
    * ADR-0049 ladder — the conversation promised that split, so the reveal

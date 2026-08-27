@@ -35,33 +35,19 @@
  * measured, not assumed. That is the whole return on this file: the fix was
  * verified by assertions written before it, by someone who did not write it.
  *
- * THREE remain `it.fails(...)`, and all three are the SAME open defect:
- * **issue #382**, the reveal lane's palette clause. They are not a general
- * "some things are still broken" marker, and nothing else belongs in this
- * category. They are the acceptance tests of the `sessionPalette` change:
- * when that lands, all three flip to `it(...)` in that PR, and green-on-three
- * is its definition of done. If one of them still fails after the flip, the
- * consolidation missed the reveal lane.
- *
- * ## The reveal lane is NOT the reference — read this before unifying on it
- *
- * An earlier draft of this file was built on the premise "the reveal prompt is
- * right, the re-cut drifts from it", and asserted the drift without ever
- * asserting the reference. It is not right. On this same fixture the reveal
- * lane produces a color-vs-blackwork spread in which BOTH cuts open with
- * "Monochrome, black and grey ink only, zero color." — including the cut whose
- * whole job is to be the colour pole, which then goes on to say "Rendered with
- * vibrant full-color palette". `structuredMode` builds
- * `paletteClause(ctx.palette) + PRESENTATION_LEAD`, and `ctx.palette` is
- * `resolvePalette(record.styleTags)` with no `ambiguousAxes` guard, so
- * 'fine-line' flips it to monochrome — the SAME defect this file flags in
- * `deriveDesignState`, in the lane that was supposed to be the fix's target.
- *
- * That is asserted below, as `it.fails`, in the reveal section. Anyone
- * flipping the re-cut tripwires to `it()` and unifying the two lanes must fix
- * the reveal lane too or they will propagate a self-contradicting paid prompt.
- * `structuredMode.ts` is owned by a concurrent workstream, so this file
- * documents the defect rather than fixing it.
+ * The remaining THREE were all one open defect — **issue #382**, the reveal
+ * lane's palette clause: `structuredMode` built
+ * `paletteClause(ctx.palette) + PRESENTATION_LEAD` with `ctx.palette` from
+ * `resolvePalette(record.styleTags)` and no `ambiguousAxes` guard, so
+ * 'fine-line' flipped a color-vs-blackwork spread to a monochrome command on
+ * BOTH cuts — including the colour pole, a paid prompt arguing with itself
+ * at token 1. The `sessionPalette` consolidation fixed it (one precedence —
+ * customer answer > open question > tag inference — written once in the
+ * intake module, both lanes delegating; the palette now rides the opening
+ * sentence BEHIND the presentation lead, and a cut carrying a
+ * color-blackwork pole takes the pole's palette). All three flipped to
+ * `it(...)` in that PR and pass. No `it.fails(...)` tripwires remain — a
+ * new one may only be added for a named issue, per the rule above.
  *
  * Every render path here is either a pure function or the demo/mocked lane —
  * no provider is ever called, so this fence costs nothing against
@@ -202,20 +188,12 @@ describe('golden journey — the reveal prompt keeps the subject', () => {
     }
   });
 
-  // ── DEFECT (#377): the presentation lead is not actually front-loaded. ───
-  // The title above deliberately says "carries", because containment is all
-  // that assertion checks and a containment check cannot see a POSITIONAL
-  // regression — move PRESENTATION_LEAD to the tail of the prompt, which is
-  // the precise ADR-0023 0/12 failure mode, and it stays green. This is the
-  // positional assertion, and it fails today: the palette clause is emitted
-  // ahead of PRESENTATION_LEAD (structuredMode builds
-  // `paletteClause(ctx.palette) + PRESENTATION_LEAD`), so the prompt opens on
-  // a palette command instead of on the presentation instruction.
-  // FLIP THIS TO it() WHEN THE PRESENTATION LEAD IS PUT FIRST.
-    // #382: the reveal lane front-loads paletteClause(ctx.palette), and
-    // ctx.palette is resolvePalette(styleTags) with no ambiguousAxes guard.
-    // Flip to it(...) in the sessionPalette PR — this is its acceptance test.
-  it.fails('OPENS with the flash-art lead, where the lane weights it', async () => {
+  // The positional assertion the "carries" test above cannot make: the
+  // prompt OPENS on the presentation instruction — the palette rides the
+  // same sentence behind it, never ahead of it. Moving PRESENTATION_LEAD
+  // off the front is the precise ADR-0023 0/12 failure mode.
+  // (#382 acceptance test 1/3 — flipped when sessionPalette landed.)
+  it('OPENS with the flash-art lead, where the lane weights it', async () => {
     const { variations } = await enhanceStructured(astronautIntake());
     for (const structured of variations) {
       const prompt = structured.prompts.detailed ?? structured.prompts.simple ?? '';
@@ -223,21 +201,13 @@ describe('golden journey — the reveal prompt keeps the subject', () => {
     }
   });
 
-  // ── DEFECT (#377): the color cut of a color spread is commanded mono. ────
-  // `axisSelection` is {mode:'questionnaire', axes:['color-blackwork']}: these
-  // two cuts ARE the customer's colour question, and cut 1 is the colour pole.
-  // It opens "Monochrome, black and grey ink only, zero color." and then says
-  // "Rendered with vibrant full-color palette" — a prompt arguing with itself
-  // at token 1, where the lane weights it hardest. structuredMode's own
-  // comment says a brief "must never open on a color-blackwork spread whose
-  // color cut contradicts its own palette clause"; this fixture does exactly
-  // that, because ctx.palette is resolvePalette(styleTags) with no
-  // ambiguousAxes guard and 'fine-line' is in MONOCHROME_TAGS.
-  // FLIP THIS TO it() WHEN THE PALETTE CLAUSE RESPECTS ambiguousAxes.
-    // #382: the reveal lane front-loads paletteClause(ctx.palette), and
-    // ctx.palette is resolvePalette(styleTags) with no ambiguousAxes guard.
-    // Flip to it(...) in the sessionPalette PR — this is its acceptance test.
-  it.fails('does not command monochrome on the colour pole of a colour spread', async () => {
+  // These two cuts ARE the customer's colour question
+  // ({mode:'questionnaire', axes:['color-blackwork']}), and one of them is
+  // the colour pole. A cut carrying a color-blackwork pole takes the POLE's
+  // palette, so the session-level verdict can never command "zero color" on
+  // the cut whose whole job is to be colour.
+  // (#382 acceptance test 2/3 — flipped when sessionPalette landed.)
+  it('does not command monochrome on the colour pole of a colour spread', async () => {
     const { variations, axisSelection } = await enhanceStructured(astronautIntake());
     expect(axisSelection.axes).toContain('color-blackwork');
     const colorCut = variations.find(
@@ -247,16 +217,12 @@ describe('golden journey — the reveal prompt keeps the subject', () => {
     expect(prompt).not.toContain('zero color');
   });
 
-  // ── DEFECT (#377): the two poles of the spread are not distinguishable. ──
-  // If the palette clause is hard-coded monochrome for both, the customer's
-  // round-one choice is between two prompts that open identically — the choice
-  // is fake, and it is fake at the most heavily weighted position. Asserting
-  // the two cuts DIFFER in their opening clause is the cheapest way to notice.
-  // FLIP THIS TO it() WHEN THE PALETTE CLAUSE RESPECTS ambiguousAxes.
-    // #382: the reveal lane front-loads paletteClause(ctx.palette), and
-    // ctx.palette is resolvePalette(styleTags) with no ambiguousAxes guard.
-    // Flip to it(...) in the sessionPalette PR — this is its acceptance test.
-  it.fails('gives the two poles different opening clauses', async () => {
+  // If the palette clause were identical for both, the customer's round-one
+  // choice would be between two prompts that open the same — fake, at the
+  // most heavily weighted position. Each pole's palette rides the opening
+  // sentence, so the two cuts differ inside their first period.
+  // (#382 acceptance test 3/3 — flipped when sessionPalette landed.)
+  it('gives the two poles different opening clauses', async () => {
     const { variations } = await enhanceStructured(astronautIntake());
     const opening = (index: number) => {
       const cut = variations[index];
