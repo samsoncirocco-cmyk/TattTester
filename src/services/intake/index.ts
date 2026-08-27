@@ -27,6 +27,7 @@ export type {
   CharacterIdentity,
   VariationAxis,
   AxisSelection,
+  SettledPalette,
 } from './types';
 export { VARIATION_AXIS_POOL } from './types';
 // Pure and client-safe, like the types themselves: the council, the round
