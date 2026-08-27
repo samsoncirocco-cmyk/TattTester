@@ -17,6 +17,8 @@ const REVEAL_NARRATION =
 // verifyApiAuth gate); stub it so tests need no signed-in user.
 vi.mock('@/lib/client-api-auth', () => ({
   getApiAuthHeaders: vi.fn(async () => ({ Authorization: 'Bearer test-token' })),
+  getOptionalApiAuthHeaders: vi.fn(async () => ({ Authorization: 'Bearer test-token' })),
+  SignInRequiredError: class SignInRequiredError extends Error {},
 }));
 
 // Strip framer-motion down to plain elements so the reveal renders

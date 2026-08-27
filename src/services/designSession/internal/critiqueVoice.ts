@@ -21,11 +21,48 @@ export function fixLandedLine(targetName: string): string {
 }
 
 /**
+ * The render came back as the wrong thing entirely and the customer said so
+ * (astronaut session: "what happened to my astonaught this is a laadys back
+ * and an eagle").
+ *
+ * Says the true thing — we got it wrong — and says what we are doing about it:
+ * building again from the brief rather than from the picture that was wrong.
+ * It must NOT be `fixLandedLine`'s "re-cut X with that", because "that" is
+ * their description of our mistake and it is the one thing this turn refuses
+ * to put in the prompt.
+ */
+export function wrongRenderLine(targetName: string): string {
+  return `that's not what you asked for — re-cutting ${targetName} from your brief, not from that last one. have a look.`;
+}
+
+/**
  * Which cut the critique is about, when nothing in the message named one and
  * nothing has been picked yet. No render runs on this turn.
+ *
+ * The second sentence is the astronaut session's fix, said out loud. Asked
+ * "which one am i fixing?", that customer answered by tapping — and the tap,
+ * the two words "the bold one", became the entire Customer direction of a paid
+ * render, while the sentence they had actually written never reached a model.
+ * Their words are now held and applied to whichever cut they point at, so the
+ * copy promises it: nobody should have to type a critique twice, and nobody
+ * can tell from a bare question whether we kept it.
  */
 export const WHICH_CUT_LINE =
-  "which one am i fixing? tap it, or just say the number — 'the third one'.";
+  "which one am i fixing? tap it, or just say the number — 'the third one'. " +
+  "i've got what you said; i'll put it on that one.";
+
+/**
+ * They pointed at a cut and asked for nothing — "the bold one", "that one",
+ * "cut 2 please" — with no held critique waiting for an address.
+ *
+ * The astronaut session paid for exactly this message. Tapping a cut sent the
+ * literal words "The bold one", the lane read them as a request, and the
+ * render's only Customer direction was the name of a cut. An address is not a
+ * brief, so this turn buys nothing and asks the one question that is actually
+ * missing. Free, like every other arm that does not buy an image.
+ */
+export const NAMED_BUT_NO_CHANGE_LINE =
+  "got it — that's the one. what do you want different about it?";
 
 /**
  * They named a cut and it did not resolve to exactly one — a name from another

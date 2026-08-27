@@ -6,6 +6,7 @@ import InstagramEmbed from "@/components/punk/InstagramEmbed";
 import SlashHeadline from "@/components/punk/SlashHeadline";
 import QuietCTA from "@/components/quiet/QuietCTA";
 import { artistIdFromSlug } from "@/lib/artist-slug";
+import { pickHeroImage } from "@/lib/hero-image";
 import { getRosterArtistById, instagramUrl } from "@/lib/artists-graph";
 
 // 10k+ artists live in the graph — profiles render on demand, never at build.
@@ -62,7 +63,11 @@ export default async function ArtistProfilePage({
   const lastName = nameParts.pop() ?? artist.name;
   const firstNames = nameParts.join(" ");
   const igUrl = instagramUrl(artist.instagram);
-  const heroImage = artist.portfolioImages[0];
+  // Not [0]: that index is import order, and it is a blurred thumbnail, a
+  // site banner or a headshot for 23% of the roster (#365). One seam with the
+  // homepage grid and the roster card, so an artist wears the same photograph
+  // on every surface.
+  const heroImage = pickHeroImage(artist.portfolioImages) ?? undefined;
   // Artist-authorized selections outrank imported website images and the old
   // unclaimed recovery tier. They are the work this artist chose to show.
   const displayedPermalinks =

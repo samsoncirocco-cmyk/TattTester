@@ -551,9 +551,21 @@ async function postRevealTurn(
   let session;
   try {
     session = await getSession(sessionId);
-  } catch {
-    // The session expired out from under the profile. Drop the post-reveal
-    // state and let the message open a fresh design rather than dead-end.
+  } catch (error) {
+    // ONLY a genuine SESSION_NOT_FOUND means the session expired out from
+    // under the profile — drop the post-reveal state, logged, and let the
+    // message open a fresh design rather than dead-end (#360, the twin of
+    // #357's armRefineRound gate). A transient store error must propagate
+    // and surface, never silently discard the texter's in-progress
+    // (possibly paid) session.
+    if (!(error instanceof DesignSessionError && error.code === 'SESSION_NOT_FOUND')) {
+      throw error;
+    }
+    logger.info({
+      event_type: 'sketchbot_sms.post_reveal_session_expired',
+      phone_last4: phoneLast4(profile.phone),
+      session_id: sessionId,
+    });
     profile.activeSessionId = null;
     profile.lastStage = null;
     profile.pendingPickId = null;

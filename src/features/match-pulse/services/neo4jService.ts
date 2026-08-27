@@ -515,6 +515,18 @@ export async function findArtistMatchesForPulse(preferences: ArtistPreferences):
 
     const { style, bodyPart, location, limit = 20 } = preferences;
 
+    // Expand the requested style into every spelling the graph might store it
+    // under (src/lib/style-vocabulary) — the same resolution findMatchingArtists
+    // uses. A literal toLower($style) comparison scored canonical "Japanese" as
+    // zero against artists tagged "Japanese (Irezumi)" (issue #362).
+    const styleVariants = style ? styleMatchVariants(style) : [];
+    if (style && styleVariants.length === 0) {
+        // Same honesty rule as findMatchingArtists: a filter that matches
+        // nothing must return nothing, never fall through to "no filter".
+        console.warn(`[Neo4j] Unknown style "${style}" in pulse filter — returning no matches`);
+        return [];
+    }
+
     const query = `
     MATCH (a:Artist)
     OPTIONAL MATCH (a)-[:SPECIALIZES_IN]->(st:Style)
@@ -529,7 +541,7 @@ export async function findArtistMatchesForPulse(preferences: ArtistPreferences):
          (coalesce(a.city, '') + CASE WHEN a.state IS NULL THEN '' ELSE ', ' + a.state END) AS locationText
     WHERE
       ${NOT_REMOVED}
-      AND ($style IS NULL OR any(s IN styles WHERE toLower(s) = toLower($style)))
+      AND (size($styleVariants) = 0 OR any(s IN styles WHERE toLower(s) IN $styleVariants))
       AND (
         $location IS NULL OR
         toLower(locationText) CONTAINS toLower($location) OR
@@ -537,8 +549,8 @@ export async function findArtistMatchesForPulse(preferences: ArtistPreferences):
       )
     WITH a, styles, portfolioImages, tags, locationText,
       CASE
-        WHEN $style IS NULL THEN 0.4
-        WHEN any(s IN styles WHERE toLower(s) = toLower($style)) THEN 0.4
+        WHEN size($styleVariants) = 0 THEN 0.4
+        WHEN any(s IN styles WHERE toLower(s) IN $styleVariants) THEN 0.4
         ELSE 0.2
       END AS styleScore,
       // bodyPart is not part of the graph model; neutral contribution
@@ -572,7 +584,7 @@ export async function findArtistMatchesForPulse(preferences: ArtistPreferences):
   `;
 
     const results = await executeCypherQuery(query, {
-        style: style || null,
+        styleVariants,
         bodyPart: bodyPart || null,
         location: location || null,
         limit

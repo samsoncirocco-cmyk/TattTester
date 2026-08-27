@@ -2,7 +2,7 @@
 // src/services/designSession/types.ts). The UI never talks to intake,
 // council, or generation directly — the session routes orchestrate those.
 
-import { getApiAuthHeaders } from '@/lib/client-api-auth';
+import { getApiAuthHeaders, getOptionalApiAuthHeaders } from '@/lib/client-api-auth';
 import type {
   DesignSession,
   StartSessionRequest,
@@ -87,6 +87,21 @@ function settleWithin<T>(operation: Promise<T>, timeoutMs: number, message: stri
 
 async function postAuthed(path: string, body: unknown): Promise<Response> {
   const authHeaders = await getApiAuthHeaders();
+  return fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Like postAuthed, but a signed-out caller sends the request anyway with no
+ * Authorization header — instead of being stopped in the browser by a
+ * sign-in modal. Only for routes the server accepts anonymously; a charged
+ * route must keep using postAuthed, which fails closed.
+ */
+async function postMaybeAuthed(path: string, body: unknown): Promise<Response> {
+  const authHeaders = await getOptionalApiAuthHeaders();
   return fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders },
@@ -307,10 +322,16 @@ export async function sharePlacementPreview(share: {
  * (ADR-0019). Omit sessionId and message to open a new conversation. A 503
  * (every provider down) throws ConversationUnavailableError so the UI can
  * fall back to the scripted intake.
+ *
+ * Deliberately NOT postAuthed: talking to SketchBot is free and open to
+ * signed-out visitors (ADR-0041 gates generation, not conversation), and a
+ * session starts unowned until a charged action stamps it (#357). A signed-in
+ * caller still sends their token — the route uses it for per-user rate
+ * limiting and the ownership check.
  */
 export async function converse(request: ConverseRequest): Promise<ConverseResponse> {
   const res = await settleWithin(
-    postAuthed(`${BASE_PATH}/converse`, request),
+    postMaybeAuthed(`${BASE_PATH}/converse`, request),
     CONVERSATION_TIMEOUT_MS,
     'SketchBot is taking longer than expected — try again.'
   );

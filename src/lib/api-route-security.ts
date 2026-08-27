@@ -148,4 +148,11 @@ export const API_ROUTE_SECURITY: Record<string, RouteSecurityEntry> = {
     class: 'public',
     reason: 'Vercel cron endpoint guarded by CRON_SECRET bearer; no user data, idempotent maintenance job.',
   },
+  // Review cron: re-asks the ADR-0060 prompt contract over recently updated
+  // sessions and reports zero-render stalls (#376). Read-only and spend-free.
+  'cron/session-review': {
+    class: 'public',
+    reason:
+      'Vercel cron endpoint guarded by CRON_SECRET bearer; read-only sweep, no writes, no model calls.',
+  },
 };

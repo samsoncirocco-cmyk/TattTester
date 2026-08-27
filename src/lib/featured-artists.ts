@@ -76,6 +76,7 @@
  */
 import featuredData from "@/data/featured-artists.json";
 import { PUBLIC_ARTIST_CLAUSE } from "@/lib/artist-visibility";
+import { pickHeroImage } from "@/lib/hero-image";
 import { filterPortfolioForDisplay } from "@/lib/portfolio-display";
 import { tombstoneKeysFor } from "@/lib/takedown";
 
@@ -162,15 +163,21 @@ export const PUBLISHABLE_FEATURED_CYPHER = `
  * The hero the profile page would show for this row, or `null`.
  *
  * Pure, and deliberately the *only* place the homepage turns graph fields into
- * an image URL — `filterPortfolioForDisplay` then `[0]` is precisely what
- * `/artists` and `src/app/artists/[slug]/page.tsx` do, so the three surfaces
- * cannot disagree about which photograph belongs to an artist.
+ * an image URL — `filterPortfolioForDisplay` then `pickHeroImage` is precisely
+ * what `/artists` and `src/app/artists/[slug]/page.tsx` do, so the three
+ * surfaces cannot disagree about which photograph belongs to an artist.
+ *
+ * `[0]` used to be that shared seam, and it was the wrong photograph: it is
+ * whatever the shop-site importer appended first, which on the live graph is a
+ * blurred thumbnail, a site banner or the artist's headshot for 1,920 of 8,305
+ * artists (#365). `pickHeroImage` reads the CDN's own dimensions out of the URL
+ * and leads with work instead. Same three surfaces, same one seam.
  */
 export function heroImageFromRecord(record: {
   portfolioImages?: unknown;
   claimedByUid?: unknown;
 }): string | null {
-  return filterPortfolioForDisplay(record)[0] ?? null;
+  return pickHeroImage(filterPortfolioForDisplay(record));
 }
 
 /**

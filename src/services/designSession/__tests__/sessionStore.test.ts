@@ -9,9 +9,20 @@ const firestoreMocks = vi.hoisted(() => {
   const set = vi.fn();
   const get = vi.fn();
   const doc = vi.fn(() => ({ set, get }));
-  const collection = vi.fn(() => ({ doc }));
+  // The query chain the review sweep uses. Each link returns the same object
+  // so the calls can be asserted in any order, and `queryGet` is separate from
+  // the document `get` so a test cannot confuse a doc read with a sweep.
+  const queryGet = vi.fn();
+  const query: Record<string, unknown> = { get: queryGet };
+  const where = vi.fn(() => query);
+  const orderBy = vi.fn(() => query);
+  const limit = vi.fn(() => query);
+  query.where = where;
+  query.orderBy = orderBy;
+  query.limit = limit;
+  const collection = vi.fn(() => ({ doc, where, orderBy, limit, get: queryGet }));
   const getFirestore = vi.fn(() => ({ collection }));
-  return { set, get, doc, collection, getFirestore };
+  return { set, get, doc, collection, getFirestore, where, orderBy, limit, queryGet };
 });
 
 vi.mock('firebase-admin/firestore', () => ({ getFirestore: firestoreMocks.getFirestore }));
@@ -209,6 +220,88 @@ describe('firestoreSessionStore', () => {
 
     firestoreMocks.get.mockResolvedValueOnce({ exists: false, data: () => undefined });
     expect(await firestoreSessionStore.get('gone')).toBeNull();
+  });
+});
+
+/**
+ * The sweep read (`listRecentlyUpdated`) — the only read on this interface not
+ * keyed by a session id, and the one the review cron is built on.
+ *
+ * It had no coverage in either implementation when it landed: the route's test
+ * mocks the whole store away, so nothing anywhere executed this filter, this
+ * sort or this clone. The lexical-ISO comparison in particular is the sort of
+ * thing that looks obviously right and is exactly as obviously wrong if a
+ * timestamp format ever changes.
+ */
+describe('memorySessionStore — listRecentlyUpdated', () => {
+  async function seedThree(): Promise<void> {
+    await memorySessionStore.save(
+      makeSession({ id: 'old', updatedAt: '2026-07-01T00:00:00.000Z' })
+    );
+    await memorySessionStore.save(
+      makeSession({ id: 'mid', updatedAt: '2026-07-24T00:00:00.000Z' })
+    );
+    await memorySessionStore.save(
+      makeSession({ id: 'new', updatedAt: '2026-07-24T12:00:00.000Z' })
+    );
+  }
+
+  it('returns only sessions touched at or after the bound, newest first', async () => {
+    await seedThree();
+    const found = await memorySessionStore.listRecentlyUpdated('2026-07-24T00:00:00.000Z', 10);
+    expect(found.map((session) => session.id)).toEqual(['new', 'mid']);
+  });
+
+  it('caps at the limit, keeping the newest rather than an arbitrary page', async () => {
+    await seedThree();
+    const found = await memorySessionStore.listRecentlyUpdated('2026-01-01T00:00:00.000Z', 2);
+    expect(found.map((session) => session.id)).toEqual(['new', 'mid']);
+  });
+
+  it('returns nothing for a limit of zero rather than everything', async () => {
+    await seedThree();
+    expect(await memorySessionStore.listRecentlyUpdated('2026-01-01T00:00:00.000Z', 0)).toEqual([]);
+  });
+
+  it('hands back copies, so a reviewer cannot mutate the store', async () => {
+    await seedThree();
+    const [first] = await memorySessionStore.listRecentlyUpdated('2026-07-24T12:00:00.000Z', 10);
+    first.phase = 'intake';
+    expect((await memorySessionStore.get('new'))?.phase).toBe('revealed');
+  });
+
+  it('is empty, not undefined, when nothing is recent', async () => {
+    await seedThree();
+    expect(await memorySessionStore.listRecentlyUpdated('2027-01-01T00:00:00.000Z', 10)).toEqual([]);
+  });
+});
+
+describe('firestoreSessionStore — listRecentlyUpdated', () => {
+  it('range-filters and orders on the SAME field, so no composite index is needed', async () => {
+    firestoreMocks.queryGet.mockResolvedValueOnce({
+      docs: [{ data: () => makeSession({ id: 'new' }) }],
+    });
+
+    const found = await firestoreSessionStore.listRecentlyUpdated('2026-07-24T00:00:00.000Z', 50);
+
+    expect(firestoreMocks.collection).toHaveBeenCalledWith('design_sessions');
+    expect(firestoreMocks.where).toHaveBeenCalledWith(
+      'updatedAt',
+      '>=',
+      '2026-07-24T00:00:00.000Z'
+    );
+    // Firestore requires the first orderBy to match the range field, and a
+    // second field here would make this query need a composite index that
+    // nobody has provisioned — the cron would 500 on its first real run.
+    expect(firestoreMocks.orderBy).toHaveBeenCalledWith('updatedAt', 'desc');
+    expect(firestoreMocks.limit).toHaveBeenCalledWith(50);
+    expect(found.map((session) => session.id)).toEqual(['new']);
+  });
+
+  it('never asks Firestore for a negative page size', async () => {
+    firestoreMocks.queryGet.mockResolvedValueOnce({ docs: [] });
+    await firestoreSessionStore.listRecentlyUpdated('2026-07-24T00:00:00.000Z', -5);
+    expect(firestoreMocks.limit).toHaveBeenCalledWith(0);
   });
 });
 

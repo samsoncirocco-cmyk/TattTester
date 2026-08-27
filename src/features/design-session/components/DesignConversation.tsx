@@ -14,6 +14,7 @@ import {
   confirmProposal,
   ConversationUnavailableError,
 } from '../services/designSessionApi';
+import { SignInRequiredError } from '@/lib/client-api-auth';
 import { ChatBubble } from './ChatBubble';
 import { ChatInput } from './ChatInput';
 import { ExampleStrip } from './ExampleStrip';
@@ -26,6 +27,16 @@ import { SketchbotNotesCard, MobileNotesSheet } from './SketchbotNotes';
 // degrade to the scripted two-question intake (ADR-0019). Soft — never an
 // error screen, never an apology essay.
 const FALLBACK_LINE = 'Keeping it simple today — two quick questions and we’re off.';
+
+/**
+ * The account beat, shown at the moment the visitor asks for cuts and not
+ * a second earlier (ADR-0041 gates generation; conversation is free).
+ * Deliberately not an error: nothing went wrong, and the conversation above
+ * it is still there. It names what they get and what it costs, because they
+ * have already seen the proposal it is attached to.
+ */
+export const SIGN_IN_LINE =
+  'One thing before I draw — make an account so these are yours. First 25 cuts are free, and everything we just worked out comes with you.';
 
 /**
  * The visible fast lane's canonical message (TAT-48): the chip sends it
@@ -78,6 +89,10 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
   const [revealSession, setRevealSession] = useState<DesignSession | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The draw needs an account and there isn't one yet. Distinct from
+  // `error`: this is the paywall beat, not a failure, so it gets the
+  // account copy and a "draw it" button rather than a red line and RETRY.
+  const [signInNeeded, setSignInNeeded] = useState(false);
   const [lastAction, setLastAction] = useState<ConversationAction | null>(null);
   // SketchBot's notepad (TAT-48): the latest whitelisted projection of the
   // brief — the ONLY record view the server sends, never raw telemetry.
@@ -90,6 +105,7 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
 
   const runAction = (action: ConversationAction) => {
     setError(null);
+    setSignInNeeded(false);
     setLastAction(action);
     setPending(true);
 
@@ -100,6 +116,10 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
           setMode('reveal');
         })
         .catch((err: unknown) => {
+          if (err instanceof SignInRequiredError) {
+            setSignInNeeded(true);
+            return;
+          }
           setError(err instanceof Error ? err.message : 'Something snapped — try again.');
         })
         .finally(() => setPending(false));
@@ -131,6 +151,13 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
       .catch((err: unknown) => {
         if (err instanceof ConversationUnavailableError) {
           setMode('fallback');
+          return;
+        }
+        // The fast lane (ADR-0028) chains a confirm inside this same
+        // promise, so a signed-out visitor whose first message was already
+        // a complete prompt lands here rather than in the confirm branch.
+        if (err instanceof SignInRequiredError) {
+          setSignInNeeded(true);
           return;
         }
         setError(err instanceof Error ? err.message : 'Something snapped — try again.');
@@ -233,12 +260,13 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
     );
   }
 
-  const showProposal = stage === 'proposal' && !pending && !error;
-  const showHandoff = stage === 'handoff' && !pending && !error;
+  const showProposal = stage === 'proposal' && !pending && !error && !signInNeeded;
+  const showHandoff = stage === 'handoff' && !pending && !error && !signInNeeded;
   // The visible fast lane (TAT-48): the record could already generate
   // (ADR-0028 readiness, judged by the engine) but SketchBot still has
   // questions — surface the skip.
-  const showFastLane = stage === 'chatting' && !pending && !error && notes?.sufficient === true;
+  const showFastLane =
+    stage === 'chatting' && !pending && !error && !signInNeeded && notes?.sufficient === true;
 
   // First-run empty state: the user hasn't spoken yet (neither typed nor
   // deep-linked). Starter chips + example strip scaffold the blank box; the
@@ -275,6 +303,23 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
       )}
 
       {pending && <ThinkingLine label="Typing" />}
+
+      {/* The account beat (ADR-0041). getApiAuthHeaders already opened the
+          sign-in modal on its way out; this is what the conversation looks
+          like behind it, and the button re-runs the same draw once they're
+          in. */}
+      {signInNeeded && !pending && (
+        <div className="space-y-3">
+          <ChatBubble role="bot">{SIGN_IN_LINE}</ChatBubble>
+          <button
+            type="button"
+            onClick={() => lastAction && runAction(lastAction)}
+            className="tape press inline-flex items-center px-6 py-4 font-display text-[20px] leading-none tracking-[0.02em] uppercase"
+          >
+            Draw it<span className="ml-3 text-[14px]">▸</span>
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="space-y-3">

@@ -1,9 +1,14 @@
 // Seam tests for POST /api/v1/design-session/converse: the designSession
 // service is mocked at its public entry point; these tests pin the route's
-// policy (auth gate, rate limiting, ConverseRequest validation, turn-spend
-// recording, 503 unavailable mapping, demo mode) and the response envelope.
+// policy (optional auth, rate limiting, the ownership guard, ConverseRequest
+// validation, turn-spend recording, 503 unavailable mapping, demo mode) and
+// the response envelope.
+//
+// The route is deliberately open to signed-out visitors, so most requests
+// here carry NO Authorization header — that is the anonymous path, and it is
+// the one real users hit first. Use makeAuthedRequest for the signed-in one.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { makeRequest } from '../../__tests__/helpers';
 import type { ConverseResponse } from '@/services/designConversation/types';
 
@@ -15,6 +20,7 @@ const {
   rateLimitMock,
   rateLimitResponseMock,
   verifyApiAuthMock,
+  claimSessionOwnershipMock,
 } = vi.hoisted(() => ({
   converseMock: vi.fn(),
   recordConversationTurnSpendMock: vi.fn(),
@@ -23,11 +29,12 @@ const {
   rateLimitMock: vi.fn(),
   rateLimitResponseMock: vi.fn(),
   verifyApiAuthMock: vi.fn(),
+  claimSessionOwnershipMock: vi.fn(),
 }));
 
 vi.mock('@/services/designSession', () => ({
   converse: converseMock,
-  claimSessionOwnership: vi.fn(),
+  claimSessionOwnership: claimSessionOwnershipMock,
   confirmProposal: vi.fn(),
   startSession: vi.fn(),
   recordPick: vi.fn(),
@@ -63,6 +70,18 @@ import { POST } from '../route';
 
 const URL = 'http://localhost/api/v1/design-session/converse';
 
+/** The signed-in path: same body, plus the Bearer header. */
+function makeAuthedRequest(url: string, body?: Record<string, unknown>) {
+  return new NextRequest(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token-1' },
+    body: JSON.stringify(body ?? {}),
+  });
+}
+
+/** What the route passes to the ownership guard for a signed-out caller. */
+const ANONYMOUS_CALLER = 'anonymous:web';
+
 function converseResponse(overrides: Partial<ConverseResponse> = {}): ConverseResponse {
   return {
     sessionId: 'sess-1',
@@ -77,6 +96,7 @@ describe('POST /api/v1/design-session/converse route adapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     verifyApiAuthMock.mockResolvedValue({ error: null, user: { uid: 'uid-1' } });
+    claimSessionOwnershipMock.mockResolvedValue(undefined);
     rateLimitMock.mockResolvedValue({ allowed: true });
     recordConversationTurnSpendMock.mockResolvedValue(undefined);
     delete process.env.NEXT_PUBLIC_DEMO_MODE;
@@ -100,8 +120,11 @@ describe('POST /api/v1/design-session/converse route adapter', () => {
       turn: 0,
     });
     expect(converseMock).toHaveBeenCalledWith({});
-    // Rate policy: the cheap 'default' bucket, not 'generation'.
-    expect(rateLimitMock).toHaveBeenCalledWith(expect.anything(), 'default');
+    // No Authorization header on this request: the front door is open, and
+    // a signed-out visitor rides the tight per-IP anonymous bucket — never
+    // 'generation', and never the looser per-uid 'default'.
+    expect(verifyApiAuthMock).not.toHaveBeenCalled();
+    expect(rateLimitMock).toHaveBeenCalledWith(expect.anything(), 'converse-anon');
     // Every real turn is recorded as its own budget line item.
     expect(recordConversationTurnSpendMock).toHaveBeenCalledTimes(1);
   });
@@ -142,11 +165,14 @@ describe('POST /api/v1/design-session/converse route adapter', () => {
     expect(converseMock).not.toHaveBeenCalled();
   });
 
+  // A caller who PRESENTED a token and failed verification is a bug or an
+  // attack, not an anonymous visitor. Silently downgrading them to anonymous
+  // would hide both, so a bad token is still a 401.
   it('returns the auth failure untouched and never reaches the service', async () => {
     const denied = NextResponse.json({ error: 'Authorization header required' }, { status: 401 });
     verifyApiAuthMock.mockResolvedValueOnce({ error: denied });
 
-    const res = await POST(makeRequest(URL, {}));
+    const res = await POST(makeAuthedRequest(URL, {}));
 
     expect(res.status).toBe(401);
     expect(converseMock).not.toHaveBeenCalled();
@@ -157,7 +183,7 @@ describe('POST /api/v1/design-session/converse route adapter', () => {
   it('returns the structured envelope when auth setup throws', async () => {
     verifyApiAuthMock.mockRejectedValueOnce(new Error('Firebase admin not configured'));
 
-    const res = await POST(makeRequest(URL, {}));
+    const res = await POST(makeAuthedRequest(URL, {}));
 
     expect(res.status).toBe(500);
     expect(await res.json()).toMatchObject({ code: 'DESIGN_SESSION_FAILED', retryable: false });
@@ -230,5 +256,95 @@ describe('POST /api/v1/design-session/converse route adapter', () => {
 
     expect(res.status).toBe(400);
     expect(converseMock).not.toHaveBeenCalled();
+  });
+  // ---------------------------------------------------------------------
+  // The open front door. Requiring a Bearer token here put a sign-in wall
+  // in front of the product's primary CTA: /design opened a "Welcome Back"
+  // modal before the visitor typed a character, and the first chip tap
+  // failed client-side without a request ever leaving the browser. ADR-0041
+  // gates GENERATION; a conversation turn is not a generation, and #357
+  // already made sessions start unowned for exactly this reason.
+  // ---------------------------------------------------------------------
+
+  it('serves a signed-out visitor a full turn, with no token and no auth call', async () => {
+    converseMock.mockResolvedValueOnce(converseResponse({ turn: 3, reply: 'Bold or fine?' }));
+
+    const res = await POST(makeRequest(URL, { sessionId: 'sess-1', message: 'a sparrow' }));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).reply).toBe('Bold or fine?');
+    expect(verifyApiAuthMock).not.toHaveBeenCalled();
+    expect(converseMock).toHaveBeenCalledWith({ sessionId: 'sess-1', message: 'a sparrow' });
+    // The turn still costs model money, so it is still a budget line item.
+    expect(recordConversationTurnSpendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keys a signed-in caller on their uid and the ordinary allowance', async () => {
+    converseMock.mockResolvedValueOnce(converseResponse());
+
+    const res = await POST(makeAuthedRequest(URL, {}));
+
+    expect(res.status).toBe(200);
+    // Per-uid: a signed-in customer is never throttled by a noisy shared IP.
+    expect(rateLimitMock).toHaveBeenCalledWith(expect.anything(), 'default', 'uid-1');
+  });
+
+  // An open door is not an open bar.
+  it('throttles a signed-out visitor on the anonymous tier', async () => {
+    rateLimitMock.mockResolvedValueOnce({ allowed: false, limit: 40, remaining: 0, reset: 1 });
+    rateLimitResponseMock.mockReturnValueOnce(
+      NextResponse.json({ error: 'Too Many Requests' }, { status: 429 })
+    );
+
+    const res = await POST(makeRequest(URL, {}));
+
+    expect(res.status).toBe(429);
+    expect(rateLimitMock).toHaveBeenCalledWith(expect.anything(), 'converse-anon');
+    expect(converseMock).not.toHaveBeenCalled();
+  });
+
+  // Opening the route to strangers must not open OWNED sessions to them.
+  it('checks a signed-out continuing turn against the anonymous sentinel', async () => {
+    converseMock.mockResolvedValueOnce(converseResponse());
+
+    await POST(makeRequest(URL, { sessionId: ' sess-1 ', message: 'hi' }));
+
+    expect(claimSessionOwnershipMock).toHaveBeenCalledWith('sess-1', ANONYMOUS_CALLER, {
+      stamp: false,
+    });
+    // The sentinel can never equal a real Firebase uid, so it stamps nothing.
+    expect(ANONYMOUS_CALLER).toContain(':');
+  });
+
+  it('checks a signed-in continuing turn against the real uid', async () => {
+    converseMock.mockResolvedValueOnce(converseResponse());
+
+    await POST(makeAuthedRequest(URL, { sessionId: 'sess-1', message: 'hi' }));
+
+    expect(claimSessionOwnershipMock).toHaveBeenCalledWith('sess-1', 'uid-1', { stamp: false });
+  });
+
+  it('refuses an anonymous caller reaching a session that already has an owner', async () => {
+    claimSessionOwnershipMock.mockRejectedValueOnce(
+      Object.assign(new Error("No design session 'sess-1'."), {
+        code: 'SESSION_NOT_FOUND',
+        status: 404,
+      })
+    );
+
+    const res = await POST(makeRequest(URL, { sessionId: 'sess-1', message: 'hi' }));
+
+    expect(res.status).toBe(404);
+    expect(converseMock).not.toHaveBeenCalled();
+    expect(recordConversationTurnSpendMock).not.toHaveBeenCalled();
+  });
+
+  // The opening call has no session to own yet.
+  it('never checks ownership on an opening call', async () => {
+    converseMock.mockResolvedValueOnce(converseResponse());
+
+    await POST(makeRequest(URL, {}));
+
+    expect(claimSessionOwnershipMock).not.toHaveBeenCalled();
   });
 });
