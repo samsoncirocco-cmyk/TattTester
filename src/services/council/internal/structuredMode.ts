@@ -414,7 +414,10 @@ function paletteClause(palette: Palette): string {
  * bled to the edges fails it exactly as hard as a photograph does. The
  * margin is the thing being asked for.
  */
-const PRESENTATION_LEAD =
+// Exported for the re-cut path (`designSession/internal/designState.ts`),
+// which front-loads the same clause for the same reason and must not keep a
+// second copy of it. Export only — nothing about the reveal changes.
+export const PRESENTATION_LEAD =
   'Flash art tattoo design on a pure white background — a flat scan of the ' +
   'artwork alone, centered with clean white margins on all sides. ';
 

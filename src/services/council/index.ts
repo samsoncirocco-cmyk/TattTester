@@ -21,6 +21,15 @@ export type {
   RoundSpread,
 } from './internal/structuredMode';
 
+// Two pieces of the prompt contract the re-cut path needs by value rather than
+// by call (`designSession/internal/designState.ts`): the flash-art presentation
+// clause the AR preview depends on, and the chromatic-word strip a monochrome
+// design needs applied to its subject prose. Both are measured behaviors with a
+// comment at their definition, and a re-cut that keeps its own copy of either
+// is a second answer waiting to drift from this one. Re-exported so the
+// boundary in ADR-0002 stays the only door in.
+export { PRESENTATION_LEAD, stripChromaticWords } from './internal/structuredMode';
+
 export interface CouncilEnhanceRequest {
   /** The user's rough tattoo idea, in their own words. */
   userIdea: string;

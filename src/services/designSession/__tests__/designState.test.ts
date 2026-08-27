@@ -23,6 +23,11 @@ import {
 } from '../internal/designState';
 import type { DesignState } from '../internal/designState';
 import type { IntakeRecord } from '../../intake/types';
+import { resolvePalette } from '../../intake/settledAxes';
+import {
+  PRESENTATION_LEAD as COUNCIL_PRESENTATION_LEAD,
+  stripChromaticWords,
+} from '../../council';
 
 /** The failing session's intake, as it would have been extracted. */
 function smashIntake(overrides: Partial<IntakeRecord> = {}): IntakeRecord {
@@ -505,6 +510,13 @@ describe('the subject is the design (2026-08-25)', () => {
 });
 
 describe('the prompt asks for artwork, not a photograph of skin (ADR-0023)', () => {
+  it('is the Council\'s clause itself, not a lookalike of it', () => {
+    // One string, two lanes. The trim is the only difference: the Council
+    // concatenates, this module joins.
+    expect(PRESENTATION_LEAD).toBe(COUNCIL_PRESENTATION_LEAD.trim());
+    expect(PRESENTATION_LEAD).toContain('pure white background');
+  });
+
   it('front-loads the flash-art presentation the AR preview depends on', () => {
     // The placement preview strips near-white to alpha; an on-skin render has
     // nothing to strip, so `assessBackdrop` refuses it. The reveal path was
@@ -536,47 +548,197 @@ describe('the prompt asks for artwork, not a photograph of skin (ADR-0023)', () 
   });
 });
 
-describe('line weight is not a palette (2026-08-25)', () => {
+describe('the palette is one decision, not two (2026-08-25)', () => {
   it('"color and clean lines" is a COLOR piece', () => {
     // The reveal rendered full color. The re-cut came back monochrome because
-    // 'fine-line' was read as "no color".
+    // this module kept a private copy of the palette rule with the precedence
+    // missing — 'fine-line' outvoted the word "color" the customer said.
     expect(deriveDesignState(astronautIntake()).palette).toBe('full color');
     expect(renderStatePrompt(deriveDesignState(astronautIntake()))).toContain(
       'Palette: full color.'
     );
   });
 
-  it('a line-weight tag on its own settles nothing either way', () => {
-    for (const tag of ['fine-line', 'linework', 'fineline']) {
-      expect(deriveDesignState(astronautIntake({ styleTags: [tag] })).palette).toBeUndefined();
-    }
-  });
-
-  it('genuinely monochrome tags still mean monochrome', () => {
-    for (const tag of ['blackwork', 'black-and-grey', 'dotwork', 'tribal']) {
-      expect(deriveDesignState(astronautIntake({ styleTags: [tag] })).palette).toBe(
-        'blackwork, no color'
-      );
-      // Even beside a line-weight tag — the line weight is silent, not a veto.
-      expect(deriveDesignState(astronautIntake({ styleTags: [tag, 'fine-line'] })).palette).toBe(
-        'blackwork, no color'
-      );
-    }
-  });
-
-  it('color wins a tag conflict, which is resolvePalette\'s rule verbatim', () => {
+  it('color wins a tag conflict, because that is resolvePalette\'s rule', () => {
     expect(deriveDesignState(astronautIntake({ styleTags: ['blackwork', 'color'] })).palette).toBe(
+      'full color'
+    );
+    expect(deriveDesignState(astronautIntake({ styleTags: ['fine-line', 'watercolor'] })).palette).toBe(
       'full color'
     );
   });
 
-  it('never answers a palette question the intake left open', () => {
-    // `settledAxes` refuses to skip an ambiguous rung for this exact reason;
-    // asserting a palette here would answer it for the customer, in a prompt,
-    // for money.
-    const open = astronautIntake({ styleTags: ['blackwork'], ambiguousAxes: ['color-blackwork'] });
-    expect(deriveDesignState(open).palette).toBeUndefined();
-    expect(renderStatePrompt(deriveDesignState(open))).not.toContain('Palette:');
+  it('monochrome tags still mean monochrome, line-weight tags included', () => {
+    // 'fine-line' reading monochrome on its own is not the bug and is not
+    // fixed here: it is what the reveal does today, and the two lanes agreeing
+    // is worth more than this module having a private opinion.
+    for (const tags of [['blackwork'], ['black-and-grey'], ['dotwork'], ['fine-line'], ['geometric']]) {
+      expect(deriveDesignState(astronautIntake({ styleTags: tags })).palette).toBe(
+        'blackwork, no color'
+      );
+    }
+  });
+
+  it('still answers for tags the closed ontology never resolved', () => {
+    // 'tribal' is an ontology id resolvePalette has never listed; the local
+    // fallback is what covers it, and prose-shaped variants besides.
+    expect(deriveDesignState(astronautIntake({ styleTags: ['tribal'] })).palette).toBe(
+      'blackwork, no color'
+    );
+    expect(deriveDesignState(astronautIntake({ styleTags: ['black and grey'] })).palette).toBe(
+      'blackwork, no color'
+    );
+  });
+
+  it('never disagrees with the resolver the reveal uses', () => {
+    // The regression that matters. Any tag set resolvePalette has an opinion
+    // about must get that same opinion here — one rule, one answer, no second
+    // copy to drift.
+    const TAG_SETS = [
+      ['color'],
+      ['color', 'fine-line'],
+      ['blackwork'],
+      ['blackwork', 'color'],
+      ['fine-line'],
+      ['black-and-grey'],
+      ['dotwork'],
+      ['geometric'],
+      ['watercolor'],
+      ['neo-traditional'],
+      ['new-school'],
+      ['anime', 'illustrative'],
+    ];
+    for (const tags of TAG_SETS) {
+      const resolved = resolvePalette(tags);
+      if (resolved === 'unresolved') continue;
+      expect(deriveDesignState(astronautIntake({ styleTags: tags })).palette).toBe(
+        resolved === 'color' ? 'full color' : 'blackwork, no color'
+      );
+    }
+  });
+
+  it('a brief that resolved no style at all still commits to nothing', () => {
+    expect(deriveDesignState(astronautIntake({ styleTags: [] })).palette).toBeUndefined();
+  });
+});
+
+describe('a monochrome design does not front-load color words', () => {
+  it('strips the chromatic words out of the subject prose', () => {
+    // The Council measured this: a blackwork session front-loaded with "zero
+    // color" still came back with an orange gi 4/4, because explicit positive
+    // color words beat a negative every time. The re-cut now front-loads
+    // subject prose, so it inherits the same exposure — and the same fix,
+    // imported rather than copied.
+    const state = deriveDesignState(
+      astronautIntake({
+        styleTags: ['blackwork'],
+        subject: 'a red fox under a golden moon with emerald eyes',
+      })
+    );
+    const prompt = renderStatePrompt(state);
+    expect(prompt).toContain('Palette: blackwork, no color.');
+    expect(prompt).toContain('fox');
+    // Word boundaries: "centered" in the presentation lead contains "red".
+    for (const word of ['red', 'golden', 'emerald']) {
+      expect(prompt).not.toMatch(new RegExp(`\\b${word}\\b`, 'i'));
+    }
+  });
+
+  it('strips exactly what the Council strips', () => {
+    // Same function, not a lookalike: the strip is imported from the Council,
+    // so this pins the wiring rather than a second copy of the word list.
+    const SUBJECTS = [
+      'a red fox under a golden moon with emerald eyes',
+      'Son Goku in an orange gi with a blue undershirt and belt',
+      'a black wolf in white snow',
+      'crimson koi, teal water, indigo sky',
+      'an astronaut on the moon whose glass mask cracked',
+    ];
+    for (const subject of SUBJECTS) {
+      const state = deriveDesignState(astronautIntake({ styleTags: ['blackwork'], subject }));
+      expect(renderStatePrompt(state)).toContain(stripChromaticWords(subject));
+    }
+  });
+
+  it('leaves a color design\'s subject exactly as the customer said it', () => {
+    const state = deriveDesignState(
+      astronautIntake({ styleTags: ['color'], subject: 'a red fox under a golden moon' })
+    );
+    expect(renderStatePrompt(state)).toContain('a red fox under a golden moon');
+  });
+
+  it('keeps tonal words, which are what a blackwork piece is made of', () => {
+    const state = deriveDesignState(
+      astronautIntake({ styleTags: ['blackwork'], subject: 'a black wolf in white snow' })
+    );
+    expect(renderStatePrompt(state)).toContain('a black wolf in white snow');
+  });
+
+  it('the omission guard reads the stripped subject, not the raw field', () => {
+    // Otherwise the guard would report a dropped subject every single time the
+    // renderer correctly removed a color word.
+    const state = deriveDesignState(
+      astronautIntake({
+        styleTags: ['blackwork'],
+        subject: 'a red fox under a golden moon with emerald eyes',
+      })
+    );
+    expect(stateOmissions(state, renderStatePrompt(state)).subject).toBeUndefined();
+    // And it still fires when the prose really is gone.
+    expect(stateOmissions(state, 'A tattoo design.').subject).toContain('fox');
+  });
+});
+
+describe('a picked pole is a decision, and decisions become state (ADR-0049)', () => {
+  it('picking the color cut carries color into the re-cut', () => {
+    // A re-cut never goes through the Council, so this field is the only thing
+    // that can carry the pole the customer chose. Losing it is the astronaut
+    // defect in a different field.
+    const state = withPickedCut(deriveDesignState(astronautIntake({ styleTags: ['blackwork'] })), {
+      axisPosition: { 'color-blackwork': 'color' },
+    });
+    expect(state.palette).toBe('full color');
+    expect(renderStatePrompt(state)).toContain('Palette: full color.');
+  });
+
+  it('picking the blackwork cut carries blackwork just the same', () => {
+    const state = withPickedCut(deriveDesignState(astronautIntake()), {
+      axisPosition: { 'color-blackwork': 'blackwork' },
+    });
+    expect(state.palette).toBe('blackwork, no color');
+  });
+
+  it('a pick outranks the palette the style tags derived', () => {
+    // Later, stronger evidence: they saw both and chose.
+    const derived = deriveDesignState(astronautIntake());
+    expect(derived.palette).toBe('full color');
+    expect(
+      withPickedCut(derived, { axisPosition: { 'color-blackwork': 'blackwork' } }).palette
+    ).toBe('blackwork, no color');
+  });
+
+  it('carries composition and palette from the same pick', () => {
+    const state = withPickedCut(deriveDesignState(astronautIntake()), {
+      axisPosition: { composition: 'the totem', 'color-blackwork': 'blackwork' },
+    });
+    expect(state.composition).toBe('the totem');
+    expect(state.palette).toBe('blackwork, no color');
+  });
+
+  it('leaves bold-fine alone — there is no field for it to land in', () => {
+    const state = deriveDesignState(astronautIntake());
+    expect(withPickedCut(state, { axisPosition: { 'bold-fine': 'fine' } })).toBe(state);
+  });
+
+  it('a picked palette also strips the subject, end to end', () => {
+    const state = withPickedCut(
+      deriveDesignState(astronautIntake({ subject: 'a red fox under a golden moon' })),
+      { axisPosition: { 'color-blackwork': 'blackwork' } }
+    );
+    const prompt = renderStatePrompt(state);
+    expect(prompt).toContain('fox');
+    expect(prompt).not.toMatch(/\bred\b/i);
+    expect(prompt).not.toMatch(/\bgolden\b/i);
   });
 });
 

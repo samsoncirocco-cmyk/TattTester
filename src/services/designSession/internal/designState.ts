@@ -39,6 +39,7 @@
  * object has no fields for yet.
  */
 
+import { PRESENTATION_LEAD as COUNCIL_PRESENTATION_LEAD, stripChromaticWords } from '../../council';
 import { resolvePalette } from '../../intake/settledAxes';
 import type { IntakeRecord } from '../../intake/types';
 import type { Variation } from '../types';
@@ -132,13 +133,12 @@ export const MAX_DIRECTIVES = 3;
 const SLEEVE_PATTERN = /\bsleeve\b/i;
 
 /**
- * Style tags that genuinely mean "no chromatic ink".
+ * Monochrome style tags the closed ontology does not carry.
  *
- * `resolvePalette` (intake) is the shared authority on this question and it is
- * consulted first; this set only covers what the closed ontology does not —
- * 'tribal' is an ontology tag `resolvePalette` has never listed, and the
- * spelling variants are here because a state can be rehydrated from prose that
- * never went through the ontology resolver.
+ * `resolvePalette` (intake) is the authority and answers first; this set is
+ * only the fallback for tags that never went through the ontology resolver —
+ * 'tribal' is an ontology id `resolvePalette` has never listed, and the
+ * spelling variants exist because a state can be rehydrated from prose.
  */
 const MONOCHROME_TAGS = new Set([
   'blackwork',
@@ -152,67 +152,39 @@ const MONOCHROME_TAGS = new Set([
 ]);
 
 /**
- * Tags that describe LINE WEIGHT, not the absence of color.
+ * The palette a brief starts with, delegated to the same resolver the reveal
+ * uses (`resolvePalette`, intake) so the two lanes cannot answer the same
+ * question differently.
  *
  * Session 2026-08-25 asked for "color and clean lines" — a fine-line COLOR
- * piece. The reveal was full color. The first re-cut came back monochrome,
- * because this module treated any tag in its monochrome set as decisive and
- * 'fine-line' was in it: one line-weight word silently overrode the word
- * "color" the customer actually said. Fine-line, linework and bold-line say
- * how thick the strokes are and nothing at all about chroma, so on their own
- * they no longer decide the palette in either direction.
+ * piece. The reveal was full color; the first re-cut came back monochrome.
+ * The cause was NOT that 'fine-line' reads monochrome — `resolvePalette`
+ * checks its color tags first and returns 'color' outright for
+ * ['color', 'fine-line'], because "naming color is an explicit commitment,
+ * while the monochrome tags are often just line-style shorthand". The cause
+ * was that this module kept a private copy of the decision with the
+ * precedence missing, so one line-weight word outvoted the word the customer
+ * actually said. A second copy of a rule is a second answer to it; there is
+ * now one.
  *
- * This is where the two paths could drift apart, so it is worth being exact
- * about the difference: `resolvePalette` DOES read 'fine-line' as monochrome,
- * and it can afford to — `settledAxes` only trusts that reading when the
- * intake did not list `color-blackwork` as ambiguous, and its own test says so
- * ("line-style shorthand ... the rung stays spreadable"). This module has no
- * such backstop: whatever it returns is asserted into the prompt as a positive
- * instruction. So it declines instead of guessing, which is what an optional
- * field on this object has always meant.
+ * A tag set the resolver leaves unresolved but that named a style anyway
+ * ('anime', 'illustrative') stays 'full color' — the brief committed to a
+ * style and never asked for the color to be taken away.
  */
-const LINE_WEIGHT_TAGS = new Set([
-  'fine-line',
-  'fine line',
-  'fineline',
-  'linework',
-  'line-work',
-  'line work',
-  'bold-line',
-  'boldline',
-]);
-
-/**
- * The palette a brief starts with, or undefined when the brief did not settle
- * one. Two rules, both borrowed rather than invented:
- *
- *   1. An axis the intake listed as ambiguous is a question the customer has
- *      not answered. `settledAxes` refuses to skip that rung for exactly this
- *      reason; asserting a palette here would answer it for them, in a prompt,
- *      for money.
- *   2. Color wins a tag conflict. That is `resolvePalette`'s rule verbatim —
- *      "naming color is an explicit commitment, while the monochrome tags are
- *      often just line-style shorthand" — and it is the rule this module used
- *      to get backwards.
- */
-function derivePalette(intake: IntakeRecord): string | undefined {
-  const tags = (intake.styleTags ?? []).map((tag) => tag.toLowerCase().trim()).filter(Boolean);
+function derivePalette(styleTags: readonly string[]): string | undefined {
+  const tags = styleTags.map((tag) => tag.toLowerCase().trim()).filter(Boolean);
   if (tags.length === 0) return undefined;
-  if ((intake.ambiguousAxes ?? []).includes('color-blackwork')) return undefined;
 
-  // Line weight is not chroma, so it does not get a vote (see LINE_WEIGHT_TAGS).
-  const chromatic = tags.filter((tag) => !LINE_WEIGHT_TAGS.has(tag));
-  if (chromatic.length === 0) return undefined;
-
-  const resolved = resolvePalette(chromatic);
+  const resolved = resolvePalette(tags);
   if (resolved === 'color') return 'full color';
   if (resolved === 'monochrome') return 'blackwork, no color';
-  if (chromatic.some((tag) => MONOCHROME_TAGS.has(tag))) return 'blackwork, no color';
-
-  // Tags that say nothing about chroma at all ('anime', 'illustrative'). The
-  // brief committed to a style and never asked for the color to be taken away,
-  // so color is the reading that matches what the reveal renders.
+  if (tags.some((tag) => MONOCHROME_TAGS.has(tag))) return 'blackwork, no color';
   return 'full color';
+}
+
+/** Does this palette value mean "no chromatic ink"? */
+function isMonochrome(palette: string | undefined): boolean {
+  return /\bblackwork\b|\bmonochrome\b|\bno colou?r\b|\bblack and gr[ea]y\b/i.test(palette ?? '');
 }
 
 function deriveMedium(placement: string, meaning: string): string {
@@ -262,7 +234,7 @@ export function deriveDesignState(intake: IntakeRecord): DesignState {
     subject: deriveSubject(intake),
     identities,
     medium: deriveMedium(intake.placement, intake.meaning),
-    palette: derivePalette(intake),
+    palette: derivePalette(intake.styleTags),
     exclusions: [],
     directives: [],
   };
@@ -287,18 +259,54 @@ export function hydrateDesignState(state: DesignState, intake: IntakeRecord): De
   return { ...state, subject };
 }
 
+/** The color-blackwork poles a round spreads (ADR-0049), in this object's words. */
+const PICKED_PALETTES: Record<string, string> = {
+  color: 'full color',
+  blackwork: 'blackwork, no color',
+};
+
 /**
  * Fold a picked cut into the state: its composition becomes the design's
- * composition (ADR-0060 — "a chosen composition becomes state").
+ * composition, and its palette pole becomes the design's palette (ADR-0060 —
+ * "a chosen composition becomes state").
  *
- * Only the compositional axis is read. The bold/fine and color axes are the
- * round ladder's business (ADR-0049) and the Council already holds them; the
- * state object would only fight it for ownership.
+ * This function used to read the compositional axis and nothing else, on the
+ * argument that "the bold/fine and color axes are the round ladder's business
+ * (ADR-0049) and the Council already holds them; the state object would only
+ * fight it for ownership." That argument is right about the reveal and wrong
+ * about the re-cut, and the difference is the lane: a round's cuts are built
+ * by the Council from the intake, so the ladder does own the poles there — but
+ * a re-cut never goes near the Council. It renders from `renderStatePrompt`,
+ * whose only palette input is this field. So a customer who picks the color
+ * cut over the blackwork one and then asks for one change gets a monochrome
+ * re-cut of the color piece they chose, which is the astronaut defect wearing
+ * a different hat: a decision the customer made, lost between turns. Reading
+ * the pole here does not contest ownership; it copies the ladder's answer into
+ * the only lane that cannot ask the ladder.
+ *
+ * A pick is later, stronger evidence than the intake's style tags, so it
+ * overwrites a derived palette. Bold-fine stays untouched — this object has no
+ * line-weight field to put it in, and inventing one to hold a pole the re-cut
+ * prompt has nowhere to say would be exactly the fight the old comment warned
+ * about.
  */
 export function withPickedCut(state: DesignState, cut: Pick<Variation, 'axisPosition'>): DesignState {
+  const next = { ...state };
+  let changed = false;
+
   const composition = cut.axisPosition?.composition;
-  if (!composition) return state;
-  return { ...state, composition };
+  if (composition && composition !== state.composition) {
+    next.composition = composition;
+    changed = true;
+  }
+
+  const palette = PICKED_PALETTES[cut.axisPosition?.['color-blackwork'] ?? ''];
+  if (palette && palette !== state.palette) {
+    next.palette = palette;
+    changed = true;
+  }
+
+  return changed ? next : state;
 }
 
 /* ── Style words → concrete controls ─────────────────────────────────────── */
@@ -562,9 +570,10 @@ function countWord(n: number): string {
 }
 
 /**
- * Flash art on white, front-loaded, asserted positively — duplicated verbatim
- * from `PRESENTATION_LEAD` in `src/services/council/internal/structuredMode.ts`.
- * Read the comment there before touching this one; it carries the measurements.
+ * Flash art on white, front-loaded, asserted positively — the Council's clause,
+ * imported rather than copied. Read the comment beside `PRESENTATION_LEAD` in
+ * `src/services/council/internal/structuredMode.ts`; it carries the
+ * measurements, and there is now no second copy to drift from them.
  *
  * The short version: it is a hard product dependency, not a preference. The
  * placement preview strips the near-white background to real alpha and
@@ -579,16 +588,11 @@ function countWord(n: number): string {
  * re-cuts were photographs of a woman's back. It opened `A tattoo on the
  * back.` — the exact sentence the Council had already measured and deleted.
  *
- * Copied rather than imported on purpose: `structuredMode` does not export it,
- * and reaching into a council internal from here would pull the Council's
- * prompt builder into a module whose whole value is being pure and cheap to
- * test. `presentationConstraint.test.ts` already keeps its own copy of the
- * clause for the same reason. If the Council's lead changes, this changes with
- * it — the shared test string is the thread between them.
+ * Trimmed on the way in: the Council concatenates its clause straight onto the
+ * next sentence and so keeps a trailing space, while this module joins its
+ * parts. One `.trim()` is the whole difference between the two lanes.
  */
-export const PRESENTATION_LEAD =
-  'Flash art tattoo design on a pure white background — a flat scan of the ' +
-  'artwork alone, centered with clean white margins on all sides.';
+export const PRESENTATION_LEAD = COUNCIL_PRESENTATION_LEAD.trim();
 
 /**
  * Meaning prose is often a dedication ("for my grandfather"), not a scene, and
@@ -598,9 +602,37 @@ export const PRESENTATION_LEAD =
  */
 const DEDICATION_PATTERN = /^(?:for|to|about|in memory of|in honou?r of|because)\b/i;
 
+/**
+ * The subject exactly as the prompt says it: trimmed, and with its chromatic
+ * words removed when the design is monochrome.
+ *
+ * `stripChromaticWords` is the Council's own function, imported through
+ * `services/council` rather than copied. Its comment carries the measurement —
+ * a blackwork session front-loaded with "zero color" still came back with an
+ * orange gi four times out of four, because "explicit positive color words
+ * beat a negative prompt every time" — and the subject prose this module now
+ * front-loads is the same kind of anchor-written description that lost those
+ * four renders. A second copy of that word list is a second answer to the same
+ * question, which is the shape of the palette bug one section up.
+ *
+ * ADR-0002 keeps `council/internal` module-private, so it comes through the
+ * module's public entry point; the sibling suites that stub the paid council
+ * calls now do it with `importOriginal`, so the pure exports stay real there
+ * and a stubbed constant can never make a prompt assertion assert the test's
+ * own invention.
+ */
+function promptSubject(state: DesignState): string | undefined {
+  const subject = state.subject?.trim().replace(/[.\s]+$/, '');
+  if (!subject) return undefined;
+  if (!isMonochrome(state.palette)) return subject;
+  // A subject made of nothing but color words leaves nothing to depict; say
+  // nothing rather than an empty clause.
+  return stripChromaticWords(subject) || undefined;
+}
+
 /** The subject as it leads the prompt, with the roster it has to share with. */
 function subjectLead(state: DesignState): string {
-  const subject = state.subject?.trim().replace(/[.\s]+$/, '');
+  const subject = promptSubject(state);
 
   if (state.roster.length > 1) {
     const n = state.roster.length;
@@ -742,10 +774,11 @@ export interface StateOmissions {
  * threshold instead of fixing a renderer.
  */
 export function stateOmissions(state: DesignState, prompt: string): StateOmissions {
-  // Trailing punctuation is dropped on the way into the prompt, so it is
-  // dropped here too — the guard must compare the same string the renderer
-  // wrote, not the one the field happens to store.
-  const subject = state.subject?.trim().replace(/[.\s]+$/, '');
+  // Compare against the string the renderer actually wrote — trailing
+  // punctuation dropped, chromatic words stripped on a monochrome design —
+  // not the raw field. A guard that checks for words the renderer is supposed
+  // to remove reports a defect every time the renderer does its job.
+  const subject = promptSubject(state);
   return {
     roster: rosterOmissions(state, prompt),
     subject: subject && !carries(prompt || '', subject) ? state.subject?.trim() : undefined,
