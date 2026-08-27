@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyApiAuth } from '@/lib/api-auth';
 import { verifyFirebaseToken } from '@/lib/auth-dal';
 import { stripe, stripeConfigured, STRIPE_NOT_CONFIGURED } from '@/lib/stripe';
-import { getArtistStripe } from '@/lib/artist-stripe';
+import { getArtistStripe, getArtistByClaimedUid } from '@/lib/artist-stripe';
 
 export const runtime = 'nodejs';
 
@@ -45,11 +45,21 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // If this checkout names an artist, the resulting subscription's metadata
-  // is what the webhook later uses to write subscriptionStatus onto that
-  // Artist node — so only the artist who claimed the profile may name it.
-  // Subscribing with no artistId (the profile isn't claimed yet, or this is
-  // a bare price-only checkout) skips the check entirely.
+  // Which Artist node does this subscription belong to? The resulting
+  // subscription's metadata.tattArtistId is what the webhook later uses to
+  // write stripeCustomerId/subscriptionStatus onto that Artist node, so it
+  // must be a GRAPH artist id (never a Firebase uid — issue #97: sending the
+  // uid made setArtistSubscription's MATCH silently find nothing).
+  //
+  // Preferred path: no artistId in the body — derive the artist server-side
+  // from the VERIFIED caller via claimedByUid, the one uid→artist binding
+  // that exists (written by /api/v1/connect/claim). If the caller has no
+  // verified claimed profile (or no token at all), fall back to a bare
+  // price-only checkout with empty metadata, as before.
+  //
+  // Legacy path: an explicit body.artistId is still accepted, but only when
+  // the verified caller actually claimed that profile.
+  let tattArtistId = '';
   if (body.artistId) {
     const user = await verifyFirebaseToken(req);
     if (!user) {
@@ -71,6 +81,24 @@ export async function POST(req: NextRequest) {
         { status: 403 },
       );
     }
+    tattArtistId = artist.id;
+  } else {
+    const user = await verifyFirebaseToken(req);
+    if (user) {
+      try {
+        const artist = await getArtistByClaimedUid(user.uid);
+        if (artist) tattArtistId = artist.id;
+      } catch (error) {
+        // Proceeding with empty metadata here would recreate the silent
+        // no-op this route exists to fix: checkout succeeds, but the webhook
+        // could never key the subscription back to the artist. Fail loudly.
+        console.error('[Billing] subscribe: claimed-artist lookup failed:', error);
+        return NextResponse.json(
+          { error: 'Could not resolve your artist profile. Try again shortly.' },
+          { status: 502 }
+        );
+      }
+    }
   }
 
   const baseUrl = getBaseUrl(req);
@@ -86,9 +114,9 @@ export async function POST(req: NextRequest) {
       success_url: `${baseUrl}/dashboard?subscribed=1&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/pricing`,
       subscription_data: {
-        metadata: { tattArtistId: body.artistId || '' },
+        metadata: { tattArtistId },
       },
-      metadata: { tattArtistId: body.artistId || '', kind: 'artist_subscription' },
+      metadata: { tattArtistId, kind: 'artist_subscription' },
     });
 
     if (!session.url) {

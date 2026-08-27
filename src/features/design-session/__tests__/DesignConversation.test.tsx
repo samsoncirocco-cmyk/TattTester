@@ -5,7 +5,8 @@ import type { ReactNode } from 'react';
 import { createElement } from 'react';
 import type { DesignSession } from '@/services/designSession/types';
 import type { ConverseResponse, SessionNotes } from '@/services/designConversation/types';
-import { DesignConversation } from '../components/DesignConversation';
+import { DesignConversation, SIGN_IN_LINE } from '../components/DesignConversation';
+import { getApiAuthHeaders, getOptionalApiAuthHeaders, SignInRequiredError } from '@/lib/client-api-auth';
 
 // The in-voice reveal narration derived from the fixture's axisSelection —
 // the raw audit rationale (ADR-0012) never renders in the chat.
@@ -16,6 +17,8 @@ const REVEAL_NARRATION =
 // verifyApiAuth gate); stub it so tests need no signed-in user.
 vi.mock('@/lib/client-api-auth', () => ({
   getApiAuthHeaders: vi.fn(async () => ({ Authorization: 'Bearer test-token' })),
+  getOptionalApiAuthHeaders: vi.fn(async () => ({ Authorization: 'Bearer test-token' })),
+  SignInRequiredError: class SignInRequiredError extends Error {},
 }));
 
 // Strip framer-motion down to plain elements so the reveal renders
@@ -114,9 +117,16 @@ function jsonResponse(body: unknown, status = 200) {
 
 const fetchMock = vi.fn();
 
+const BEARER = { Authorization: 'Bearer test-token' };
+
 beforeEach(() => {
   fetchMock.mockReset();
   vi.stubGlobal('fetch', fetchMock);
+  // Reset the auth helpers per test: several tests below assert which of
+  // the two a code path reached, and a leaked call count or a leftover
+  // mockResolvedValue from a previous test would make those lie.
+  vi.mocked(getApiAuthHeaders).mockClear().mockResolvedValue(BEARER);
+  vi.mocked(getOptionalApiAuthHeaders).mockClear().mockResolvedValue(BEARER);
 });
 
 function sendReply(text: string) {
@@ -179,6 +189,82 @@ describe('DesignConversation', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // ---------------------------------------------------------------------
+  // The open front door. Before this, /design opened a "Welcome Back" modal
+  // on load and the first chip tap failed client-side without a request
+  // ever leaving the browser: an anonymous visitor could not reach a single
+  // cut. ADR-0041 gates GENERATION; talking to SketchBot is not generating.
+  // ---------------------------------------------------------------------
+
+  it('opens for a signed-out visitor: no token demanded, no sign-in modal', async () => {
+    // Signed out: the optional helper yields no headers and, crucially,
+    // never calls promptSignIn or throws.
+    vi.mocked(getOptionalApiAuthHeaders).mockResolvedValueOnce({});
+    fetchMock.mockResolvedValueOnce(jsonResponse(converseResponse()));
+
+    render(<DesignConversation />);
+
+    expect(await screen.findByText(OPENER)).toBeTruthy();
+    // The request went out — the old failure never reached the network.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined();
+    // The conversation path must never reach for the throwing helper.
+    expect(getApiAuthHeaders).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Your reply')).toBeTruthy();
+  });
+
+  it('lets a signed-out visitor hold a real conversation to the proposal', async () => {
+    vi.mocked(getOptionalApiAuthHeaders).mockResolvedValue({});
+
+    await reachProposal();
+
+    expect(screen.getByRole('button', { name: /show me/i })).toBeTruthy();
+    expect(getApiAuthHeaders).not.toHaveBeenCalled();
+  });
+
+  // The wall moves to the money: the account is asked for at the draw, and
+  // it reads as an offer, not a failure.
+  it('asks for an account at the draw — the account beat, not a red error', async () => {
+    await reachProposal();
+
+    vi.mocked(getApiAuthHeaders).mockRejectedValueOnce(new SignInRequiredError());
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /show me/i }));
+    });
+
+    expect(screen.getByText(SIGN_IN_LINE)).toBeTruthy();
+    // Names what they get, having already seen the proposal it attaches to.
+    expect(SIGN_IN_LINE).toMatch(/25 cuts are free/i);
+    // Not a failure: no RETRY, and the raw 'Sign in to continue.' sentence
+    // never reaches the transcript.
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
+    expect(screen.queryByText(/sign in to continue/i)).toBeNull();
+    // The conversation above it survives.
+    expect(screen.getByText(OPENER)).toBeTruthy();
+  });
+
+  it('re-runs the same draw once the visitor is signed in', async () => {
+    await reachProposal();
+
+    vi.mocked(getApiAuthHeaders).mockRejectedValueOnce(new SignInRequiredError());
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /show me/i }));
+    });
+    await screen.findByText(SIGN_IN_LINE);
+
+    // Signed in now: the beat's button replays the confirm that was refused.
+    fetchMock.mockResolvedValueOnce(jsonResponse({ session: revealedSession }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /draw it/i }));
+    });
+
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v1/design-session/sess-1/confirm',
+      expect.objectContaining({ method: 'POST' })
+    );
+    expect(screen.queryByText(SIGN_IN_LINE)).toBeNull();
   });
 
   it('opens the conversation on mount with the bot speaking first', async () => {

@@ -6,6 +6,8 @@ import { PlacementPreview } from '../components/PlacementPreview';
 
 vi.mock('@/lib/client-api-auth', () => ({
   getApiAuthHeaders: vi.fn(async () => ({ Authorization: 'Bearer test-token' })),
+  getOptionalApiAuthHeaders: vi.fn(async () => ({ Authorization: 'Bearer test-token' })),
+  SignInRequiredError: class SignInRequiredError extends Error {},
 }));
 
 /**

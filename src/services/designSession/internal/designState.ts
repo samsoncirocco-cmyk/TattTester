@@ -39,6 +39,12 @@
  * object has no fields for yet.
  */
 
+import {
+  PRESENTATION_LEAD as COUNCIL_PRESENTATION_LEAD,
+  stripChromaticWords,
+  truncateWords,
+} from '../../council';
+import { resolvePalette } from '../../intake/settledAxes';
 import type { IntakeRecord } from '../../intake/types';
 import type { Variation } from '../types';
 
@@ -63,6 +69,38 @@ export interface DesignState {
    * costing a render was the bug.
    */
   roster: string[];
+  /**
+   * The idea itself, in the customer's visual prose — "an astronaut on the
+   * moon whose glass mask cracked, gasping for his last breath, galaxy and
+   * stars behind".
+   *
+   * Session 2026-08-25 asked for exactly that on their back. The reveal was
+   * right; the first re-cut was a black-and-grey eagle on a woman's back. The
+   * state object had nowhere to put a scene — only a roster of named IP
+   * characters — so a request with nobody to name derived `roster: []` and the
+   * prompt came out as "A tattoo on the back. Palette: blackwork, no color."
+   * The whole idea was gone before the render was even priced, and
+   * `rosterOmissions` could not see it: an empty roster yields zero omissions,
+   * so the ADR-0060 spend guard passed the contradiction through clean.
+   *
+   * This is the richer prose that sits ALONGSIDE the roster, not instead of
+   * it — the same split `subjectClause` keeps in the Council's `structuredMode`
+   * ("one each of Roxas, Sora, Link, and Bowser: <subject>"). The roster is
+   * the lossless cast list; the subject is what they are doing and where.
+   */
+  subject?: string;
+  /**
+   * What the piece is FOR, in the customer's own words — capped at
+   * MEANING_MAX_WORDS.
+   *
+   * Deliberately NOT merged with `subject`. A meaning is often not a scene:
+   * "it just goes hard" is a complete answer to the meaning question (TAT-51),
+   * and rendering it through the subject clause produces "A tattoo design
+   * depicting it just goes hard." The field the words arrived in decides how
+   * they render — `depicting <subject>` versus `expressing "<meaning>"` — and
+   * neither ever falls back to the other.
+   */
+  meaning?: string;
   /** Verified character-to-source bindings, parallel to but not the same as `roster`. */
   identities: { name: string; series: string }[];
   /** "tattoo sleeve", "tattoo on the forearm" — the piece and where it sits. */
@@ -106,27 +144,83 @@ export interface DesignState {
 /** How many free-text directives a state carries before the oldest fall off. */
 export const MAX_DIRECTIVES = 3;
 
+/**
+ * Word cap on the freeform meaning before it rides a prompt. Same bound the
+ * Council uses on the same prose, for the same reason: an unbounded brief
+ * blows the token budget of the prompt it is embedded in.
+ */
+export const MEANING_MAX_WORDS = 60;
+
 /* ── Deriving the first state ────────────────────────────────────────────── */
 
 const SLEEVE_PATTERN = /\bsleeve\b/i;
 
-/** Style tags that mean the piece has no chromatic color. */
+/**
+ * Monochrome style tags the closed ontology does not carry.
+ *
+ * `resolvePalette` (intake) is the authority and answers first; this set is
+ * only the fallback for tags that never went through the ontology resolver —
+ * 'tribal' is an ontology id `resolvePalette` has never listed, and the
+ * spelling variants exist because a state can be rehydrated from prose.
+ */
 const MONOCHROME_TAGS = new Set([
   'blackwork',
   'black-and-grey',
   'black and grey',
   'blackandgrey',
-  'linework',
-  'fineline',
-  'fine-line',
+  'black-and-gray',
+  'black and gray',
   'dotwork',
   'tribal',
 ]);
 
-function derivePalette(styleTags: readonly string[]): string | undefined {
-  if (styleTags.length === 0) return undefined;
-  const monochrome = styleTags.some((tag) => MONOCHROME_TAGS.has(tag.toLowerCase().trim()));
-  return monochrome ? 'blackwork, no color' : 'full color';
+/**
+ * The palette a brief starts with, delegated to the same resolver the reveal
+ * uses (`resolvePalette`, intake) so the two lanes cannot answer the same
+ * question differently.
+ *
+ * Session 2026-08-25 asked for "color and clean lines" — a fine-line COLOR
+ * piece. The reveal was full color; the first re-cut came back monochrome.
+ * The cause was NOT that 'fine-line' reads monochrome — `resolvePalette`
+ * checks its color tags first and returns 'color' outright for
+ * ['color', 'fine-line'], because "naming color is an explicit commitment,
+ * while the monochrome tags are often just line-style shorthand". The cause
+ * was that this module kept a private copy of the decision with the
+ * precedence missing, so one line-weight word outvoted the word the customer
+ * actually said. A second copy of a rule is a second answer to it; there is
+ * now one.
+ *
+ * A tag set the resolver leaves unresolved but that named a style anyway
+ * ('anime', 'illustrative') stays 'full color' — the brief committed to a
+ * style and never asked for the color to be taken away.
+ */
+function derivePalette(intake: IntakeRecord): string | undefined {
+  // An axis the intake left open outranks anything the tags imply. The
+  // customer has a live color question in front of them — the conversation
+  // may even have deliberately reopened it so they can SEE both poles — and a
+  // prompt that asserts a palette answers that question on their behalf,
+  // silently, in the one place they cannot see it. Say nothing instead.
+  //
+  // This is also the guard that keeps line-style shorthand honest: 'fine-line'
+  // reads monochrome to `resolvePalette`, which is the right default when
+  // nothing else is known and the wrong one when the palette is exactly what
+  // is still being asked. `settledAxes` draws the same line for the same
+  // reason (see its condition 2).
+  if (intake.ambiguousAxes?.includes('color-blackwork')) return undefined;
+
+  const tags = intake.styleTags.map((tag) => tag.toLowerCase().trim()).filter(Boolean);
+  if (tags.length === 0) return undefined;
+
+  const resolved = resolvePalette(tags);
+  if (resolved === 'color') return 'full color';
+  if (resolved === 'monochrome') return 'blackwork, no color';
+  if (tags.some((tag) => MONOCHROME_TAGS.has(tag))) return 'blackwork, no color';
+  return 'full color';
+}
+
+/** Does this palette value mean "no chromatic ink"? */
+function isMonochrome(palette: string | undefined): boolean {
+  return /\bblackwork\b|\bmonochrome\b|\bno colou?r\b|\bblack and gr[ea]y\b/i.test(palette ?? '');
 }
 
 function deriveMedium(placement: string, meaning: string): string {
@@ -135,6 +229,44 @@ function deriveMedium(placement: string, meaning: string): string {
     return place ? `tattoo sleeve on the ${place}` : 'tattoo sleeve';
   }
   return place ? `tattoo on the ${place}` : 'tattoo';
+}
+
+/**
+ * The scene to draw, off the intake — intake's structured visual reading, and
+ * ONLY that. "an astronaut on the moon whose glass mask cracked..."
+ *
+ * Reading neither this nor the meaning is how the astronaut session's whole
+ * idea reached the renderer as "A tattoo on the back." — and unlike
+ * `visualTarget` or `action`, neither is a guess: they are the customer's own
+ * words, which is exactly what ADR-0010 says must survive.
+ */
+function deriveSubject(intake: IntakeRecord): string | undefined {
+  return intake.subject?.trim() || undefined;
+}
+
+/**
+ * What the piece is FOR, off the intake — kept in its own field rather than
+ * collapsed into `subject`.
+ *
+ * These two are not interchangeable and must never fall back to one another.
+ * A meaning is frequently not a scene at all: TAT-51 makes "it just goes hard"
+ * a complete answer to the meaning question, and a brief can just as easily
+ * say "for my grandfather". Rendered through the subject clause, either
+ * becomes "A tattoo design depicting it just goes hard." — a sentence that is
+ * not English, asked of an image model as if it were a description.
+ *
+ * Which field the words came from is the signal, and it is a fact rather than
+ * an inference. An earlier pass here sniffed the prose with a
+ * `/^(?:for|to|about|in memory of)\b/` pattern to guess which reading applied;
+ * that is a second answer to a question the intake already answered, and it
+ * silently mis-reads every vibe that does not open with a preposition. Gone.
+ *
+ * Capped at 60 words, the same bound and for the same reason the Council caps
+ * it: freeform prose must not blow the token budget of the prompt it rides in.
+ */
+function deriveMeaning(intake: IntakeRecord): string | undefined {
+  const meaning = intake.meaning?.trim();
+  return meaning ? truncateWords(meaning, MEANING_MAX_WORDS) : undefined;
 }
 
 /**
@@ -157,26 +289,103 @@ export function deriveDesignState(intake: IntakeRecord): DesignState {
 
   return {
     roster,
+    subject: deriveSubject(intake),
+    meaning: deriveMeaning(intake),
     identities,
     medium: deriveMedium(intake.placement, intake.meaning),
-    palette: derivePalette(intake.styleTags),
+    palette: derivePalette(intake),
     exclusions: [],
     directives: [],
   };
 }
 
 /**
- * Fold a picked cut into the state: its composition becomes the design's
- * composition (ADR-0060 — "a chosen composition becomes state").
+ * Backfill fields added after a state was persisted.
  *
- * Only the compositional axis is read. The bold/fine and color axes are the
- * round ladder's business (ADR-0049) and the Council already holds them; the
- * state object would only fight it for ownership.
+ * States written before `subject` existed are sitting on live sessions right
+ * now, and re-deriving the whole object would throw away every critique the
+ * customer has already paid for — the palette they corrected, the composition
+ * they picked. So this fills the gaps from the intake the session already
+ * carries and touches nothing else.
+ *
+ * Returns the SAME object when there was nothing to fill, so a caller can use
+ * identity to decide whether the session needs persisting again.
+ */
+export function hydrateDesignState(state: DesignState, intake: IntakeRecord): DesignState {
+  // Both idea fields, independently. A state can legitimately carry one and
+  // not the other — they come from different intake fields and never fall back
+  // to each other — so a single `subject !== undefined` early return would
+  // strand every pure-vibe brief on an empty lead clause forever.
+  const next = { ...state };
+  let filled = false;
+
+  if (next.subject === undefined) {
+    const subject = deriveSubject(intake);
+    if (subject) {
+      next.subject = subject;
+      filled = true;
+    }
+  }
+
+  if (next.meaning === undefined) {
+    const meaning = deriveMeaning(intake);
+    if (meaning) {
+      next.meaning = meaning;
+      filled = true;
+    }
+  }
+
+  return filled ? next : state;
+}
+
+/** The color-blackwork poles a round spreads (ADR-0049), in this object's words. */
+const PICKED_PALETTES: Record<string, string> = {
+  color: 'full color',
+  blackwork: 'blackwork, no color',
+};
+
+/**
+ * Fold a picked cut into the state: its composition becomes the design's
+ * composition, and its palette pole becomes the design's palette (ADR-0060 —
+ * "a chosen composition becomes state").
+ *
+ * This function used to read the compositional axis and nothing else, on the
+ * argument that "the bold/fine and color axes are the round ladder's business
+ * (ADR-0049) and the Council already holds them; the state object would only
+ * fight it for ownership." That argument is right about the reveal and wrong
+ * about the re-cut, and the difference is the lane: a round's cuts are built
+ * by the Council from the intake, so the ladder does own the poles there — but
+ * a re-cut never goes near the Council. It renders from `renderStatePrompt`,
+ * whose only palette input is this field. So a customer who picks the color
+ * cut over the blackwork one and then asks for one change gets a monochrome
+ * re-cut of the color piece they chose, which is the astronaut defect wearing
+ * a different hat: a decision the customer made, lost between turns. Reading
+ * the pole here does not contest ownership; it copies the ladder's answer into
+ * the only lane that cannot ask the ladder.
+ *
+ * A pick is later, stronger evidence than the intake's style tags, so it
+ * overwrites a derived palette. Bold-fine stays untouched — this object has no
+ * line-weight field to put it in, and inventing one to hold a pole the re-cut
+ * prompt has nowhere to say would be exactly the fight the old comment warned
+ * about.
  */
 export function withPickedCut(state: DesignState, cut: Pick<Variation, 'axisPosition'>): DesignState {
+  const next = { ...state };
+  let changed = false;
+
   const composition = cut.axisPosition?.composition;
-  if (!composition) return state;
-  return { ...state, composition };
+  if (composition && composition !== state.composition) {
+    next.composition = composition;
+    changed = true;
+  }
+
+  const palette = PICKED_PALETTES[cut.axisPosition?.['color-blackwork'] ?? ''];
+  if (palette && palette !== state.palette) {
+    next.palette = palette;
+    changed = true;
+  }
+
+  return changed ? next : state;
 }
 
 /* ── Style words → concrete controls ─────────────────────────────────────── */
@@ -440,31 +649,140 @@ function countWord(n: number): string {
 }
 
 /**
+ * Flash art on white, front-loaded, asserted positively — the Council's clause,
+ * imported rather than copied. Read the comment beside `PRESENTATION_LEAD` in
+ * `src/services/council/internal/structuredMode.ts`; it carries the
+ * measurements, and there is now no second copy to drift from them.
+ *
+ * The short version: it is a hard product dependency, not a preference. The
+ * placement preview strips the near-white background to real alpha and
+ * composites onto the customer's own photo, so an on-skin render has nothing
+ * to strip and `assessBackdrop` refuses it outright. And the phrasing this
+ * function used to open with — "A tattoo on the <placement>" — measured 0/12
+ * against that guard on the reveal path: every render came back a photograph
+ * of a tattoo on a limb, because an explicit positive instruction to draw a
+ * body at roughly token five beats any later correction.
+ *
+ * The re-cut path never got that fix, which is why the astronaut session's
+ * re-cuts were photographs of a woman's back. It opened `A tattoo on the
+ * back.` — the exact sentence the Council had already measured and deleted.
+ *
+ * Trimmed on the way in: the Council concatenates its clause straight onto the
+ * next sentence and so keeps a trailing space, while this module joins its
+ * parts. One `.trim()` is the whole difference between the two lanes.
+ */
+export const PRESENTATION_LEAD = COUNCIL_PRESENTATION_LEAD.trim();
+
+/**
+ * The subject exactly as the prompt says it: trimmed, and with its chromatic
+ * words removed when the design is monochrome.
+ *
+ * `stripChromaticWords` is the Council's own function, imported through
+ * `services/council` rather than copied. Its comment carries the measurement —
+ * a blackwork session front-loaded with "zero color" still came back with an
+ * orange gi four times out of four, because "explicit positive color words
+ * beat a negative prompt every time" — and the subject prose this module now
+ * front-loads is the same kind of anchor-written description that lost those
+ * four renders. A second copy of that word list is a second answer to the same
+ * question, which is the shape of the palette bug one section up.
+ *
+ * ADR-0002 keeps `council/internal` module-private, so it comes through the
+ * module's public entry point; the sibling suites that stub the paid council
+ * calls now do it with `importOriginal`, so the pure exports stay real there
+ * and a stubbed constant can never make a prompt assertion assert the test's
+ * own invention.
+ */
+function promptSubject(state: DesignState): string | undefined {
+  const subject = state.subject?.trim().replace(/[.\s]+$/, '');
+  if (!subject) return undefined;
+  if (!isMonochrome(state.palette)) return subject;
+  // A subject made of nothing but color words leaves nothing to depict; say
+  // nothing rather than an empty clause.
+  return stripChromaticWords(subject) || undefined;
+}
+
+/**
+ * The meaning exactly as the prompt quotes it — trailing punctuation dropped,
+ * chromatic words stripped on a monochrome design.
+ *
+ * Same shape and same reason as `promptSubject`, and it exists as its own
+ * function for the reason that one does: TWO callers have to agree on this
+ * string. `subjectLead` writes it, and `stateOmissions` checks the prompt for
+ * it. When only the renderer stripped, the guard hunted the prompt for the
+ * very color word the renderer had just been told to remove, found it gone,
+ * and reported the meaning as dropped — and that guard does not warn, it
+ * throws and refuses to buy the render. A blackwork brief meaning "in bright
+ * red, for my late father" could not be re-cut at all.
+ */
+function promptMeaning(state: DesignState): string | undefined {
+  const meaning = state.meaning?.trim().replace(/[.\s]+$/, '');
+  if (!meaning) return undefined;
+  if (!isMonochrome(state.palette)) return meaning;
+  // A meaning that was nothing but color words leaves nothing to quote.
+  return stripChromaticWords(meaning) || undefined;
+}
+
+/** The subject as it leads the prompt, with the roster it has to share with. */
+function subjectLead(state: DesignState): string {
+  const subject = promptSubject(state);
+
+  if (state.roster.length > 1) {
+    const n = state.roster.length;
+    // Roster first, then the scene, mirroring `subjectClause`: the cast list is
+    // the thing that must survive verbatim, and the subject is the prose that
+    // says what they are doing.
+    const cast =
+      `A tattoo design depicting exactly ${countWord(n)} distinct figures, one each of ` +
+      `${naturalList(state.roster)}${subject ? `: ${subject}` : ''}.`;
+    return (
+      `${cast} No duplicates and no omissions; all ${countWord(n)} ` +
+      'figures are fully visible and readable.'
+    );
+  }
+
+  if (state.roster.length === 1) {
+    // The name stays even when the subject prose repeats it: it is what
+    // `rosterOmissions` checks, and a guard that reads its own render is only
+    // worth anything if the render is unambiguous.
+    return `A tattoo design depicting ${state.roster[0]}${subject ? `: ${subject}` : ''}.`;
+  }
+
+  if (subject) return `A tattoo design depicting ${subject}.`;
+
+  // No scene, but the customer still told us what it is for. Quoted and
+  // "expressing", never "depicting" — the Council draws this exact line in
+  // `subjectClause`, and the field the words arrived in is what decides it.
+  // The same monochrome rule as `promptSubject`: a meaning like "in bright
+  // red, for my late father" on a blackwork design would otherwise put the
+  // one positive color word in the prompt on the one path with no subject to
+  // strip. A meaning that was nothing but color words leaves nothing to quote.
+  const meaning = promptMeaning(state);
+  if (meaning) return `A tattoo design expressing "${meaning}".`;
+
+  return 'A tattoo design.';
+}
+
+/**
  * The prompt for a state — a pure function of the object, and the reason a
  * re-cut is now reproducible: the same state yields the same prompt, and a
  * diff between two states explains exactly what changed.
  *
  * Order is load-bearing. The lane weights the front of a prompt far more
  * heavily than the end (`structuredMode` documents this), so the things that
- * kept getting lost go first: the roster, then the customer's newest
- * directions, then the look. Boilerplate that never changes goes last, where
- * being weighted lightly costs nothing.
+ * kept getting lost go first: the presentation the AR preview depends on, then
+ * the idea and the roster, then the customer's newest directions, then the
+ * look. Boilerplate that never changes goes last, where being weighted lightly
+ * costs nothing.
+ *
+ * The medium is the one field that moved DOWN. It carries a body part, and
+ * naming a body part early is what produced photographs of skin (see
+ * `PRESENTATION_LEAD`). It still renders — a sleeve is a different composition
+ * from a shoulder piece and the state has no other field that says so — but it
+ * renders as an instruction about how to compose the artwork, at the tail,
+ * where the Council keeps its own placement guidance.
  */
 export function renderStatePrompt(state: DesignState): string {
-  const parts: string[] = [];
-
-  if (state.roster.length > 1) {
-    const n = state.roster.length;
-    parts.push(
-      `A ${state.medium} depicting exactly ${countWord(n)} distinct figures, one each of ` +
-        `${naturalList(state.roster)}. No duplicates and no omissions; all ${countWord(n)} ` +
-        'figures are fully visible and readable.'
-    );
-  } else if (state.roster.length === 1) {
-    parts.push(`A ${state.medium} depicting ${state.roster[0]}.`);
-  } else {
-    parts.push(`A ${state.medium}.`);
-  }
+  const parts: string[] = [PRESENTATION_LEAD, subjectLead(state)];
 
   if (state.identities.length > 0) {
     parts.push(
@@ -487,6 +805,8 @@ export function renderStatePrompt(state: DesignState): string {
   if (state.exclusions.length > 0) {
     parts.push(`Avoid: ${naturalList(state.exclusions)}.`);
   }
+
+  parts.push(`Composed for a ${state.medium}.`);
 
   parts.push(
     'Clean readable forms with deliberate focal hierarchy, composed to read at tattoo scale ' +
@@ -516,4 +836,67 @@ export function rosterOmissions(state: DesignState, prompt: string): string[] {
     if (!escaped) return false;
     return !new RegExp(`\\b${escaped}\\b`, 'i').test(haystack);
   });
+}
+
+/** Whitespace-insensitive containment, so a re-wrapped prompt is not a miss. */
+function carries(prompt: string, phrase: string): boolean {
+  const flatten = (text: string) => text.replace(/\s+/g, ' ').trim().toLowerCase();
+  return flatten(prompt).includes(flatten(phrase));
+}
+
+/** Everything a state holds that its own prompt failed to say. */
+export interface StateOmissions {
+  /** Roster members the prompt fails to name — `rosterOmissions`, unchanged. */
+  roster: string[];
+  /** The subject, when the state has one and the prompt does not carry it. */
+  subject?: string;
+  /**
+   * The meaning, when it is the ONLY idea the state holds and the prompt does
+   * not carry it.
+   *
+   * Splitting `meaning` out of `subject` created a whole class of brief this
+   * guard could not see: a pure-vibe request ("it just goes hard") has an
+   * empty roster AND no subject, so both other checks return nothing and a
+   * prompt with no idea in it would price cleanly — the exact blind spot that
+   * let the astronaut session buy two images. Only checked when there is no
+   * subject, because a state carrying both renders the subject and quite
+   * correctly leaves the meaning out of the lead.
+   */
+  meaning?: string;
+}
+
+/**
+ * The full contradiction check: roster AND subject.
+ *
+ * `rosterOmissions` answers ADR-0060's question — "a state object naming four
+ * characters and a prompt mentioning two is a detectable contradiction" — and
+ * it is kept exactly as it was, because the orchestrator's spend guard calls
+ * it by name.
+ *
+ * What it cannot answer is the astronaut session. That brief named no IP
+ * character at all, so the roster was empty, so the guard found zero omissions
+ * and waved through a prompt with no astronaut, no moon, no cracked mask and
+ * no galaxy in it. An empty roster made the check vacuous exactly when the
+ * whole idea had gone missing. A dropped subject is the same defect as a
+ * dropped roster member and deserves the same refusal before the money moves.
+ *
+ * Subject matching is verbatim containment rather than word overlap on
+ * purpose: `renderStatePrompt` inserts the subject as written, so any prompt
+ * that does not carry it verbatim was built by something other than the state
+ * — which is the contradiction worth catching. A looser check would score
+ * paraphrases, and scoring a paraphrase is how you end up arguing with a
+ * threshold instead of fixing a renderer.
+ */
+export function stateOmissions(state: DesignState, prompt: string): StateOmissions {
+  // Compare against the string the renderer actually wrote — trailing
+  // punctuation dropped, chromatic words stripped on a monochrome design —
+  // not the raw field. A guard that checks for words the renderer is supposed
+  // to remove reports a defect every time the renderer does its job.
+  const subject = promptSubject(state);
+  const meaning = subject ? undefined : promptMeaning(state);
+  return {
+    roster: rosterOmissions(state, prompt),
+    subject: subject && !carries(prompt || '', subject) ? state.subject?.trim() : undefined,
+    meaning: meaning && !carries(prompt || '', meaning) ? meaning : undefined,
+  };
 }

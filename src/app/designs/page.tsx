@@ -189,8 +189,9 @@ export default function DesignsPage() {
                 )
               )}
               {/* Artist SaaS billing. /dashboard redirects here, so this is the
-                  real dashboard home. Gated (disabled) until the artist's Stripe
-                  customer id is surfaced client-side — see BillingButtons. */}
+                  real dashboard home. The portal route derives the Stripe
+                  customer id server-side from the caller's claimed artist
+                  profile — nothing to pass in (see BillingButtons). */}
               <ManageBillingButton className="border-2 hairline press inline-flex items-center justify-center px-6 py-3 font-display text-[20px] leading-none tracking-[0.02em] text-white hover:text-black hover:bg-pink hover:border-pink disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-white disabled:hover:border-white/20 disabled:cursor-not-allowed">
                 Manage Billing
               </ManageBillingButton>

@@ -22,7 +22,7 @@
  * whole point:
  *
  *   ontology LABEL  ("Japanese", "Lettering")     — what the artifact records
- *   graph NAME      ("Japanese (Irezumi)")        — what MERGE writes
+ *   graph NAME      (e.g. "Japanese (Irezumi)" pre-#176) — what MERGE writes
  *
  * Writing a label the graph does not use is how a vocabulary re-splits. Before
  * this was derived, the extractor emitted "Script" (no such Style node — the
@@ -56,7 +56,8 @@ export const ONTOLOGY_STYLE_LABELS = ONTOLOGY.tags.map((t) => t.label);
 
 /**
  * Ontology tag id → the name the GRAPH stores. A tag the graph already answers
- * with keeps the graph's spelling ("japanese" → "Japanese (Irezumi)"); anything
+ * with keeps the graph's spelling (pre-#176, "japanese" → "Japanese (Irezumi)";
+ * since the #176 merge the graph answers "Japanese" directly); anything
  * else falls back to its approved ontology label. A newly approved tag may
  * therefore create its first `:Style` node when an artist carrying it is
  * imported, but an unapproved term can never create a node.

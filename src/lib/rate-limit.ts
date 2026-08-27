@@ -13,6 +13,7 @@ export type LimitType =
   | 'estimate'
   | 'artist-claim'
   | 'sms-inbound'
+  | 'converse-anon'
   | 'default';
 
 interface RateLimitResult {
@@ -38,6 +39,17 @@ const LIMIT_CONFIG: Record<LimitType, { requests: number; window: string }> = {
   // turns cost real model money.
   'sms-inbound':    {
     requests: Number(process.env.SKETCHBOT_SMS_MSGS_PER_HOUR) || 30,
+    window: '1 h',
+  },
+  // SketchBot's web conversation for a SIGNED-OUT visitor, keyed on IP
+  // (there is no uid to key on). Conversation turns are open to strangers
+  // on purpose — the gate belongs in front of generation, not hello — but
+  // they still cost real model money, so an open door is not an open bar.
+  // A signed-in caller keeps the ordinary 'default' allowance, keyed on
+  // their uid, and is unaffected by a noisy shared IP. Env-tunable for the
+  // same reason the SMS limit is: it is a spend guardrail, not a UX knob.
+  'converse-anon':  {
+    requests: Number(process.env.SKETCHBOT_ANON_TURNS_PER_HOUR) || 40,
     window: '1 h',
   },
   default:          { requests: 60,  window: '1 m' },
