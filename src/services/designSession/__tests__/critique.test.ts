@@ -13,13 +13,21 @@ import { critique, recordPick, DesignSessionError } from '../index';
 import { memorySessionStore, clearMemorySessions } from '../internal/store';
 import type { StoredSession } from '../internal/store';
 import {
+  MAX_PENDING_CRITIQUES,
+  PENDING_CRITIQUE_TTL_MS,
+  allCuts,
   classifyCritiqueTurn,
+  cutLabel,
   isFixRequest,
+  answerAddsRequest,
+  readPendingCritique,
   resolveCritiqueTarget,
+  stashPendingCritique,
 } from '../internal/critique';
 import {
   ALLOWANCE_SPENT_LINE,
   CHATTER_LINE,
+  NAMED_BUT_NO_CHANGE_LINE,
   NO_SUCH_CUT_LINE,
   REROLL_DOWNGRADED_REFUNDED_NOTE,
   REROLL_NEEDS_ACCOUNT_LINE,
@@ -40,7 +48,15 @@ import { recordSpend } from '@/lib/budget-tracker';
 import type { Variation } from '../types';
 
 vi.mock('../../intake', () => ({ extractIntake: vi.fn() }));
-vi.mock('../../council', () => ({ enhanceStructured: vi.fn(), enhanceRound: vi.fn() }));
+// Partial mock: the paid council calls are stubbed, but the module's pure
+// exports (PRESENTATION_LEAD, stripChromaticWords) stay real — designState
+// renders prompts from them, so a stubbed constant would make prompt
+// assertions assert the test's own invention.
+vi.mock('../../council', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  enhanceStructured: vi.fn(),
+  enhanceRound: vi.fn(),
+}));
 vi.mock('../../generation', () => ({ generate: vi.fn(), routeGeneration: vi.fn() }));
 vi.mock('@/lib/firebase-admin', () => ({ ensureAdminApp: vi.fn(() => false) }));
 // A re-cut is stored like every other render (TAT-57 durability), so the
@@ -881,5 +897,272 @@ describe('critique — the reroll-set arm, wired (sprint fix #2)', () => {
     expect(mockGenerate).not.toHaveBeenCalled();
     expect(result.cuts).toHaveLength(2);
     expect(result.reply).toBe(rerollLandedLine('bold vs fine-line', false));
+  });
+});
+
+/**
+ * The astronaut session, 2026-08-26. Four defects, one turn apart; the unit
+ * coverage for each is below and the whole transcript runs end to end in
+ * ./astronautSession.test.ts.
+ */
+describe('critique — the cut wearing YOUR PICK resolves (astronaut defect 2)', () => {
+  const roundOne = (pickedId?: string) => [
+    { round: 1, axis: 'bold-fine', variationIds: ['v1', 'v2'], ...(pickedId ? { pickedId } : {}) },
+  ];
+  const twoCuts = () => variations().slice(0, 2);
+
+  it('reads the live round’s pick, not just the locked-in one', () => {
+    // A tap records the ROUND's pick and paints YOUR PICK on the cut;
+    // `session.pickId` is only written by LOCK IT IN. Consulting the locked-in
+    // pick alone is why a customer who had visibly picked was still asked
+    // "which one am i fixing?".
+    const session = {
+      variations: twoCuts(),
+      critiqueCuts: [] as Variation[],
+      pickId: undefined,
+      rounds: roundOne('v2'),
+    };
+    expect(resolved(session, "riku's missing")).toBe('v2');
+    expect(resolveCritiqueTarget(session, "riku's missing")).toMatchObject({ via: 'context' });
+  });
+
+  it('still asks when nothing is picked and nothing is named', () => {
+    const session = {
+      variations: twoCuts(),
+      critiqueCuts: [] as Variation[],
+      pickId: undefined,
+      rounds: roundOne(),
+    };
+    expect(resolved(session, "riku's missing")).toBe('none');
+  });
+
+  it('ranks after the newest re-cut and ahead of the locked-in pick', () => {
+    const recut: Variation = { id: 'v1-fix1', axisPosition: {}, prompt: 'p', revisionOf: 'v1', revision: 2 };
+    // Round pick beats the older locked-in pick — a later tap is the fresher
+    // signal.
+    expect(
+      resolved(
+        { variations: twoCuts(), critiqueCuts: [], pickId: 'v1', rounds: roundOne('v2') },
+        'too busy'
+      )
+    ).toBe('v2');
+    // A fix in progress is closer context still.
+    expect(
+      resolved(
+        { variations: twoCuts(), critiqueCuts: [recut], pickId: 'v1', rounds: roundOne('v2') },
+        'too busy'
+      )
+    ).toBe('v1-fix1');
+  });
+
+  it('reads the LIVE round only — a stale earlier pick is not context', () => {
+    const session = {
+      variations: variations(),
+      critiqueCuts: [] as Variation[],
+      pickId: undefined,
+      rounds: [
+        { round: 1, axis: 'bold-fine', variationIds: ['v1', 'v2'], pickedId: 'v1', frozen: true },
+        { round: 2, axis: 'color-blackwork', variationIds: ['v3', 'v4'], pickedId: 'v4' },
+      ],
+    };
+    expect(resolved(session, 'too busy')).toBe('v4');
+  });
+});
+
+describe('critique — re-cuts are addressable (astronaut defect 3)', () => {
+  /** The bold cut, its first re-cut, and the re-cut of that. */
+  const line = () => {
+    // One axis, so the names are the short ones the astronaut session used.
+    const bold: Variation = { id: 'v1', axisPosition: { 'bold-fine': 'bold' }, prompt: 'p1' };
+    const fine: Variation = { id: 'v2', axisPosition: { 'bold-fine': 'fine' }, prompt: 'p2' };
+    const take2: Variation = { ...bold, id: 'v1-fix1', revisionOf: 'v1', revision: 2 };
+    const take3: Variation = { ...bold, id: 'v1-fix1-fix2', revisionOf: 'v1', revision: 3 };
+    return {
+      variations: [bold, fine],
+      critiqueCuts: [take2, take3],
+      pickId: undefined,
+      rounds: undefined,
+    };
+  };
+
+  it('ORDINALS count over allCuts — the order both channels print', () => {
+    // SMS captions every image "Cut N of M" from allCuts (cutCaption in
+    // sketchbotSms/internal/render.ts) and the web grid numbers its re-cuts
+    // from variations.length up. A texter told "Cut 3 of 4" and answering
+    // "cut 3" used to be told that cut did not exist.
+    const session = line();
+    const cuts = allCuts(session);
+    cuts.forEach((cut, index) => {
+      expect(resolved(session, `cut ${index + 1}, make it bigger`)).toBe(cut.id);
+    });
+    // Past the end is still a reference, so it asks rather than guessing.
+    expect(resolved(session, `cut ${cuts.length + 1}, make it bigger`)).toBe('missed');
+  });
+
+  it('resolves a re-cut by the take name the grid shows', () => {
+    expect(resolved(line(), 'the bold one, take 2 — less color')).toBe('v1-fix1');
+    expect(resolved(line(), 'the bold one, take 3 is closer')).toBe('v1-fix1-fix2');
+  });
+
+  it('leaves the original reachable by its own name', () => {
+    // The take name is longer, so it cannot be matched by "the bold one" —
+    // which is what stops three cuts collapsing into one ambiguous name.
+    expect(resolved(line(), 'the bold one but less color')).toBe('v1');
+  });
+
+  it('speaks the same name it resolves', () => {
+    const session = line();
+    expect(cutLabel(session, session.critiqueCuts[0])).toBe('the bold one, take 2');
+    expect(cutLabel(session, session.variations[0])).toBe('the bold one');
+    // Only a cut that is genuinely not in the session has no name to speak.
+    expect(cutLabel(session, { id: 'nowhere', axisPosition: {}, prompt: 'p' })).toBe(
+      'that last one'
+    );
+  });
+});
+
+describe('critique — a report of the wrong render is not a brief (astronaut defect 4)', () => {
+  const session = () => ({
+    variations: variations().slice(0, 2),
+    critiqueCuts: [{ id: 'v1-fix1', axisPosition: { 'bold-fine': 'bold' }, prompt: 'p', revision: 2 }] as Variation[],
+    pickId: undefined,
+    rounds: undefined,
+  });
+
+  it('reads the astronaut complaint as regenerate-from-state', () => {
+    const intent = classifyCritiqueTurn(
+      session(),
+      'what happened to my astonaught this is a laadys back and an eagle'
+    );
+    expect(intent).toMatchObject({ kind: 'iterate-cut', reading: 'regenerate' });
+    expect(intent.kind === 'iterate-cut' && intent.target.id).toBe('v1-fix1');
+  });
+
+  it('reads the other shapes of the same report', () => {
+    for (const message of [
+      "that's not what i asked for",
+      'where did my astronaut go',
+      "this isn't my design",
+      'wrong subject entirely',
+    ]) {
+      expect(classifyCritiqueTurn(session(), message)).toMatchObject({ reading: 'regenerate' });
+    }
+  });
+
+  it('leaves an ordinary direction alone', () => {
+    for (const message of [
+      'this is too busy',
+      'make the visor crack wider',
+      'add more stars behind him',
+    ]) {
+      expect(classifyCritiqueTurn(session(), message)).toMatchObject({ reading: 'apply' });
+    }
+  });
+
+  it('never lets a wrong-render report throw the set away', () => {
+    // The destructive readings must not get at this sentence: a customer
+    // saying the picture came back wrong has not asked for a different design.
+    const intent = classifyCritiqueTurn(
+      session(),
+      "what happened to my astronaut, that's not the look i wanted"
+    );
+    expect(intent.kind).toBe('iterate-cut');
+  });
+});
+
+describe('critique — an address is not a brief (astronaut defect 1, money)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearMemorySessions();
+    delete process.env.STUDIO_FIX_ALLOWANCE;
+    delete process.env.NEXT_PUBLIC_DEMO_MODE;
+    mockGenerate.mockResolvedValue({ images: ['https://img/recut.png'] } as never);
+    mockRecoverImageAtPath.mockResolvedValue(null);
+    mockCopyImageToPath.mockImplementation(async objectPath => durableUrl(objectPath));
+    mockUploadImageToPath.mockImplementation(async objectPath => durableUrl(objectPath));
+    mockRecordSpend.mockResolvedValue(undefined);
+  });
+
+  it('buys nothing for a turn that only points at a cut', async () => {
+    // The bottom of the astronaut money hole: "The bold one" resolved a cut,
+    // moved no field, and fell through to a paid render whose whole Customer
+    // direction was the name of a cut.
+    await seed();
+    const result = await critique('sess-critique', { message: 'the third one' });
+
+    expect(result.generated).toBe(false);
+    expect(result.reply).toBe(NAMED_BUT_NO_CHANGE_LINE);
+    expect(mockGenerate).not.toHaveBeenCalled();
+    expect(mockRecordSpend).not.toHaveBeenCalled();
+    expect(result.fixesRemaining).toBe(DEFAULT_STUDIO_FIX_ALLOWANCE);
+    // It still records which cut they pointed at — the next sentence lands on
+    // it by context.
+    expect(result.session.critiqueTurns?.[0]).toMatchObject({ targetId: 'v3' });
+  });
+
+  it('still renders the moment the same turn asks for something', async () => {
+    await seed();
+    const result = await critique('sess-critique', { message: 'the third one, too busy' });
+    expect(result.generated).toBe(true);
+  });
+});
+
+describe('critique — a held critique (astronaut defect 1)', () => {
+  const askedAt = '2026-08-26T12:00:00.000Z';
+  const now = Date.parse(askedAt) + 1000;
+  const turn = (message: string) => ({ message, reply: 'r', at: askedAt });
+
+  it('applies only to the turn it was bound to', () => {
+    const held = { messages: ['more realistic, and show his face'], turnIndex: 1, askedAt };
+    expect(
+      readPendingCritique({ critiqueTurns: [turn('a')], pendingCritique: held }, now)
+    ).toEqual(['more realistic, and show his face']);
+    // One turn later this is a different conversation.
+    expect(
+      readPendingCritique({ critiqueTurns: [turn('a'), turn('b')], pendingCritique: held }, now)
+    ).toEqual([]);
+  });
+
+  it('goes cold rather than waiting forever', () => {
+    // An SMS turn superseded mid-flight records no turn at all, so the index
+    // alone would hold a sentence on the session indefinitely.
+    const held = { messages: ['more realistic'], turnIndex: 1, askedAt };
+    expect(
+      readPendingCritique(
+        { critiqueTurns: [turn('a')], pendingCritique: held },
+        Date.parse(askedAt) + PENDING_CRITIQUE_TTL_MS + 1
+      )
+    ).toEqual([]);
+  });
+
+  it('is absent on sessions stored before it existed', () => {
+    expect(readPendingCritique({ critiqueTurns: [turn('a')] }, now)).toEqual([]);
+  });
+
+  it('holds every sentence said before a cut was named, oldest first', () => {
+    const stashed = stashPendingCritique(
+      ["riku's missing", 'and make it bigger', "riku's missing"],
+      2,
+      askedAt
+    );
+    // Deduped, ordered, and capped so an unanswered question cannot silt up a
+    // prompt.
+    expect(stashed.messages).toEqual(["riku's missing", 'and make it bigger']);
+    expect(
+      stashPendingCritique(['one', 'two', 'three', 'four'], 1, askedAt).messages
+    ).toHaveLength(MAX_PENDING_CRITIQUES);
+  });
+
+  it('treats a bare address as an address, not as a critique', () => {
+    // The whole defect: "The bold one" is where to put the fix, not the fix.
+    expect(answerAddsRequest('The bold one', 'the bold one')).toBe(false);
+    expect(answerAddsRequest('the third one')).toBe(false);
+    expect(answerAddsRequest('cut 2')).toBe(false);
+    expect(answerAddsRequest('ok, that one')).toBe(false);
+  });
+
+  it('recognizes an answer that asks for something of its own', () => {
+    expect(answerAddsRequest('the bold one, and lose the background', 'the bold one')).toBe(true);
+    expect(answerAddsRequest('cut 2, but bigger')).toBe(true);
   });
 });
