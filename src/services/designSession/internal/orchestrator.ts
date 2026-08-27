@@ -87,7 +87,9 @@ export type DesignSessionErrorCode =
   | 'ROUND_PICK_FROZEN'
   | 'ROUND_UNPICKED'
   | 'ROUND_IN_FLIGHT'
-  | 'CONVERSATION_UNAVAILABLE';
+  | 'CONVERSATION_UNAVAILABLE'
+  | 'REFERENCE_BUCKET_MISMATCH'
+  | 'REFERENCE_PATH_UNREADABLE';
 
 const ERROR_STATUS: Record<DesignSessionErrorCode, number> = {
   SESSION_NOT_FOUND: 404,
@@ -104,6 +106,13 @@ const ERROR_STATUS: Record<DesignSessionErrorCode, number> = {
   // Every conversation provider is down — the route maps this to 503 and
   // the UI downgrades to the scripted intake (ADR-0019 degraded mode).
   CONVERSATION_UNAVAILABLE: 503,
+  // Both reference-path faults are OURS, not the caller's: a bucket the
+  // signer doesn't own means GCS_BUCKET_NAME / GCP_STORAGE_BUCKET drifted,
+  // and an undecodable object key means we wrote a key we cannot read back.
+  // 500 on purpose — retrying an identical request cannot help, and the
+  // route releases the reserved credit on the way out either way.
+  REFERENCE_BUCKET_MISMATCH: 500,
+  REFERENCE_PATH_UNREADABLE: 500,
 };
 
 /** Domain error — carries a stable code and the HTTP status routes should map it to. */
@@ -580,20 +589,41 @@ export async function recordRoundPick(
   return session;
 }
 
-/** A public GCS object URL split into its bucket and object path. */
+/**
+ * A public GCS object URL split into its bucket and object path.
+ *
+ * `undefined` means "not one of our storage URLs" — a demo stock image, a
+ * provider-hosted temp URL, anything we never wrote. That is an ordinary
+ * outcome and the caller logs it and renders an unseeded round.
+ *
+ * A URL that IS on storage.googleapis.com but whose key will not decode is a
+ * different thing: we wrote a key we cannot read back. Returning `undefined`
+ * there would silently drop the customer's pick behind a log line, so it
+ * throws instead — same treatment as the bucket-drift guard below.
+ */
 function parseBucketUrl(
   imageUrl: string | undefined
 ): { bucket: string; path: string } | undefined {
   if (!imageUrl) return undefined;
+  let url: URL;
   try {
-    const url = new URL(imageUrl);
-    if (url.hostname !== 'storage.googleapis.com') return undefined;
-    // Shape: /<bucket>/<object path>
-    const [, bucket, ...rest] = url.pathname.split('/');
-    const path = rest.join('/');
-    return bucket && path ? { bucket, path: decodeURIComponent(path) } : undefined;
+    url = new URL(imageUrl);
   } catch {
     return undefined;
+  }
+  if (url.hostname !== 'storage.googleapis.com') return undefined;
+  // Shape: /<bucket>/<object path>
+  const [, bucket, ...rest] = url.pathname.split('/');
+  const path = rest.join('/');
+  if (!bucket || !path) return undefined;
+  try {
+    return { bucket, path: decodeURIComponent(path) };
+  } catch {
+    throw new DesignSessionError(
+      'REFERENCE_PATH_UNREADABLE',
+      `Picked cut's object key could not be decoded from '${url.pathname}' — ` +
+        'refusing to seed the round rather than silently ignoring the pick.'
+    );
   }
 }
 
@@ -632,7 +662,8 @@ function pickedCutReferencePath(
   }
   const signingBucket = signingBucketName();
   if (parsed.bucket !== signingBucket) {
-    throw new Error(
+    throw new DesignSessionError(
+      'REFERENCE_BUCKET_MISMATCH',
       `Picked cut lives in bucket '${parsed.bucket}' but reference URLs are signed ` +
         `against '${signingBucket}' — refusing to seed the round with a reference that ` +
         'would 404 at the provider (check GCS_BUCKET_NAME / GCP_STORAGE_BUCKET drift).'
