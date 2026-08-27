@@ -18,7 +18,7 @@ import { CAST_RECORDS, scoreCastDir, summarizeCast } from './castCorpus.mjs';
 
 const [outDir, lane = 'flux', jsonOut] = process.argv.slice(2).filter((a) => a !== '--');
 if (!outDir) {
-  console.error('usage: measure-cast.mjs <outDir> [imagen|flux] [jsonOut]');
+  console.error('usage: measure-cast.mjs <outDir> [imagen|flux|gemini|replicate-imagen] [jsonOut]');
   process.exit(1);
 }
 
@@ -29,7 +29,21 @@ console.log(`lane: ${lane}  records: ${CAST_RECORDS.length}`);
 const manifest = [];
 let billable = 0;
 
-for (const { id, cast, record } of CAST_RECORDS) {
+/*
+ * CAST_CLAUSE=off drops ONLY the per-character identity clause
+ * ("Character identities: Sora — Kingdom Hearts; …") by emptying
+ * characterIdentities, and keeps requestedCharacters intact.
+ *
+ * That distinction is the whole point: emptying requestedCharacters too would
+ * also switch selectAxes out of compositional mode and swap the ensemble
+ * treatments, so it would measure a different prompt path rather than the
+ * proposed one-line production fix.
+ */
+const dropClause = (process.env.CAST_CLAUSE || 'on').toLowerCase() === 'off';
+if (dropClause) console.log('identity clause: OFF (characterIdentities emptied)');
+
+for (const { id, cast, record: baseRecord } of CAST_RECORDS) {
+  const record = dropClause ? { ...baseRecord, characterIdentities: [] } : baseRecord;
   const { variations } = await enhanceStructured(record);
   for (const [vi, v] of variations.entries()) {
     const prompt = v.prompts.detailed ?? v.prompts.simple ?? '';
@@ -65,6 +79,10 @@ console.log(`  renders scored        ${summary.total}`);
 console.log(`  full cast present     ${summary.complete}`);
 console.log(`  no cast recognized    ${summary.none}`);
 console.log(`  mean completeness     ${(summary.meanCompleteness * 100).toFixed(1)}%`);
+console.log(`  renders with text     ${summary.textIntrusions}/${summary.total}`);
+if (summary.intrudedWords.length) {
+  console.log(`  words drawn in        ${summary.intrudedWords.slice(0, 12).join(', ')}`);
+}
 console.log('\n  by request:');
 for (const [id, s] of Object.entries(summary.byRecord)) {
   const pct = ((s.sum / s.total) * 100).toFixed(0);

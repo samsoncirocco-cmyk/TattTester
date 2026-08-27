@@ -182,6 +182,50 @@ export async function readCast(accessToken, base64Png) {
 }
 
 /**
+ * Does the render contain lettering nobody asked for?
+ *
+ * This is the second axis of the bake-off, and it exists because cast
+ * completeness alone would pick the wrong winner. Gemini was taken off the
+ * routing table for writing banner text into artwork — measured 2 of 2
+ * through the real prompt path — while scoring well on subject fidelity. A
+ * customer approving a design with a word in it wears that word permanently,
+ * so an arm that wins on casts and loses here has not won.
+ *
+ * Deliberately narrow: lettering that is part of the requested subject (a
+ * name tattoo, a banner the customer asked for) is not intrusion. None of the
+ * cast records request text, so on this corpus any lettering is intrusion.
+ */
+export async function readTextIntrusion(accessToken, base64Png) {
+  const endpoint = `https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/publishers/google/models/${VISION_MODEL}:generateContent`;
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { inlineData: { mimeType: 'image/png', data: base64Png } },
+            {
+              text:
+                'Does this tattoo design contain any written words, letters, or numbers ' +
+                '— banners, scrolls, signatures, captions, or lettering of any kind? ' +
+                'Reply as JSON: {"hasText": boolean, "words": [string]}. ' +
+                'Report only legible words. Do not report decorative marks that are not letters.',
+            },
+          ],
+        },
+      ],
+      generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
+    }),
+  });
+  if (!res.ok) throw new Error(`Vision(text) ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = await res.json();
+  const parsed = JSON.parse(data.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}');
+  return { hasText: Boolean(parsed.hasText), words: parsed.words ?? [] };
+}
+
+/**
  * Score one directory of renders against its cast.
  *
  * The headline number is CAST COMPLETENESS: of the characters the customer
@@ -199,8 +243,10 @@ export async function scoreCastDir(dir, accessToken) {
     if (!entry?.cast) continue;
     const bytes = await readFile(path.join(dir, file));
     let seen;
+    let text = { hasText: null, words: [] };
     try {
       seen = await readCast(accessToken, bytes.toString('base64'));
+      text = await readTextIntrusion(accessToken, bytes.toString('base64'));
     } catch (error) {
       results.push({ file, cast: entry.cast, error: error.message });
       continue;
@@ -217,6 +263,8 @@ export async function scoreCastDir(dir, accessToken) {
         (got) => !entry.cast.some((wanted) => namesMatch(wanted, got))
       ),
       completeness: entry.cast.length ? found.length / entry.cast.length : 0,
+      hasText: text.hasText,
+      words: text.words,
       summary: seen.summary,
     });
   }
@@ -229,6 +277,7 @@ export function summarizeCast(results) {
   const complete = scored.filter((r) => r.completeness === 1).length;
   const none = scored.filter((r) => r.completeness === 0).length;
   const mean = total ? scored.reduce((s, r) => s + r.completeness, 0) / total : 0;
+  const withText = scored.filter((r) => r.hasText === true);
 
   const byRecord = {};
   for (const r of scored) {
@@ -237,5 +286,13 @@ export function summarizeCast(results) {
     byRecord[r.recordId].sum += r.completeness;
     if (r.completeness === 1) byRecord[r.recordId].complete++;
   }
-  return { total, complete, none, meanCompleteness: mean, byRecord };
+  return {
+    total,
+    complete,
+    none,
+    meanCompleteness: mean,
+    textIntrusions: withText.length,
+    intrudedWords: [...new Set(withText.flatMap((r) => r.words ?? []))],
+    byRecord,
+  };
 }
