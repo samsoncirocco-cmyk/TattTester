@@ -75,7 +75,7 @@
  * "palette 'full color': prompt never says 'full'" is.
  */
 
-import { rosterOmissions } from './designState';
+import { stateOmissions } from './designState';
 import type { DesignState } from './designState';
 
 /* ── The report ──────────────────────────────────────────────────────────── */
@@ -102,6 +102,7 @@ import type { DesignState } from './designState';
  */
 export type PromptContractField =
   | 'subject'
+  | 'meaning'
   | 'roster'
   | 'identities'
   | 'medium'
@@ -456,6 +457,30 @@ export function checkPromptContract(state: DesignState, prompt: string): PromptC
     return outcome;
   };
 
+  /*
+   * `stateOmissions` (ADR-0060, widened when subject and meaning split) is the
+   * RUNTIME spend guard: it runs on the string the renderer just produced and
+   * asks whether the renderer's own clauses survived, by verbatim containment.
+   * It is authoritative for roster and it is the only thing that knows about
+   * `meaning`, so both are delegated here rather than re-derived.
+   *
+   * Subject is deliberately NOT delegated, and the reason is a boundary rather
+   * than a preference. `stateOmissions` compares the whole subject string
+   * verbatim, which is exactly right against renderer output — and wrong here.
+   * This module also runs post-hoc, over prompts persisted on cuts that other
+   * lanes assembled and reworded. Verbatim containment on those reports a
+   * violation whenever the wording differs while every term survived, and a
+   * guard that cries wolf on prompts that are fine is a guard somebody
+   * switches off. So subject is held term by term, which additionally reports
+   * WHICH detail was lost — "the astronaut survived, the cracked visor did
+   * not" — a partial loss verbatim matching can only call total.
+   *
+   * These are not two opinions about one question. They are one question asked
+   * at two points with different evidence available, and the split is stated
+   * here so the next person does not collapse them and lose the post-hoc case.
+   */
+  const omissions = stateOmissions(state, text);
+
   const subject = assertedSubject(state);
   let subjectAssertion: SubjectAssertion = 'not-asserted';
   if (subject) {
@@ -464,16 +489,30 @@ export function checkPromptContract(state: DesignState, prompt: string): PromptC
       outcome.missing.length > 0 || outcome.contradicted.length > 0 ? 'missing' : 'present';
   }
 
+  // A pure-vibe brief ("it just goes hard") has no roster and no subject, so
+  // every check above returns nothing and a prompt with no idea in it prices
+  // clean — the blind spot that let the astronaut session buy two images.
+  // `stateOmissions` reports the meaning only when it is the ONLY idea the
+  // state holds, which is precisely when its absence is the whole loss.
+  if (omissions.meaning) {
+    checkedFields.push('meaning');
+    violations.push({
+      field: 'meaning',
+      value: omissions.meaning,
+      missing: [omissions.meaning],
+      contradicted: [],
+    });
+  }
+
   if (state.roster.length > 0) {
     checkedFields.push('roster');
     // Delegated on purpose: ADR-0060 owns the roster rule and this module must
     // never become a second, subtly different opinion about it.
-    const omitted = rosterOmissions(state, text);
-    if (omitted.length > 0) {
+    if (omissions.roster.length > 0) {
       violations.push({
         field: 'roster',
         value: state.roster.join(', '),
-        missing: omitted,
+        missing: omissions.roster,
         contradicted: [],
       });
     }

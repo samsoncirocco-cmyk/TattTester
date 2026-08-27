@@ -70,13 +70,22 @@ describe('the astronaut case — a subject, no characters', () => {
     'an astronaut with a cracked visor'
   );
 
-  it('flags the subject when the rendered prompt has dropped it entirely', () => {
-    // This is verbatim what shipped: `renderStatePrompt` on origin/main knows
-    // nothing about a subject, so the whole request evaporates.
-    const prompt = renderStatePrompt(state);
-    expect(prompt).not.toMatch(/astronaut/i);
+  // The prompt below is written out by hand, deliberately. It is what
+  // `renderStatePrompt` produced on origin/main BEFORE the subject field
+  // existed — the exact string that bought two unrelated eagles. Building it
+  // by calling the renderer would have made this test depend on the defect:
+  // it passed only while the bug was live, and went green-but-meaningless the
+  // moment the renderer was fixed (which is what happened when #380 landed).
+  // A guard's test must not be written against the broken thing it guards.
+  const subjectlessPrompt =
+    'Flash art tattoo design on a pure white background — a flat scan of the ' +
+    'artwork alone, centered with clean white margins on all sides. ' +
+    'Palette: full color. Composed for a tattoo on the forearm.';
 
-    const report = checkPromptContract(state, prompt);
+  it('flags the subject when the rendered prompt has dropped it entirely', () => {
+    expect(subjectlessPrompt).not.toMatch(/astronaut/i);
+
+    const report = checkPromptContract(state, subjectlessPrompt);
     expect(report.subjectAssertion).toBe('missing');
     expect(report.violations).toHaveLength(1);
     expect(report.violations[0].field).toBe('subject');
@@ -87,9 +96,8 @@ describe('the astronaut case — a subject, no characters', () => {
   it('is exactly the case a roster-only guard reports clean', () => {
     // The regression pin. `rosterOmissions` over an empty roster is [], which
     // is why two renders were paid for. The contract must NOT be silent here.
-    const prompt = renderStatePrompt(state);
     expect(state.roster).toEqual([]);
-    expect(promptContractViolations(state, prompt).length).toBeGreaterThan(0);
+    expect(promptContractViolations(state, subjectlessPrompt).length).toBeGreaterThan(0);
   });
 
   it('passes once the subject survives into the prompt', () => {

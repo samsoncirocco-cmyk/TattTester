@@ -24,12 +24,24 @@
  *
  * ## it.fails() — read this before touching the file
  *
- * Several assertions below describe CORRECT behaviour that is BROKEN on main
- * today, and are written as `it.fails(...)`. That form passes while the defect
- * exists and fails loudly the moment it is fixed. It is not a suppression: it
- * is a tripwire that forces whoever lands the fix to flip the test to `it()`
- * and thereby adopt the assertion, instead of the fix landing with no test
- * behind it. Each one carries a comment naming the defect it encodes.
+ * When this file was written, twelve assertions below described correct
+ * behaviour that was broken on main, and each was written as `it.fails(...)` —
+ * a form that passes while the defect exists and fails loudly the moment it is
+ * fixed. Not a suppression: a tripwire, forcing whoever lands the fix to flip
+ * the test and adopt the assertion rather than landing a fix with no test
+ * behind it.
+ *
+ * PR #380 landed and NINE of the twelve flipped to `it(...)` and passed —
+ * measured, not assumed. That is the whole return on this file: the fix was
+ * verified by assertions written before it, by someone who did not write it.
+ *
+ * THREE remain `it.fails(...)`, and all three are the SAME open defect:
+ * **issue #382**, the reveal lane's palette clause. They are not a general
+ * "some things are still broken" marker, and nothing else belongs in this
+ * category. They are the acceptance tests of the `sessionPalette` change:
+ * when that lands, all three flip to `it(...)` in that PR, and green-on-three
+ * is its definition of done. If one of them still fails after the flip, the
+ * consolidation missed the reveal lane.
  *
  * ## The reveal lane is NOT the reference — read this before unifying on it
  *
@@ -148,7 +160,7 @@ describe('golden journey — deriveDesignState on a plain-subject brief', () => 
   // at all, and since ADR-0060 makes every re-cut a pure function of the state,
   // the astronaut cannot come back.
   // FLIP THIS TO it() WHEN THE SIX-DEFECT FIX LANDS.
-  it.fails('carries the customer stated subject somewhere in the state', () => {
+  it('carries the customer stated subject somewhere in the state', () => {
     const state = deriveDesignState(astronautIntake());
     expect(JSON.stringify(state)).toContain('astronaut');
   });
@@ -162,7 +174,7 @@ describe('golden journey — deriveDesignState on a plain-subject brief', () => 
   // `ambiguousAxes`; this derivation has no such guard and cannot see that the
   // intake left the color question open.
   // FLIP THIS TO it() WHEN THE SIX-DEFECT FIX LANDS.
-  it.fails('does not flip a fine-line request to blackwork', () => {
+  it('does not flip a fine-line request to blackwork', () => {
     const state = deriveDesignState(astronautIntake());
     expect(state.palette).not.toBe('blackwork, no color');
   });
@@ -200,6 +212,9 @@ describe('golden journey — the reveal prompt keeps the subject', () => {
   // `paletteClause(ctx.palette) + PRESENTATION_LEAD`), so the prompt opens on
   // a palette command instead of on the presentation instruction.
   // FLIP THIS TO it() WHEN THE PRESENTATION LEAD IS PUT FIRST.
+    // #382: the reveal lane front-loads paletteClause(ctx.palette), and
+    // ctx.palette is resolvePalette(styleTags) with no ambiguousAxes guard.
+    // Flip to it(...) in the sessionPalette PR — this is its acceptance test.
   it.fails('OPENS with the flash-art lead, where the lane weights it', async () => {
     const { variations } = await enhanceStructured(astronautIntake());
     for (const structured of variations) {
@@ -219,6 +234,9 @@ describe('golden journey — the reveal prompt keeps the subject', () => {
   // that, because ctx.palette is resolvePalette(styleTags) with no
   // ambiguousAxes guard and 'fine-line' is in MONOCHROME_TAGS.
   // FLIP THIS TO it() WHEN THE PALETTE CLAUSE RESPECTS ambiguousAxes.
+    // #382: the reveal lane front-loads paletteClause(ctx.palette), and
+    // ctx.palette is resolvePalette(styleTags) with no ambiguousAxes guard.
+    // Flip to it(...) in the sessionPalette PR — this is its acceptance test.
   it.fails('does not command monochrome on the colour pole of a colour spread', async () => {
     const { variations, axisSelection } = await enhanceStructured(astronautIntake());
     expect(axisSelection.axes).toContain('color-blackwork');
@@ -235,6 +253,9 @@ describe('golden journey — the reveal prompt keeps the subject', () => {
   // is fake, and it is fake at the most heavily weighted position. Asserting
   // the two cuts DIFFER in their opening clause is the cheapest way to notice.
   // FLIP THIS TO it() WHEN THE PALETTE CLAUSE RESPECTS ambiguousAxes.
+    // #382: the reveal lane front-loads paletteClause(ctx.palette), and
+    // ctx.palette is resolvePalette(styleTags) with no ambiguousAxes guard.
+    // Flip to it(...) in the sessionPalette PR — this is its acceptance test.
   it.fails('gives the two poles different opening clauses', async () => {
     const { variations } = await enhanceStructured(astronautIntake());
     const opening = (index: number) => {
@@ -254,7 +275,7 @@ describe('golden journey — the re-cut prompt must say the same thing', () => {
   // forearm." and then boilerplate. No test in the repo compared the two,
   // because every fixture had a roster that happened to fill the gap.
   // FLIP THIS TO it() WHEN THE SIX-DEFECT FIX LANDS.
-  it.fails('names the astronaut in the state-rendered prompt', () => {
+  it('names the astronaut in the state-rendered prompt', () => {
     const prompt = renderStatePrompt(deriveDesignState(astronautIntake()));
     expect(prompt).toContain('astronaut');
   });
@@ -269,7 +290,7 @@ describe('golden journey — the re-cut prompt must say the same thing', () => {
   // is asking for a photograph of an arm. The placement preview cannot strip a
   // backdrop that was never rendered.
   // FLIP THIS TO it() WHEN THE SIX-DEFECT FIX LANDS.
-  it.fails('does not open the prompt with on-skin phrasing', () => {
+  it('does not open the prompt with on-skin phrasing', () => {
     const prompt = renderStatePrompt(deriveDesignState(astronautIntake()));
     expect(prompt).not.toMatch(/^A tattoo on the /);
   });
@@ -279,7 +300,7 @@ describe('golden journey — the re-cut prompt must say the same thing', () => {
   // positive clause "Palette: blackwork, no color." in a prompt the customer
   // pays for, on a session where they asked for color to stay open.
   // FLIP THIS TO it() WHEN THE SIX-DEFECT FIX LANDS.
-  it.fails('does not assert blackwork in a prompt for an open-palette session', () => {
+  it('does not assert blackwork in a prompt for an open-palette session', () => {
     const prompt = renderStatePrompt(deriveDesignState(astronautIntake()));
     expect(prompt).not.toContain('Palette: blackwork, no color.');
   });
@@ -368,7 +389,7 @@ describe('golden journey — the orchestrator turn', () => {
   // mention an astronaut anywhere. This is the assertion to keep if only one
   // survives.
   // FLIP THIS TO it() WHEN THE SIX-DEFECT FIX LANDS.
-  it.fails('names the astronaut in the prompt it pays to render', async () => {
+  it('names the astronaut in the prompt it pays to render', async () => {
     await critique('sess-astronaut', { message: 'the first one, make it bigger' });
     // Read the call FIRST, with an explicit assertion that it happened.
     // Without this line the test dereferences calls[0][0] and, if the turn
@@ -386,7 +407,7 @@ describe('golden journey — the orchestrator turn', () => {
   // ADR-0023 presentation clause and the re-cut prompt does not carry it,
   // which is what breaks the placement preview downstream.
   // FLIP THIS TO it() WHEN THE SIX-DEFECT FIX LANDS.
-  it.fails('keeps flash-art-on-white on the re-cut (ADR-0023)', async () => {
+  it('keeps flash-art-on-white on the re-cut (ADR-0023)', async () => {
     await critique('sess-astronaut', { message: 'the first one, make it bigger' });
     expect(mockGenerate).toHaveBeenCalledTimes(1);
     const [request] = mockGenerate.mock.calls[0];
