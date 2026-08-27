@@ -30,6 +30,13 @@ export const ROUND_AXIS_LADDER: readonly VariationAxis[] = [
   'minimal-ornate',
 ];
 
+/**
+ * A palette the session has committed to. `Palette` (settledAxes) is this
+ * plus 'unresolved' — derived there, not duplicated here, so the two can
+ * never drift.
+ */
+export type SettledPalette = 'color' | 'monochrome';
+
 /** A verified character-to-source binding used by every generation lane. */
 export interface CharacterIdentity {
   name: string;
@@ -90,8 +97,14 @@ export interface IntakeRecord {
    * settles the axis (`sessionPalette` is the one place that precedence
    * is written). Absent until the ask-flow records an answer — absence
    * means the question is still open or was never raised.
+   *
+   * An explicit spread request UN-answers it: when the customer asks to
+   * SEE both poles, `applyAxisSpread` must delete this field alongside
+   * its tag strip, or the stale answer outranks the flag it just set and
+   * the rung is unspreadable for the rest of the session (#378). A field
+   * that can be set and never unset is a one-way door on customer voice.
    */
-  paletteAnswer?: 'color' | 'monochrome';
+  paletteAnswer?: SettledPalette;
   /**
    * An axis the customer EXPLICITLY asked to see spread ("can I see both
    * color and blackwork?"). Round one honors it ahead of the fixed

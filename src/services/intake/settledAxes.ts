@@ -18,7 +18,7 @@
  * skipped rung silently removes a refinement option the customer was owed —
  * the opposite failure — so vibes never settle anything.
  */
-import type { IntakeRecord, VariationAxis } from './types';
+import type { IntakeRecord, SettledPalette, VariationAxis } from './types';
 
 /*
  * Palette resolution. Style tags decide whether a session is monochrome or
@@ -36,7 +36,7 @@ const MONOCHROME_TAGS = new Set([
 
 const COLOR_TAGS = new Set(['color', 'neo-traditional', 'watercolor', 'new-school']);
 
-export type Palette = 'color' | 'monochrome' | 'unresolved';
+export type Palette = SettledPalette | 'unresolved';
 
 /**
  * Color wins a tag conflict ("fine-line color"): naming color is an explicit
