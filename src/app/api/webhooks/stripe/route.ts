@@ -20,7 +20,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import type Stripe from 'stripe';
 import { stripe } from '@/lib/stripe';
 import { setArtistChargesEnabled } from '@/lib/artist-stripe';
-import { createRelay, transferHeldDeposits, setArtistSubscription } from '@/lib/booking-relay';
+import {
+  createRelay,
+  transferHeldDeposits,
+  setArtistSubscription,
+  setArtistSubscriptionStatusByCustomerId,
+} from '@/lib/booking-relay';
 import { notifyArtistOfBooking } from '@/lib/notify';
 import { ensureAdminApp } from '@/lib/firebase-admin';
 import { canTransition, appendStatus } from '@/lib/booking';
@@ -461,13 +466,17 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
       console.log('[Stripe]', event.type, { id: sub.id, status: sub.status, customer: sub.customer });
       // Reflect artist subscription status on the artist record when we can key it.
       const tattArtistId = sub.metadata?.tattArtistId;
+      const stripeCustomerId =
+        typeof sub.customer === 'string' ? sub.customer : sub.customer?.id || null;
       if (tattArtistId) {
-        const stripeCustomerId =
-          typeof sub.customer === 'string' ? sub.customer : sub.customer?.id || null;
         await setArtistSubscription(tattArtistId, {
           stripeCustomerId,
           subscriptionStatus: sub.status,
         });
+      } else if (stripeCustomerId) {
+        // No artist id in metadata — key by the customer id a prior
+        // subscription checkout persisted onto the node (no-op if none).
+        await setArtistSubscriptionStatusByCustomerId(stripeCustomerId, sub.status);
       }
       break;
     }

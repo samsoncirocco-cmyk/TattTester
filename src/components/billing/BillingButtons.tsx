@@ -28,10 +28,14 @@ export function ArtistSubscribeButton({
     setLoading(true);
     try {
       const headers = await getApiAuthHeaders();
+      // No artistId here on purpose (#97): user.uid is a Firebase uid, not a
+      // graph Artist id — the server derives the caller's claimed artist from
+      // the verified token (claimedByUid) so the webhook can persist status
+      // onto the right Artist node.
       const res = await fetch("/api/v1/billing/subscribe", {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ artistId: user?.uid, email: user?.email }),
+        body: JSON.stringify({ email: user?.email }),
       });
       const data = (await res.json()) as { sessionUrl?: string; error?: string };
       if (!res.ok || !data.sessionUrl) {
@@ -110,16 +114,15 @@ export function BuyGenerationCreditsButton({
 
 /**
  * Opens the Stripe customer portal so an artist can manage their subscription.
- * Requires the artist's Stripe customer id (`cus_...`), which the billing
- * webhook persists after the first subscription checkout. That id is not yet
- * exposed to the client, so pass it in once it is available.
+ * The Stripe customer id (`cus_...`) is derived SERVER-SIDE by
+ * /api/v1/billing/portal from the caller's own claimed artist profile — the
+ * client sends nothing but its auth header, so there is no id to surface (or
+ * spoof) here. Callers without a subscription get a friendly 404 message.
  */
 export function ManageBillingButton({
-  customerId,
   className,
   children,
 }: {
-  customerId?: string;
   className?: string;
   children: React.ReactNode;
 }) {
@@ -127,18 +130,19 @@ export function ManageBillingButton({
   const [error, setError] = useState<string | null>(null);
 
   async function openPortal() {
-    if (!customerId) return;
     setError(null);
     setLoading(true);
     try {
       const headers = await getApiAuthHeaders();
       const res = await fetch("/api/v1/billing/portal", {
         method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ customerId }),
+        headers,
       });
-      const data = (await res.json()) as { url?: string; error?: string };
+      const data = (await res.json()) as { url?: string; error?: string; code?: string };
       if (!res.ok || !data.url) {
+        if (data.code === "NO_BILLING_CUSTOMER") {
+          throw new Error("No subscription yet — start one from the pricing page first.");
+        }
         throw new Error(data.error || "Unable to open billing portal.");
       }
       window.location.href = data.url;
@@ -148,18 +152,12 @@ export function ManageBillingButton({
     }
   }
 
-  // TODO(#80): the Stripe customer id (cus_...) is persisted by the billing
-  // webhook but not yet surfaced to the client (useAuthStore has no billing
-  // fields). Until it is wired through, gate the button as disabled.
-  const disabled = !customerId || loading;
-
   return (
     <>
       <button
         type="button"
         onClick={openPortal}
-        disabled={disabled}
-        title={!customerId ? "Subscribe first to manage billing" : undefined}
+        disabled={loading}
         className={className}
       >
         {loading ? "Opening…" : children}
