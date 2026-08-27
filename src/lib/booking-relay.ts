@@ -276,3 +276,21 @@ export async function setArtistSubscription(
     }
   );
 }
+
+/**
+ * Fallback keying for `customer.subscription.*` webhooks whose metadata
+ * carries no tattArtistId (e.g. subscriptions started before the profile was
+ * claimed, or created outside our checkout). Once a subscription checkout has
+ * stamped `stripeCustomerId` onto the node, later lifecycle events can still
+ * land by customer id.
+ */
+export async function setArtistSubscriptionStatusByCustomerId(
+  stripeCustomerId: string,
+  subscriptionStatus: string
+): Promise<void> {
+  await runWrite(
+    `MATCH (a:Artist {stripeCustomerId: $stripeCustomerId})
+     SET a.subscriptionStatus = $subscriptionStatus`,
+    { stripeCustomerId, subscriptionStatus }
+  );
+}
