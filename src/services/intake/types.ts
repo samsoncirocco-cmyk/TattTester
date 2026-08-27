@@ -77,9 +77,16 @@ export interface IntakeRecord {
  * why. Axis selection is logged, never silent (ADR-0012).
  */
 export interface AxisSelection {
-  /** 'questionnaire' varies 2 axes; 'compositional' locks style, varies composition (resolved intake). */
+  /** 'questionnaire' varies ONE axis; 'compositional' locks style, varies composition (resolved intake). */
   mode: 'questionnaire' | 'compositional';
-  /** Exactly 2 axes in questionnaire mode; empty in compositional mode. */
+  /**
+   * Exactly ONE axis in questionnaire mode; empty in compositional mode.
+   *
+   * It was two until ADR-0049. A round is now two cuts spread on a single
+   * axis, so the customer's pick answers exactly one question — which is what
+   * makes a silent tap usable as signal. Two axes across four cuts meant a
+   * pick could not be attributed to either.
+   */
   axes: VariationAxis[];
   /** Plain-language reason these axes were chosen (or why style locked). */
   rationale: string;

@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { enhance, enhanceStructured } from '../index';
+import { CUTS_PER_ROUND } from '../internal/structuredMode';
 import type { IntakeRecord } from '../../intake/types';
 
 /** The front-loaded presentation clause every prompt must carry (ADR-0023). */
@@ -27,42 +28,42 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('enhanceStructured - questionnaire mode (2 ambiguous axes)', () => {
+describe('enhanceStructured - questionnaire mode (ADR-0049: one axis, two cuts)', () => {
   const record: IntakeRecord = {
     ...baseRecord,
     ambiguousAxes: ['bold-fine', 'color-blackwork'],
   };
 
-  it('returns four variations covering all four quadrants of the two axes', async () => {
+  it('returns two variations covering both poles of ONE axis (ADR-0049)', async () => {
     const result = await enhanceStructured(record);
 
     expect(result.axisSelection.mode).toBe('questionnaire');
-    expect(result.axisSelection.axes).toHaveLength(2);
-    expect(result.axisSelection.axes).toEqual(
-      expect.arrayContaining(['bold-fine', 'color-blackwork'])
-    );
+    // One axis, highest priority among the ambiguous ones. This is what makes
+    // a silent pick attributable — with two axes it answered neither.
+    expect(result.axisSelection.axes).toEqual(['color-blackwork']);
 
-    expect(result.variations).toHaveLength(4);
-    const quadrants = result.variations.map(v => JSON.stringify(v.axisPosition));
-    expect(new Set(quadrants).size).toBe(4);
+    expect(result.variations).toHaveLength(CUTS_PER_ROUND);
+    const positions = result.variations.map(v => JSON.stringify(v.axisPosition));
+    expect(new Set(positions).size).toBe(CUTS_PER_ROUND);
     for (const variation of result.variations) {
-      expect(Object.keys(variation.axisPosition).sort()).toEqual(
-        ['bold-fine', 'color-blackwork'].sort()
-      );
+      expect(Object.keys(variation.axisPosition)).toEqual(['color-blackwork']);
     }
+    // Both poles present, so the pair is a question and not a coin flip.
+    const poles = result.variations.map(
+      v => (v.axisPosition as Record<string, string>)['color-blackwork']
+    );
+    expect(new Set(poles)).toEqual(new Set(['color', 'blackwork']));
   });
 
-  it('produces divergent prompts per quadrant reflecting each pole', async () => {
+  it('produces divergent prompts, one per pole', async () => {
     const result = await enhanceStructured(record);
 
     const detailedPrompts = result.variations.map(v => v.prompts.detailed);
-    expect(new Set(detailedPrompts).size).toBe(4);
+    expect(new Set(detailedPrompts).size).toBe(CUTS_PER_ROUND);
 
     for (const variation of result.variations) {
       const pos = variation.axisPosition as Record<string, string>;
       const prompt = (variation.prompts.detailed || '').toLowerCase();
-      if (pos['bold-fine'] === 'bold') expect(prompt).toContain('bold');
-      if (pos['bold-fine'] === 'fine') expect(prompt).toContain('fine-line');
       if (pos['color-blackwork'] === 'color') expect(prompt).toContain('color');
       if (pos['color-blackwork'] === 'blackwork') expect(prompt).toContain('blackwork');
     }
@@ -256,15 +257,17 @@ describe('enhanceStructured - padding never contradicts a resolved axis', () => 
     expect(result.axisSelection.axes).not.toContain('color-blackwork');
   });
 
-  it('still pads (least consequential) when the intake decided everything else', async () => {
+  it('spreads the one ambiguous axis even when intake decided everything else', async () => {
     const result = await enhanceStructured({
       ...baseRecord,
       styleTags: ['blackwork', 'fine-line', 'minimalist', 'realism'],
       ambiguousAxes: ['minimal-ornate'],
     });
 
-    expect(result.axisSelection.axes).toHaveLength(2);
-    expect(result.axisSelection.rationale).toContain('decided every');
+    // Nothing to pad and nothing to contradict: the round asks the one
+    // question intake left open and no more (ADR-0049).
+    expect(result.axisSelection.axes).toEqual(['minimal-ornate']);
+    expect(result.variations).toHaveLength(CUTS_PER_ROUND);
   });
 });
 
@@ -307,7 +310,7 @@ describe('enhanceStructured - named subject (IP rule)', () => {
 });
 
 describe('enhanceStructured - more than 2 ambiguous axes', () => {
-  it('picks the two most visually consequential axes by documented priority', async () => {
+  it('picks the single most visually consequential axis by documented priority', async () => {
     const result = await enhanceStructured({
       ...baseRecord,
       ambiguousAxes: ['minimal-ornate', 'bold-fine', 'literal-abstract', 'color-blackwork'],
@@ -315,21 +318,24 @@ describe('enhanceStructured - more than 2 ambiguous axes', () => {
 
     // Priority: color-blackwork > literal-abstract > bold-fine > minimal-ornate
     expect(result.axisSelection.mode).toBe('questionnaire');
-    expect(result.axisSelection.axes).toEqual(['color-blackwork', 'literal-abstract']);
+    expect(result.axisSelection.axes).toEqual(['color-blackwork']);
+    // The ones not chosen are named as deferred, not silently dropped.
+    expect(result.axisSelection.rationale).toContain('literal-abstract');
     expect(result.axisSelection.rationale).toContain('bold-fine');
     expect(result.axisSelection.rationale).toContain('minimal-ornate');
   });
 
-  it('pads a single ambiguous axis to two and says so in the rationale', async () => {
+  it('does not pad a lone ambiguous axis — there is no second slot to fill', async () => {
     const result = await enhanceStructured({
       ...baseRecord,
       ambiguousAxes: ['minimal-ornate'],
     });
 
     expect(result.axisSelection.mode).toBe('questionnaire');
-    expect(result.axisSelection.axes).toHaveLength(2);
-    expect(result.axisSelection.axes).toContain('minimal-ornate');
-    expect(result.axisSelection.rationale.toLowerCase()).toContain('padded');
+    expect(result.axisSelection.axes).toEqual(['minimal-ornate']);
+    // Padding existed only to fill four slots and the old rationale called the
+    // extra pair "acknowledged noise". Two cuts on one axis has no such slot.
+    expect(result.axisSelection.rationale.toLowerCase()).not.toContain('padded');
   });
 });
 
@@ -340,6 +346,8 @@ describe('enhanceStructured - compositional fallback (empty ambiguousAxes)', () 
     expect(result.axisSelection.mode).toBe('compositional');
     expect(result.axisSelection.axes).toEqual([]);
 
+    // Compositional mode stays at four — ADR-0049's two-cut rule is about a
+    // pick answering ONE axis question, and this mode has no axis.
     expect(result.variations).toHaveLength(4);
     const compositions = result.variations.map(
       v => (v.axisPosition as { composition: string }).composition

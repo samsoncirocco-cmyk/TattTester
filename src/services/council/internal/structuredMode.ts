@@ -2,7 +2,8 @@
  * Council structured-input mode (ADR-0015).
  *
  * Accepts the intake record (closed style tags + placement + freeform
- * meaning) and emits four axis-divergent prompt sets. With structured input
+ * meaning) and emits TWO axis-divergent prompt sets — one per pole of a
+ * single axis (ADR-0049; it was four across two axes until then). With structured input
  * the Council's job shifts from interpretation to axis differentiation
  * (ADR-0012), so construction is fully template-based and works offline —
  * no LLM/provider call is made. The classic `enhance()` path and its
@@ -19,6 +20,13 @@ import { VARIATION_AXIS_POOL } from '../../intake/types';
 import { getBaseNegativePrompt, validatePromptLength } from './councilService';
 import { resolvePlacement } from '@/lib/placement';
 
+/**
+ * Cuts per round (ADR-0049). Two, spread on one axis, so a silent pick is an
+ * answer to a single question. Exported because the reveal, the credit meter
+ * and the SMS delivery all need to agree on the number.
+ */
+export const CUTS_PER_ROUND = 2;
+
 export interface StructuredVariation {
   /** Which quadrant this variation occupies (questionnaire mode) or which compositional treatment it uses. */
   axisPosition: Record<string, string> | { composition: string };
@@ -27,7 +35,7 @@ export interface StructuredVariation {
 }
 
 export interface StructuredEnhanceResult {
-  /** Always exactly four variations (ADR-0012). */
+  /** Always exactly two variations — the poles of one axis (ADR-0049). */
   variations: StructuredVariation[];
   axisSelection: AxisSelection;
   metadata?: Record<string, unknown>;
@@ -361,38 +369,22 @@ export function selectAxes(record: IntakeRecord): AxisSelection {
     };
   }
 
-  if (ambiguous.length === 1) {
-    // The AxisSelection contract requires exactly 2 axes in questionnaire
-    // mode, so pad with the highest-priority axis not already covered.
-    // Burning a slot pair on a padded axis is acknowledged noise (ADR-0012),
-    // but it beats showing duplicate quadrants; the rationale says so.
-    // Never pad with an axis the intake decided — that would contradict the
-    // user outright rather than merely waste the pair.
-    const decided = contradictedAxes(record);
-    const candidates = AXIS_PRIORITY.filter(axis => axis !== ambiguous[0]);
-    const free = candidates.filter(axis => !decided.has(axis));
-    const pad = (free[0] ?? candidates[candidates.length - 1]) as VariationAxis;
-    const rationale = free.length
-      ? `Questionnaire mode: intake left only ${ambiguous[0]} unresolved; padded with ` +
-        `${pad} (next most visually consequential axis the intake did not decide) so all ` +
-        'four reveal slots stay distinct.'
-      : `Questionnaire mode: intake left only ${ambiguous[0]} unresolved and decided every ` +
-        `other axis; padded with ${pad} (least visually consequential) so the four slots stay ` +
-        'distinct without overriding a resolved choice more than necessary.';
-    return { mode: 'questionnaire', axes: [ambiguous[0], pad], rationale };
-  }
-
-  const [first, second, ...dropped] = ambiguous;
+  // ADR-0049: a round spreads ONE axis over two cuts, so there is nothing to
+  // pad. The old code padded a second axis purely to fill four slots and
+  // called the extra pair "acknowledged noise" — that noise is now simply
+  // not generated.
+  const [chosen, ...deferred] = ambiguous;
   const rationale =
-    dropped.length === 0
-      ? `Questionnaire mode: intake left ${first} and ${second} unresolved; the reveal varies both ` +
-        'so the user\'s pick answers them without being asked.'
-      : `Questionnaire mode: intake left ${ambiguous.join(', ')} unresolved; chose ${first} and ` +
-        `${second} as the two most consequential for visual divergence ` +
-        `(priority: ${AXIS_PRIORITY.join(' > ')}); ${dropped.join(', ')} deferred to refinement.`;
+    deferred.length === 0
+      ? `Questionnaire mode: intake left ${chosen} unresolved; the two cuts spread it so the ` +
+        "user's pick answers it without being asked."
+      : `Questionnaire mode: intake left ${ambiguous.join(', ')} unresolved; chose ${chosen} as ` +
+        `the most consequential for visual divergence (priority: ${AXIS_PRIORITY.join(' > ')}); ` +
+        `${deferred.join(', ')} deferred to the next round.`;
 
-  return { mode: 'questionnaire', axes: [first, second], rationale };
+  return { mode: 'questionnaire', axes: [chosen], rationale };
 }
+
 
 /*
  * Palette resolution. Style tags decide whether a session is monochrome or
@@ -740,16 +732,30 @@ export async function enhanceStructured(
 
   let variations: StructuredVariation[];
   if (axisSelection.mode === 'questionnaire') {
-    const [axisA, axisB] = axisSelection.axes;
-    const [a0, a1] = AXIS_POLES[axisA];
-    const [b0, b1] = AXIS_POLES[axisB];
+    // One axis, one cut per pole (ADR-0049). The pick is only readable as an
+    // answer because nothing else differs between the two.
+    const [axis] = axisSelection.axes;
+    const [low, high] = AXIS_POLES[axis];
     variations = [
-      buildQuadrantVariation([axisA, axisB], [a0, b0], ctx),
-      buildQuadrantVariation([axisA, axisB], [a0, b1], ctx),
-      buildQuadrantVariation([axisA, axisB], [a1, b0], ctx),
-      buildQuadrantVariation([axisA, axisB], [a1, b1], ctx),
+      buildQuadrantVariation([axis], [low], ctx),
+      buildQuadrantVariation([axis], [high], ctx),
     ];
   } else {
+    /*
+     * Compositional mode stays at four, deliberately, and this is the one
+     * place ADR-0049 does NOT apply.
+     *
+     * The two-cut rule exists so a silent pick answers exactly one question:
+     * two cuts, one axis, both poles. Compositional rounds have no axis —
+     * they vary staging and framing, so a pick there is a preference, not an
+     * answer, and halving them buys no extra signal. Cutting to two would
+     * also mean choosing which two of the four treatments survive, and
+     * nothing measured says which. That is a product decision with a cost
+     * question attached (a compositional round would bill one credit for four
+     * images where a questionnaire round bills one for two), so it is named
+     * in ADR-0049 as open rather than settled here by whoever happened to
+     * write this line.
+     */
     variations = compositionalTreatments(record).map(treatment =>
       buildCompositionalVariation(treatment, ctx)
     );
