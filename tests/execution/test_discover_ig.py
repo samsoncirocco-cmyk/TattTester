@@ -220,3 +220,219 @@ def test_failed_discovery_seed_remains_retryable_until_terminal_success(
     )
     assert calls["count"] == 2
     assert result["ink.seed"] == ["new.artist"]
+
+
+APIFY_PROFILE_ITEM = {
+    "username": "InkBySam",
+    "biography": "Tattoo artist. Booking below.",
+    "followersCount": 5000,
+    "postsCount": 1845,
+    "fullName": "Sam Ink",
+    "externalUrl": "https://example.com/book",
+    "businessCategoryName": "Artist",
+    "private": False,
+    "verified": False,
+}
+
+
+def test_profile_row_captures_the_post_count_the_importer_gates_on():
+    row = discovery.profile_row(APIFY_PROFILE_ITEM)
+    assert row["postCount"] == 1845
+    # every field the shared classifier and the importer already read
+    assert row["bio"] == "Tattoo artist. Booking below."
+    assert row["followers"] == 5000
+    assert row["fullName"] == "Sam Ink"
+    assert row["url"] == "https://example.com/book"
+    assert row["category"] == "Artist"
+    assert row["private"] is False
+    assert row["verified"] is False
+
+
+def test_zero_posts_is_not_collapsed_into_never_scraped():
+    # The importer rejects 0 (empty profile) and holds None (no evidence).
+    # Collapsing them turns a decision into an indefinite wait.
+    assert discovery.profile_row({**APIFY_PROFILE_ITEM, "postsCount": 0})["postCount"] == 0
+    absent = {key: value for key, value in APIFY_PROFILE_ITEM.items() if key != "postsCount"}
+    assert discovery.profile_row(absent)["postCount"] is None
+
+
+def test_profile_row_tolerates_actor_schema_drift():
+    absent = {key: value for key, value in APIFY_PROFILE_ITEM.items() if key != "postsCount"}
+    assert discovery.profile_row({**absent, "mediaCount": 12})["postCount"] == 12
+
+
+def test_missing_post_count_finds_profiles_cached_before_the_field_existed():
+    profiles = {
+        "legacy": {"bio": "x", "followers": 10},
+        "explicit_null": {"bio": "y", "postCount": None},
+        "repaired": {"bio": "z", "postCount": 400},
+        "empty_but_scraped": {"bio": "w", "postCount": 0},
+        "unreadable": None,
+    }
+    assert sorted(discovery.missing_post_count(profiles)) == [
+        "explicit_null",
+        "legacy",
+        "unreadable",
+    ]
+    assert discovery.missing_post_count({"a": {"postCount": 1}}) == []
+
+
+def test_backfill_rescrapes_stale_profiles_and_plain_enrich_does_not(tmp_path, monkeypatch, capsys):
+    queue = tmp_path / "queue.json"
+    write_queue(queue)
+    profiles_path = tmp_path / "profiles.json"
+    profiles_path.write_text(json.dumps({"stale.artist": {"bio": "old", "followers": 1}}))
+    raw_followees = tmp_path / "raw_followees.json"
+    raw_followees.write_text(json.dumps({"seed": ["stale.artist", "brand.new"]}))
+    raw_hashtags = tmp_path / "raw_hashtags.json"
+    raw_hashtags.write_text(json.dumps({}))
+
+    scraped = []
+
+    def fake_run_actor(_token, _actor, payload, **_kwargs):
+        scraped.append(list(payload["usernames"]))
+        return "SUCCEEDED", [
+            {**APIFY_PROFILE_ITEM, "username": name} for name in payload["usernames"]
+        ]
+
+    monkeypatch.setattr(discovery, "run_actor", fake_run_actor)
+
+    def run(backfill):
+        discovery.enrich_candidates(
+            "secret",
+            200,
+            queue_path=queue,
+            raw_followees_path=raw_followees,
+            raw_hashtags_path=raw_hashtags,
+            profiles_path=profiles_path,
+            checkpoint=lambda _record: None,
+            backfill=backfill,
+        )
+
+    run(False)
+    assert scraped == [["brand.new"]], "plain enrich must not re-spend on cached handles"
+    assert "stale.artist" in discovery.missing_post_count(json.loads(profiles_path.read_text()))
+    assert "--backfill" in capsys.readouterr().out
+
+    scraped.clear()
+    run(True)
+    assert scraped == [["stale.artist"]]
+    assert discovery.missing_post_count(json.loads(profiles_path.read_text())) == []
+
+
+def test_filter_warns_when_accepted_candidates_have_no_photo_evidence(tmp_path, capsys):
+    queue = tmp_path / "queue.json"
+    write_queue(queue)
+    raw_followees = tmp_path / "raw_followees.json"
+    raw_followees.write_text(json.dumps({"seed": ["no.evidence", "has.evidence"]}))
+    raw_hashtags = tmp_path / "raw_hashtags.json"
+    raw_hashtags.write_text(json.dumps({}))
+    profiles_path = tmp_path / "profiles.json"
+    profiles_path.write_text(
+        json.dumps(
+            {
+                "no.evidence": {"bio": "Tattoo artist, books open", "followers": 900},
+                "has.evidence": {
+                    "bio": "Tattoo artist, books open",
+                    "followers": 900,
+                    "postCount": 300,
+                },
+            }
+        )
+    )
+    candidates_path = tmp_path / "candidates.json"
+
+    discovery.filter_candidates(
+        queue_path=queue,
+        raw_followees_path=raw_followees,
+        raw_hashtags_path=raw_hashtags,
+        profiles_path=profiles_path,
+        candidates_path=candidates_path,
+    )
+
+    written = {item["handle"]: item for item in json.loads(candidates_path.read_text())}
+    assert written["has.evidence"]["postCount"] == 300
+    assert written["no.evidence"]["postCount"] is None
+    output = capsys.readouterr().out
+    assert "WARNING: 1 of 2 accepted candidates have no postCount" in output
+
+
+def test_a_sparse_rescrape_never_erases_what_we_already_knew():
+    # Observed live during the #364 backfill: 8 of 338 handles came back with
+    # every field stripped (gone private / renamed / deleted since the first
+    # run). Before --backfill existed this was unreachable, because cached
+    # handles were never re-scraped.
+    cached = {
+        "bio": "Tattoo artist, books open",
+        "followers": 37,
+        "fullName": "Real Name",
+        "url": "https://example.com",
+        "category": "Artist",
+        "private": True,
+        "verified": False,
+    }
+    stripped = discovery.profile_row({"username": "gone.dark"})
+    merged = discovery.merge_profile(cached, stripped)
+    assert merged["bio"] == "Tattoo artist, books open"
+    assert merged["followers"] == 37
+    assert merged["fullName"] == "Real Name"
+    assert merged["private"] is True
+    assert merged["postCount"] is None
+
+
+def test_fresh_values_win_including_falsey_ones_that_carry_information():
+    cached = {"bio": "old bio", "followers": 10, "postCount": 500, "private": True}
+    fresh = discovery.profile_row(
+        {
+            "username": "still.here",
+            "biography": "new bio",
+            "followersCount": 20,
+            "postsCount": 0,
+            "private": False,
+        }
+    )
+    merged = discovery.merge_profile(cached, fresh)
+    assert merged["bio"] == "new bio"
+    assert merged["followers"] == 20
+    # 0 posts and private=False are answers, not absences
+    assert merged["postCount"] == 0
+    assert merged["private"] is False
+
+
+def test_merge_profile_handles_an_uncached_or_unreadable_entry():
+    fresh = discovery.profile_row(APIFY_PROFILE_ITEM)
+    assert discovery.merge_profile(None, fresh) == fresh
+    assert discovery.merge_profile("corrupt", fresh) == fresh
+
+
+def test_backfill_of_a_vanished_account_keeps_the_cached_row(tmp_path, monkeypatch):
+    queue = tmp_path / "queue.json"
+    write_queue(queue)
+    profiles_path = tmp_path / "profiles.json"
+    profiles_path.write_text(
+        json.dumps({"gone.dark": {"bio": "Tattoo artist", "followers": 37, "private": True}})
+    )
+    raw_followees = tmp_path / "raw_followees.json"
+    raw_followees.write_text(json.dumps({"seed": ["gone.dark"]}))
+    raw_hashtags = tmp_path / "raw_hashtags.json"
+    raw_hashtags.write_text(json.dumps({}))
+
+    monkeypatch.setattr(
+        discovery,
+        "run_actor",
+        lambda *_args, **_kwargs: ("SUCCEEDED", [{"username": "gone.dark"}]),
+    )
+    discovery.enrich_candidates(
+        "secret",
+        200,
+        queue_path=queue,
+        raw_followees_path=raw_followees,
+        raw_hashtags_path=raw_hashtags,
+        profiles_path=profiles_path,
+        checkpoint=lambda _record: None,
+        backfill=True,
+    )
+    stored = json.loads(profiles_path.read_text())["gone.dark"]
+    assert stored["bio"] == "Tattoo artist"
+    assert stored["followers"] == 37
+    assert stored["postCount"] is None
