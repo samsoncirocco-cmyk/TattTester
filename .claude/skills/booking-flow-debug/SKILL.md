@@ -1,6 +1,6 @@
 ---
 name: booking-flow-debug
-description: Use when a booking surface misbehaves — "reservation mode never shows", hold placement 409/503s, slots missing from /book, checkout refusing with 404/503, stale availability, or triaging issues #312/#313. Do not use for money-movement questions (deposits, transfers, refunds — see stripe-deposits) or for general test/CI failures (see verify-changes).
+description: Use when a booking surface misbehaves — "reservation mode never shows", hold placement 409/503s, slots missing from /book, checkout refusing with 404/503, stale availability, or triaging issue #312. Do not use for money-movement questions (deposits, transfers, refunds — see stripe-deposits) or for general test/CI failures (see verify-changes).
 ---
 
 # Booking flow debugging runbook
@@ -42,7 +42,7 @@ from the hold route includes the `reason` — read it before theorizing.
 | Checkout 404/503 with a hold active | `src/app/api/checkout/route.ts` refusal branches — see issue #312 below |
 | Booking stuck in a status | `BOOKING_TRANSITIONS` in `src/lib/booking.ts` (`canTransition` rejects same-state) |
 | Booking request "succeeded" but no Firestore doc | `book/route.ts` falls back to `/tmp/tatt-data/bookings.jsonl` on Firestore failure and still returns 200 |
-| Bookings page copy wrong | `bookingMoneyCopy.bookingsList` in `src/lib/money-copy.ts` — issue #313; regex tests in `money-copy.test.ts` |
+| Bookings page copy wrong | `bookingsListMoneyCopy` in `src/lib/money-copy.ts`; the regex tests in `money-copy.test.ts` are the spec — read them first |
 
 ## Gotchas
 
@@ -61,11 +61,12 @@ from the hold route includes the `reason` — read it before theorizing.
   Remaining leaks: the 503 "Payments are not configured." branch, the later
   second 404 artist lookup, and the 409 `HOLD_LOST` branches. Verify with
   `gh issue view 312` and read the route before "fixing".
-- **Issue #313 (open):** `bookingsList` copy still uses verification-hold
-  phrasing vs the stamped-window wording elsewhere. Its regex tests pin
-  phrases (must match "only part we keep", "relay", "hold window"; must NOT
-  match "claim window closes") — change the tests deliberately, not
-  reactively.
+- **Bookings-list copy is pinned by tests.** `money-copy.test.ts` requires
+  "deposit goes to your artist in full", "only part we keep", "unclaimed
+  profile", "relay", "automatically refunded in full" and "within N days",
+  and forbids "hold window", "held during verification" and "claim window
+  closes". Change the tests deliberately, not reactively. (Issue #313,
+  which drove this wording, closed 2026-08-10.)
 - **35 vs 30 minutes.** `HOLD_TTL_MINUTES = 35` is authoritative; some
   comments (hold route header, Stripe expiry note) still say 30.
 - **A calendar entry with `errors` is not "free".** `fetchFreeBusy` treats
