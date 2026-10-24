@@ -39,7 +39,13 @@ import {
 import type { ReferenceAnalysis } from '@/services/vision';
 import { resolveSessionStore } from './store';
 import type { StoredSession } from './store';
-import { DesignSessionError, loadSession, startFromRecord } from './orchestrator';
+import {
+  DesignSessionError,
+  claimRevealSlot,
+  loadSession,
+  releaseRevealSlot,
+  startFromRecord,
+} from './orchestrator';
 import {
   applyReferenceSignals,
   buildStoredReference,
@@ -244,7 +250,10 @@ export async function converse(request: ConverseRequest): Promise<ConverseRespon
  * conversation's extracted record — the session moves to phase 'revealed'
  * in place, keeping its id and conversation logs.
  */
-export async function confirmProposal(sessionId: string): Promise<StoredSession> {
+export async function confirmProposal(
+  sessionId: string,
+  opts?: { reservationId?: string }
+): Promise<StoredSession> {
   const store = resolveSessionStore();
   const session = await loadSession(store, sessionId);
 
@@ -276,7 +285,20 @@ export async function confirmProposal(sessionId: string): Promise<StoredSession>
     session.conversation.references ?? []
   );
 
-  return startFromRecord(completeIntakeRecord(record, userText), session);
+  // CONCURRENCY: the phase checks above are a plain read, and the reveal
+  // only persists 'revealed' once its renders land. Claim the session's
+  // single charged-render slot (the same one rounds use) BEFORE anything
+  // paid runs, so a second confirm inside the render window throws
+  // REVEAL_IN_FLIGHT instead of rendering a second set of cuts. The
+  // winner's final save frees the slot; a failed reveal releases it so the
+  // promised retry can run.
+  const claim = await claimRevealSlot(store, session.id, opts?.reservationId);
+  try {
+    return await startFromRecord(completeIntakeRecord(record, userText), session);
+  } catch (error) {
+    await releaseRevealSlot(store, session.id, claim.id);
+    throw error;
+  }
 }
 
 /** What attachReference hands back — enough for a channel to speak and render. */

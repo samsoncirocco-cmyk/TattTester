@@ -500,6 +500,110 @@ describe('confirmProposal', () => {
   });
 });
 
+describe('confirmProposal — one reveal at a time (claim race)', () => {
+  /** Hold every render open until the test releases it. */
+  function gateRenders(): () => void {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mockGenerate.mockImplementation(async () => {
+      await gate;
+      return {
+        images: [`https://replicate.delivery/pbxt/${++imageCounter}/out.png`],
+        metadata: {
+          model: 'imagen3',
+          provider: 'vertex-ai' as const,
+          generatedAt: new Date().toISOString(),
+          durationMs: 1,
+          attempts: 1,
+          fallbackUsed: false,
+        },
+      };
+    });
+    return release;
+  }
+
+  it('serializes two concurrent confirms — the loser never renders, the winner reveals once', async () => {
+    const sessionId = await converseToProposal();
+    const releaseRenders = gateRenders();
+
+    // The web double-click / two tabs / web+SMS interleaving: the second
+    // confirm arrives while the first is mid-render, before 'revealed' is
+    // persisted — the phase check alone would let both through.
+    const winner = confirmProposal(sessionId);
+    await new Promise((resolve) => setImmediate(resolve));
+    const loser = confirmProposal(sessionId);
+
+    await expect(loser).rejects.toMatchObject({
+      name: 'DesignSessionError',
+      code: 'REVEAL_IN_FLIGHT',
+      status: 409,
+    });
+    releaseRenders();
+    const revealed = await winner;
+
+    // Exactly one reveal's worth of renders — the loser spent nothing.
+    expect(revealed.phase).toBe('revealed');
+    expect(mockGenerate).toHaveBeenCalledTimes(4);
+    expect(mockEnhanceStructured).toHaveBeenCalledTimes(1);
+    const stored = (await memorySessionStore.get(sessionId)) as StoredSession;
+    expect(stored.phase).toBe('revealed');
+    expect(stored.variations.map(v => v.id)).toEqual(['v1', 'v2', 'v3', 'v4']);
+    // The winner's final save also freed the slot.
+    expect(stored.roundInFlight).toBeUndefined();
+  });
+
+  it('persists the credit reservation id inside the claim while the reveal renders', async () => {
+    const sessionId = await converseToProposal();
+    const releaseRenders = gateRenders();
+
+    const pending = confirmProposal(sessionId, { reservationId: 'res-reveal' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const midFlight = (await memorySessionStore.get(sessionId)) as StoredSession;
+    expect(midFlight.phase).toBe('intake');
+    expect(midFlight.roundInFlight).toMatchObject({ reservationId: 'res-reveal' });
+    expect(typeof midFlight.roundInFlight?.id).toBe('string');
+
+    releaseRenders();
+    await pending;
+    const stored = (await memorySessionStore.get(sessionId)) as StoredSession;
+    expect(stored.roundInFlight).toBeUndefined();
+  });
+
+  it('releases the slot when the reveal fails, so the promised retry can run', async () => {
+    const sessionId = await converseToProposal();
+    mockGenerate.mockRejectedValue(new Error('provider down'));
+
+    await expect(confirmProposal(sessionId)).rejects.toThrow('provider down');
+    const afterFailure = (await memorySessionStore.get(sessionId)) as StoredSession;
+    expect(afterFailure.phase).toBe('intake');
+    expect(afterFailure.roundInFlight).toBeUndefined();
+
+    // Provider recovers: the retry is not refused as in-flight.
+    mockGenerate.mockImplementation(async () => ({
+      images: [`https://replicate.delivery/pbxt/${++imageCounter}/out.png`],
+      metadata: {
+        model: 'imagen3',
+        provider: 'vertex-ai' as const,
+        generatedAt: new Date().toISOString(),
+        durationMs: 1,
+        attempts: 1,
+        fallbackUsed: false,
+      },
+    }));
+    const revealed = await confirmProposal(sessionId);
+    expect(revealed.phase).toBe('revealed');
+  });
+
+  it('a sequential second confirm is still INVALID_PHASE, not in-flight', async () => {
+    const sessionId = await converseToProposal();
+    await confirmProposal(sessionId);
+
+    await expect(confirmProposal(sessionId)).rejects.toMatchObject({ code: 'INVALID_PHASE' });
+    expect(mockGenerate).toHaveBeenCalledTimes(4);
+  });
+});
+
 describe('legacy scripted startSession (ADR-0019 degraded mode)', () => {
   it('still runs the two-answer flow unchanged, with no conversation state', async () => {
     const session = await startSession({
