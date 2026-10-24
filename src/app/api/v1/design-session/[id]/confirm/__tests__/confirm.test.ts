@@ -214,6 +214,41 @@ describe('POST /api/v1/design-session/[id]/confirm route adapter', () => {
     expect(confirmProposalMock).not.toHaveBeenCalled();
   });
 
+  it('carries the credit reservation id into the reveal claim', async () => {
+    reserveGenerationCreditMock.mockResolvedValueOnce({
+      id: 'res-reveal-1', source: 'free', freeRemaining: 24, paidRemaining: 0,
+    });
+    confirmProposalMock.mockResolvedValueOnce(makeSession());
+
+    const res = await POST(makeRequest(URL, {}), routeParams('sess-1'));
+
+    expect(res.status).toBe(200);
+    expect(confirmProposalMock).toHaveBeenCalledWith('sess-1', { reservationId: 'res-reveal-1' });
+  });
+
+  it('maps a confirm that lost the reveal claim race to 409 and returns the credit', async () => {
+    confirmProposalMock.mockRejectedValueOnce(
+      Object.assign(new Error("Session 'sess-1' already has its reveal rendering"), {
+        name: 'DesignSessionError',
+        code: 'REVEAL_IN_FLIGHT',
+        status: 409,
+      })
+    );
+
+    const res = await POST(makeRequest(URL, {}), routeParams('sess-1'));
+
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(json.code).toBe('REVEAL_IN_FLIGHT');
+    expect(json.retryable).toBe(false);
+    // The loser rendered nothing, so its reserved cut goes straight back.
+    expect(releaseGenerationCreditMock).toHaveBeenCalledWith(
+      'uid_customer',
+      { source: 'free', freeRemaining: 24, paidRemaining: 0 }
+    );
+    expect(recordSpendMock).not.toHaveBeenCalled();
+  });
+
   it('maps a confirm before the proposal to 409 without recording spend', async () => {
     confirmProposalMock.mockRejectedValueOnce(
       Object.assign(new Error('The conversation has not reached its proposal yet'), {

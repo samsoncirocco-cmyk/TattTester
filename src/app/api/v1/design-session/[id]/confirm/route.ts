@@ -88,7 +88,12 @@ export async function POST(
             creditReservation = await reserveGenerationCredit(user.uid);
         }
 
-        const session = await confirmProposal(sessionId);
+        // The reservation id rides inside the reveal claim (same discipline
+        // as rounds): a process killed between reserve and delivery leaves a
+        // reconcilable record instead of a credit that exists only here.
+        const session = creditReservation?.id
+            ? await confirmProposal(sessionId, { reservationId: creditReservation.id })
+            : await confirmProposal(sessionId);
         generationSucceeded = true;
 
         // Loud downgrade (ADR-0048): the reveal rendered, but on a fallback

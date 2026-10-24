@@ -93,6 +93,7 @@ export type DesignSessionErrorCode =
   | 'ROUND_PICK_FROZEN'
   | 'ROUND_UNPICKED'
   | 'ROUND_IN_FLIGHT'
+  | 'REVEAL_IN_FLIGHT'
   | 'CONVERSATION_UNAVAILABLE';
 
 const ERROR_STATUS: Record<DesignSessionErrorCode, number> = {
@@ -107,6 +108,10 @@ const ERROR_STATUS: Record<DesignSessionErrorCode, number> = {
   // A second charged round while one is rendering loses the claim race —
   // it must never double-charge or clobber the winner's state.
   ROUND_IN_FLIGHT: 409,
+  // The first reveal shares that slot: a second confirm arriving while the
+  // reveal's renders are still in flight loses the claim race instead of
+  // rendering a second, unpaid-for set of cuts.
+  REVEAL_IN_FLIGHT: 409,
   // Every conversation provider is down — the route maps this to 503 and
   // the UI downgrades to the scripted intake (ADR-0019 degraded mode).
   CONVERSATION_UNAVAILABLE: 503,
@@ -765,6 +770,49 @@ async function claimRoundSlot(
   sessionId: string,
   reservationId?: string
 ): Promise<RoundClaim> {
+  return claimRenderSlot(store, sessionId, reservationId, {
+    code: 'ROUND_IN_FLIGHT',
+    message: `Session '${sessionId}' already has a round rendering — one charged round at a time.`,
+  });
+}
+
+/**
+ * The first reveal takes the SAME slot as a round, for the same reason: the
+ * conversational confirm's phase check (`intake` + `proposal`) is a plain
+ * read, and `startFromRecord` only persists `phase: 'revealed'` after the
+ * renders land. Two confirms inside that window — two tabs, web plus SMS,
+ * a client without the pending gate — both passed the check and both
+ * rendered. The claim serializes them: the loser throws REVEAL_IN_FLIGHT
+ * before anything paid runs, so its caller hands the credit back. The
+ * winner's final save (whole-document, from a session loaded before the
+ * claim) frees the slot exactly as a round's does.
+ */
+export async function claimRevealSlot(
+  store: SessionStore,
+  sessionId: string,
+  reservationId?: string
+): Promise<RoundClaim> {
+  return claimRenderSlot(store, sessionId, reservationId, {
+    code: 'REVEAL_IN_FLIGHT',
+    message: `Session '${sessionId}' already has its reveal rendering — confirmation fires the reveal exactly once.`,
+  });
+}
+
+/** Free a reveal claim after a failed reveal — same best-effort release as a round. */
+export async function releaseRevealSlot(
+  store: SessionStore,
+  sessionId: string,
+  claimId: string
+): Promise<void> {
+  await releaseRoundSlot(store, sessionId, claimId);
+}
+
+async function claimRenderSlot(
+  store: SessionStore,
+  sessionId: string,
+  reservationId: string | undefined,
+  refusal: { code: 'ROUND_IN_FLIGHT' | 'REVEAL_IN_FLIGHT'; message: string }
+): Promise<RoundClaim> {
   const claim: RoundClaim = {
     id: randomUUID(),
     ...(reservationId ? { reservationId } : {}),
@@ -775,10 +823,7 @@ async function claimRoundSlot(
     throw new DesignSessionError('SESSION_NOT_FOUND', `No design session '${sessionId}'.`);
   }
   if (claimed.status === 'held') {
-    throw new DesignSessionError(
-      'ROUND_IN_FLIGHT',
-      `Session '${sessionId}' already has a round rendering — one charged round at a time.`
-    );
+    throw new DesignSessionError(refusal.code, refusal.message);
   }
   if (claimed.evicted) {
     logger.warn({
