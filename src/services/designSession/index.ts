@@ -238,9 +238,19 @@ export async function converse(request: ConverseRequest): Promise<ConverseRespon
  * pipeline (council → pinned route → round one's two renders) over the record the
  * conversation extracted, moving the session to phase 'revealed'. Throws
  * DesignSessionError INVALID_PHASE before the proposal or after the reveal.
+ *
+ * CONCURRENCY: exactly one reveal per session. The confirm claims the same
+ * charged-render slot rounds use before anything paid runs; a second
+ * confirm arriving while the first is still rendering throws
+ * REVEAL_IN_FLIGHT (409) with nothing rendered, so its caller releases the
+ * credit it reserved. Pass the reservation id in `opts` and it is
+ * persisted inside the claim, keeping an orphaned reservation reconcilable.
  */
-export async function confirmProposal(sessionId: string): Promise<DesignSession> {
-  return toDesignSession(await runConfirm(sessionId));
+export async function confirmProposal(
+  sessionId: string,
+  opts?: { reservationId?: string }
+): Promise<DesignSession> {
+  return toDesignSession(await runConfirm(sessionId, opts));
 }
 
 export type { AttachReferenceResult };

@@ -55,8 +55,9 @@ export interface ConversationState {
 }
 
 /**
- * The single charged-round slot (ADR-0049): at most one refine round may be
- * in flight per session. Claimed atomically (claimRound) BEFORE any render,
+ * The single charged-render slot (ADR-0049): at most one paid render — the
+ * first reveal or a refine round — may be in flight per session. Claimed
+ * atomically (claimRound) BEFORE any render,
  * carrying the credit reservation id so an orphaned reservation — process
  * killed between reserve and delivery — stays reconcilable from the
  * session record rather than existing only in a dead closure.
@@ -119,9 +120,10 @@ export interface StoredSession extends DesignSession {
    */
   conversation?: ConversationState;
   /**
-   * The in-flight charged round's claim (ADR-0049). Present only between
-   * claimRound and the round's final save (or releaseRound on failure) —
-   * a concurrent refine round must lose the claim race, never double-charge.
+   * The in-flight charged render's claim (ADR-0049). Present only between
+   * claimRound and the render's final save (or releaseRound on failure) —
+   * a concurrent refine round, or a second confirm of the first reveal,
+   * must lose the claim race, never double-charge.
    */
   roundInFlight?: RoundClaim;
   /**

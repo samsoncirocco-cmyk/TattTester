@@ -35,6 +35,9 @@ const CONFLICT_CODES = new Set([
     'ROUND_PICK_FROZEN',
     'ROUND_UNPICKED',
     'ROUND_IN_FLIGHT',
+    // The first reveal shares the round slot: a confirm that arrives while
+    // the reveal is already rendering is the same conflict.
+    'REVEAL_IN_FLIGHT',
 ]);
 // Request referenced something that can't apply (e.g. a pickId that isn't
 // one of the session's variations) → 400.
