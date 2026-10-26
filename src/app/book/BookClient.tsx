@@ -26,7 +26,6 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import StudioShell from "@/components/studio/StudioShell";
 import QuietHeadline from "@/components/quiet/QuietHeadline";
 import QuietCTA from "@/components/quiet/QuietCTA";
@@ -55,6 +54,7 @@ import {
   yourTimeLabel,
   zoneAbbreviation,
 } from "./BookTimezone";
+import { sameSlot, useLiveAvailability } from "./useLiveAvailability";
 import {
   IDEMPOTENCY_HEADER_NAME,
   REQUEST_IN_FLIGHT_COPY,
@@ -190,7 +190,7 @@ export default function BookClient({
   requestedArtistId,
   artistLoadFailed,
   designSessionId = "",
-  offer,
+  offer: initialOffer,
   feePercent,
   holdDays,
   resume = null,
@@ -211,14 +211,13 @@ export default function BookClient({
 }) {
   const { addBooking } = useBookings();
   const { designs } = useDesigns();
-  const router = useRouter();
 
   // Was the slot the customer came back with still on offer? If our own hold
   // hid it the server already excluded it for us (page.tsx), so "not offered"
   // here means somebody else has it now.
   const resumedSlotOffered = Boolean(
     resume?.slot &&
-      offer.slots.some(
+      initialOffer.slots.some(
         (s) =>
           s.date === resume.slot!.date &&
           s.startTime === resume.slot!.startTime &&
@@ -244,7 +243,7 @@ export default function BookClient({
    * of vanishing or silently demoting the whole page to request mode.
    */
   const [takenSlots, setTakenSlots] = useState<OfferedSlot[]>(
-    resume?.slot && offer.mode === "reservation" && !resumedSlotOffered
+    resume?.slot && initialOffer.mode === "reservation" && !resumedSlotOffered
       ? [resume.slot]
       : [],
   );
@@ -258,7 +257,7 @@ export default function BookClient({
     if (resume.cancelledHoldId) {
       return "You left checkout, so we released your hold. Pick your time again to continue — your booking reference is kept.";
     }
-    if (resume.slot && offer.mode === "reservation" && !resumedSlotOffered) {
+    if (resume.slot && initialOffer.mode === "reservation" && !resumedSlotOffered) {
       return "Your earlier time is no longer available. Your booking reference is kept — pick another time.";
     }
     return "Picking up where you left off. Your booking reference is kept; re-enter your details to continue.";
@@ -285,11 +284,6 @@ export default function BookClient({
    */
   const [reservationLost, setReservationLost] = useState<string | null>(null);
 
-  // Reservation mode only survives while the server is still offering slots AND
-  // nothing has degraded underneath us.
-  const reserving =
-    offer.mode === "reservation" && offer.slots.length > 0 && !reservationLost;
-
   // Step 02 — design + details
   const [designId, setDesignId] = useState<string | null>(null);
   const [size, setSize] = useState("");
@@ -304,6 +298,20 @@ export default function BookClient({
   // URL on a reload so a retry re-uses it instead of minting a second record.
   const [bookingId, setBookingId] = useState<string | null>(resume?.bookingId ?? null);
   const [paymentsUnavailable, setPaymentsUnavailable] = useState(false);
+
+  // The live grid (spec 6): starts as the server-rendered offer, refreshed on
+  // window focus and re-checked when the review step opens.
+  const { offer, refetch } = useLiveAvailability({
+    artistId: artist?.id ?? null,
+    initial: initialOffer,
+    bookingId,
+    enabled: initialOffer.mode === "reservation",
+  });
+
+  // Reservation mode only survives while the server is still offering slots AND
+  // nothing has degraded underneath us.
+  const reserving =
+    offer.mode === "reservation" && offer.slots.length > 0 && !reservationLost;
 
   const days = useMemo(() => upcomingDays(28, offer.timezone), [offer.timezone]);
   // The customer's own clock, read after mount so server and client render agree.
@@ -396,9 +404,48 @@ export default function BookClient({
     setSelectedSlot(null);
     setSlotNotice(notice);
     syncUrl({ slot: null });
-    // Refetch the offer so the grid shows what is really free now.
-    router.refresh();
+    // Refetch the grid so it shows what is really free now (spec 6; this was
+    // a full router.refresh() before the availability endpoint existed).
+    void refetch({ force: true });
   };
+
+  /**
+   * Apply a fresh offer to what the customer has picked. Skipped mid-submit:
+   * the hold route is the arbiter once a submit is under way.
+   */
+  const reconcile = (next: BookOffer | null, onReview: boolean) => {
+    if (!next || inFlightRef.current || redirectingRef.current) return;
+    if (next.mode !== "reservation") {
+      // The calendar stopped being live under us: say so, drop to requests.
+      setSelectedSlot(null);
+      setReservationLost(
+        "Live times for this artist aren't available right now. You can still send a request — the artist confirms a time.",
+      );
+      if (onReview) setStep(0);
+      return;
+    }
+    if (selectedSlot && !next.slots.some((s) => sameSlot(s, selectedSlot))) {
+      markSlotTaken(
+        selectedSlot,
+        "That time is no longer available. Your details are kept — pick another time.",
+      );
+      if (onReview) setStep(0);
+    }
+  };
+
+  // Focus refetches land here; so does the review-step check below.
+  useEffect(() => {
+    if (offer === initialOffer) return;
+    reconcile(offer, step === 2);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offer]);
+
+  // Cheap slot check when the review step opens: is the chosen time still free?
+  useEffect(() => {
+    if (step !== 2 || !reserving || !selectedSlot) return;
+    void refetch({ force: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
   const chosenDesign = designs.find((d) => d.id === designId);
   const deposit = depositDollarsForSize(size || undefined);
   const reviewLabels = bookingReviewLabels(reserving ? "reservation" : "request");

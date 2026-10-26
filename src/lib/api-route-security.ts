@@ -117,6 +117,14 @@ export const API_ROUTE_SECURITY: Record<string, RouteSecurityEntry> = {
   // account is part of the identity proof and is what the profile binds to.
   // See docs/adr/0026.
   'v1/artists/reinstate': { class: 'firebase-auth' },
+  'v1/artists/[id]/availability': {
+    class: 'public',
+    reason:
+      'Spec 6: the same bookable times /book already renders to signed-out visitors. Read-only, ' +
+      'returns no customer or booking data (a bookingId only un-hides that booking’s own hold, ' +
+      'and the hold route still decides who gets a slot). Flood-guarded per IP via rateLimit ' +
+      'and cached 15 s per artist so a burst cannot fan out into calendar reads.',
+  },
   'v1/embeddings/generate': { class: 'firebase-auth' },
   'v1/estimate': { class: 'firebase-auth' },
   'v1/generate': { class: 'firebase-auth' },
