@@ -42,6 +42,33 @@ export const PLACEMENT_GATE_QUESTION =
   "one thing i can't call for you: where on your body this lands. " +
   'everything else about the design bends around that.';
 
+/**
+ * The stalled-field asks (#376): the same field has blocked the proposal
+ * for STALLED_FIELD_TURNS turns in a row, so the bot stops chatting past it
+ * and asks for it outright. Plain consultant voice, one question, never a
+ * limit. Deterministic wording — the engine matches the next short answer
+ * against these lines to settle the field.
+ */
+export const STALLED_PLACEMENT_ASK = 'where on your body do you want this?';
+
+/**
+ * The placement re-ask when the direct question was talked past too:
+ * commit to a sensible default and keep the customer steering.
+ */
+export const STALLED_PLACEMENT_REASK =
+  "i'll draw it for the inner forearm unless you tell me otherwise — " +
+  'just name the spot.';
+
+/** Placement is there but vague ("arm") — ask for the exact spot. */
+export const STALLED_PLACEMENT_DETAIL_ASK = (placement: string): string =>
+  `where on your ${placement} exactly — give me the spot and i'll draw to it.`;
+
+export const STALLED_MEANING_ASK =
+  'what should it show? one picture, however rough, and i can draw.';
+
+export const STALLED_STYLE_ASK =
+  'one style call and i can draw — fine line, blackwork, color, traditional?';
+
 /** Opening words of the playback — also how the engine detects it already fired. */
 export const PROPOSAL_LEAD = "here's what i'm hearing:";
 

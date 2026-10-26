@@ -238,6 +238,8 @@ export async function POST(req: NextRequest) {
   // which is what stops money arriving for a slot we no longer hold.
   let holdExpiresAtMs: number | null = null;
   let activeHoldId = holdId;
+  let heldSlot: { date: string; startTime: string; endTime: string } | null =
+    null;
   if (holdId) {
     const { getHold, placeHold } =
       await import("@/lib/booking-holds-persistence");
@@ -277,6 +279,11 @@ export async function POST(req: NextRequest) {
     }
     activeHoldId = refreshed.hold.holdId;
     holdExpiresAtMs = Date.parse(refreshed.hold.expiresAt);
+    heldSlot = {
+      date: refreshed.hold.date,
+      startTime: refreshed.hold.startTime,
+      endTime: refreshed.hold.endTime,
+    };
   }
 
   // Cents is the source of truth; the dollars value below exists only for the
@@ -290,6 +297,8 @@ export async function POST(req: NextRequest) {
   // ---- Demo mode: no real charge, fake success page (unchanged behavior). ----
   if (!stripeConfigured) {
     if (process.env.NEXT_PUBLIC_DEMO_MODE !== "true") {
+      // Nothing can be paid for, so nothing should stay reserved.
+      await releaseHoldQuietly(activeHoldId, "payments not configured");
       return NextResponse.json(
         { error: "Payments are not configured." },
         { status: 503 },
@@ -316,6 +325,9 @@ export async function POST(req: NextRequest) {
   // ---- Resolve the artist and decide which money flow applies. ----
   const artist = await getArtistStripe(artistId);
   if (!artist) {
+    // The roster knew this artist but the Stripe record does not; the client
+    // sees an error and the slot must not stay blocked for the hold window.
+    await releaseHoldQuietly(activeHoldId, "artist stripe record missing");
     return NextResponse.json({ error: "Artist not found." }, { status: 404 });
   }
   // A "claimed" artist can receive funds directly (destination charge).
@@ -348,9 +360,24 @@ export async function POST(req: NextRequest) {
   // Carry the bookingId so /book/success can reconcile against the exact
   // booking record (server truth) rather than the caller's most-recent one.
   if (bookingId) successParams.set("bookingId", bookingId);
-  const cancelUrl = artistId
-    ? `${baseUrl}/book?artistId=${encodeURIComponent(artistId)}`
-    : `${baseUrl}/book`;
+  // The cancel return carries enough for /book to pick the booking back up:
+  // the same bookingId (so a re-hold is a same-booking refresh, not a
+  // collision with the customer's own live hold), the hold to release, and
+  // the slot to re-select. `cancelled=1` tells the client to release first.
+  const cancelParams = new URLSearchParams({ artistId });
+  if (bookingId) cancelParams.set("bookingId", bookingId);
+  if (activeHoldId) {
+    cancelParams.set("cancelled", "1");
+    cancelParams.set("holdId", activeHoldId);
+  }
+  if (heldSlot) {
+    cancelParams.set(
+      "slot",
+      `${heldSlot.date}|${heldSlot.startTime}|${heldSlot.endTime}`,
+    );
+  }
+  if (designSessionId) cancelParams.set("ds", designSessionId);
+  const cancelUrl = `${baseUrl}/book?${cancelParams.toString()}`;
 
   const metadata: Record<string, string> = {
     artistId,
@@ -455,6 +482,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (!session.url) {
+      await releaseHoldQuietly(activeHoldId, "no checkout url");
       return NextResponse.json(
         { error: "Stripe did not return a checkout URL." },
         { status: 502 },
@@ -467,6 +495,9 @@ export async function POST(req: NextRequest) {
         ? error.message
         : "Unable to create checkout session.";
     console.error("Checkout session creation failed:", message);
+    // No session exists, so no payment can land for this hold. Free the slot
+    // instead of leaving it blocked until the TTL while the client retries.
+    await releaseHoldQuietly(activeHoldId, "session creation failed");
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }

@@ -170,6 +170,8 @@ export async function converse(request: ConverseRequest): Promise<ConverseRespon
       pinnedModel: conversation.model,
       // Only so the provider-failover / degraded-mode logs name a session.
       sessionId: session.id,
+      // The stall rule (#376) counts consecutive blocked turns off these.
+      previousTurnLogs: conversation.turnLogs,
     });
   } catch (error) {
     if (error instanceof ConversationUnavailableError) {
@@ -234,6 +236,11 @@ export async function converse(request: ConverseRequest): Promise<ConverseRespon
     // Reference rows (TAT-50) are overlaid through the same whitelist file.
     notes,
   };
+  // The gate's spoken state (#376) — field name, stalled flag, one line.
+  // Never the TurnLog, never the score.
+  if (result.stage === 'chatting' && result.gate) {
+    response.gate = result.gate;
+  }
   if (result.stage === 'proposal' && result.playback !== undefined) {
     response.playback = result.playback;
   }

@@ -153,9 +153,10 @@ describe("BookingSuccessPage — no dead ends", () => {
     expect(bookingFetchMock).toHaveBeenCalledTimes(2);
     expect(screen.getAllByText(/^deposit paid$/i).length).toBeGreaterThan(0);
     // Request model (no .ics): paid copy keeps the ADR-0027 distinction — the
-    // artist still confirms the final slot, and no time is called booked.
+    // artist still confirms a time, within the stated reply window (REA gap
+    // #3), and no time is called booked.
     expect(screen.getByText(/your deposit cleared/i)).toBeTruthy();
-    expect(screen.getByText(/they confirm the final slot/i)).toBeTruthy();
+    expect(screen.getAllByText(/Nadia replies within 48 hours/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/your time is booked/i)).toBeNull();
 
     await act(async () => {
@@ -188,8 +189,11 @@ describe("BookingSuccessPage — no dead ends", () => {
     expect(screen.getByText(/relay the request/i)).toBeTruthy();
     expect(screen.getAllByText(/within 3 days/i)).toHaveLength(2);
     expect(screen.getAllByText(/automatically refunds your deposit/i)).toHaveLength(2);
-    expect(screen.getByText(/follows up with Nadia outside the booking product/i)).toBeTruthy();
-    expect(screen.queryByText(/Nadia confirms your time/i)).toBeNull();
+    // Unclaimed: the reply promise is TattTester's, never the absent artist's.
+    expect(
+      screen.getAllByText(/TattTester relays your request and you hear back within 48 hours/i).length
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText(/Nadia replies within/i)).toBeNull();
     expect(screen.queryByText(/whole deposit goes to your artist/i)).toBeNull();
   });
 
@@ -335,8 +339,10 @@ describe("BookingSuccessPage — what-happens-next timeline", () => {
       const current = document.querySelector('[aria-current="step"]');
       expect(current?.textContent).toContain("Artist review");
     });
-    // Honest framing: no invented response window.
-    expect(screen.getByText(/there's no set window/i)).toBeTruthy();
+    // The reply-time promise (REA gap #3): a stated window the customer can
+    // hold us to, the same sentence the in-page request card shows.
+    expect(screen.queryByText(/there's no set window/i)).toBeNull();
+    expect(screen.getAllByText(/Nadia replies within 48 hours/i).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: /add to calendar/i })).toBeNull();
   });
 
@@ -373,6 +379,8 @@ describe("BookingSuccessPage — what-happens-next timeline", () => {
       const current = document.querySelector('[aria-current="step"]');
       expect(current?.textContent).toContain("Deposit");
     });
+    // The reply window is stated before the deposit clears, too.
+    expect(screen.getByText(/Nadia replies within 48 hours/i)).toBeTruthy();
   });
 
   it("hides the timeline for an ended booking — there is no next", async () => {

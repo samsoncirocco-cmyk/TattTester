@@ -26,7 +26,10 @@ export type {
   ConverseResponse,
   ConfirmRequest,
   SessionNotes,
+  GateState,
+  BlockingField,
 } from './types';
+export { STALLED_FIELD_TURNS } from './internal/gate';
 export type { RunTurnRequest };
 
 /**

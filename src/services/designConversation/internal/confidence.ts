@@ -63,7 +63,7 @@ export interface RecordReadiness {
   hasRequiredFields: boolean;
 }
 
-function isSpecificPlacement(placement: string): boolean {
+export function isSpecificPlacement(placement: string): boolean {
   const text = placement.toLowerCase();
   return SPECIFIC_PLACEMENT_PARTS.some((part) =>
     new RegExp(`\\b${part}\\b`).test(text)

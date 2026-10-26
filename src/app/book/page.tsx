@@ -1,4 +1,9 @@
-import BookClient, { type BookArtist, type BookOffer } from "./BookClient";
+import BookClient, {
+  type BookArtist,
+  type BookOffer,
+  type BookResume,
+  type OfferedSlot,
+} from "./BookClient";
 import { redirect, unstable_rethrow } from "next/navigation";
 import { getRosterArtistById } from "@/lib/artists-graph";
 import { getArtistAvailability } from "@/lib/availability";
@@ -24,6 +29,24 @@ export default async function BookPage({
   // Design-session id threaded from /design → /smart-match → /swipe → here;
   // travels on the booking POST so the artist Brief rides with the record.
   const designSessionId = typeof sp.ds === "string" ? sp.ds : "";
+
+  // Resume state (REA gap #1). After the booking is captured the client writes
+  // `bookingId` and, on the reservation path, the chosen `slot` into this URL;
+  // Stripe's cancel_url carries the same plus `cancelled=1&holdId=`. A reload
+  // or a return from checkout therefore re-uses the booking instead of minting
+  // a new BK- id whose hold would collide with the customer's own live hold.
+  const resumeBookingId =
+    typeof sp.bookingId === "string" && /^BK-[A-Z0-9]{8}$/.test(sp.bookingId)
+      ? sp.bookingId
+      : "";
+  const resumeSlot = parseSlotParam(typeof sp.slot === "string" ? sp.slot : "");
+  const cancelledHoldId =
+    sp.cancelled === "1" && typeof sp.holdId === "string" && /^hold_[\w-]+$/.test(sp.holdId)
+      ? sp.holdId
+      : null;
+  const resume: BookResume | null = resumeBookingId
+    ? { bookingId: resumeBookingId, slot: resumeSlot, cancelledHoldId }
+    : null;
 
   let artist: BookArtist | null = null;
   let artistLoadFailed = false;
@@ -67,7 +90,12 @@ export default async function BookPage({
         // Reservation or request, decided per artist from live signals. The
         // server guarantees `slots` is empty unless the mode is "reservation",
         // so the client cannot render a time we are unable to hold.
-        const resolved = await getBookingOffer({ artistId: found.id });
+        // `excludeBookingId` keeps a resumed booking's OWN hold visible to it,
+        // so the time the customer already holds is still on their grid.
+        const resolved = await getBookingOffer({
+          artistId: found.id,
+          ...(resumeBookingId ? { excludeBookingId: resumeBookingId } : {}),
+        });
         offer = {
           mode: resolved.decision.mode,
           label: resolved.decision.label,
@@ -98,6 +126,21 @@ export default async function BookPage({
       offer={offer}
       feePercent={PLATFORM_FEE_BPS / 100}
       holdDays={depositHoldDays()}
+      resume={resume}
     />
   );
+}
+
+/** "YYYY-MM-DD|HH:MM|HH:MM" → slot, or null when malformed. */
+function parseSlotParam(raw: string): OfferedSlot | null {
+  if (!raw) return null;
+  const [date, startTime, endTime] = raw.split("|");
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(date ?? "") ||
+    !/^\d{2}:\d{2}$/.test(startTime ?? "") ||
+    !/^\d{2}:\d{2}$/.test(endTime ?? "")
+  ) {
+    return null;
+  }
+  return { date, startTime, endTime };
 }
