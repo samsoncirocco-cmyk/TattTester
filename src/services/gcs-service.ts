@@ -11,6 +11,7 @@
 import { Storage, Bucket, File } from '@google-cloud/storage';
 import type { GetSignedUrlConfig, UploadOptions } from '@google-cloud/storage';
 import { googleStorageAuthOptions } from '@/lib/gcp-storage-auth';
+import { configuredStorageBucket } from '@/lib/storage-bucket';
 
 // Type Definitions
 export interface GCSUploadOptions {
@@ -73,18 +74,25 @@ const storage = new Storage({
     projectId: process.env.GCP_PROJECT_ID
 });
 
-const bucketName = process.env.GCS_BUCKET_NAME || process.env.GCS_BUCKET || 'tatt-pro-assets';
-const bucket: Bucket = storage.bucket(bucketName);
+/**
+ * Bucket handle for one call. Read at call time, not import time: a name
+ * resolved when the module loaded is how a later env fix never reached the
+ * signer. `name` overrides the shared chain so a stored object URL can be
+ * signed in the bucket it names (#390).
+ */
+function bucketHandle(name?: string): { name: string; bucket: Bucket } {
+    const resolved = name && name.trim() ? name.trim() : configuredStorageBucket();
+    return { name: resolved, bucket: storage.bucket(resolved) };
+}
 
 /**
- * The bucket every signed URL from this module resolves against. Exported
- * so callers holding a public object URL (imageStorageService resolves its
- * bucket from a DIFFERENT env chain) can verify the object actually lives
- * where this module signs — a drifted config would otherwise mint signed
- * URLs that 404 at the render provider.
+ * The bucket this module writes and, by default, signs. Same chain as
+ * imageStorageService — see `configuredStorageBucket`. Callers that already
+ * hold a public object URL should pass that URL's bucket into
+ * `getSignedUrl` instead of comparing against this name.
  */
 export function signingBucketName(): string {
-    return bucketName;
+    return configuredStorageBucket();
 }
 const signedUrlExpiry = parseInt(process.env.GCS_SIGNED_URL_EXPIRY || '3600', 10);
 
@@ -103,6 +111,7 @@ export async function uploadToGCS(
             public: isPublic = false
         } = options;
 
+        const { name: bucketName, bucket } = bucketHandle();
         const file: File = bucket.file(destinationPath);
 
         // Upload file
@@ -162,10 +171,16 @@ export async function uploadToGCS(
 export async function getSignedUrl(
     filePath: string,
     expirySeconds: number = signedUrlExpiry,
-    action: 'read' | 'write' = 'read'
+    action: 'read' | 'write' = 'read',
+    /**
+     * Sign this bucket instead of the configured one. Pass the bucket parsed
+     * from a stored object URL so a cut written before a bucket change still
+     * signs where it lives (#390).
+     */
+    bucketName?: string
 ): Promise<string> {
     try {
-        const file: File = bucket.file(filePath);
+        const file: File = bucketHandle(bucketName).bucket.file(filePath);
 
         const config: GetSignedUrlConfig = {
             version: 'v4',
@@ -189,6 +204,7 @@ export async function getSignedUrl(
  */
 export async function deleteFromGCS(filePath: string): Promise<boolean> {
     try {
+        const { name: bucketName, bucket } = bucketHandle();
         await bucket.file(filePath).delete();
         console.log(`[GCS] Deleted: gs://${bucketName}/${filePath}`);
         return true;
@@ -211,7 +227,7 @@ export async function deleteFromGCS(filePath: string): Promise<boolean> {
  */
 export async function fileExists(filePath: string): Promise<boolean> {
     try {
-        const [exists] = await bucket.file(filePath).exists();
+        const [exists] = await bucketHandle().bucket.file(filePath).exists();
         return exists;
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
@@ -225,7 +241,7 @@ export async function fileExists(filePath: string): Promise<boolean> {
  */
 export async function getFileMetadata(filePath: string): Promise<any> {
     try {
-        const [metadata] = await bucket.file(filePath).getMetadata();
+        const [metadata] = await bucketHandle().bucket.file(filePath).getMetadata();
         return metadata;
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
@@ -348,7 +364,7 @@ export async function uploadPortfolio(
  */
 export async function listFiles(prefix: string, maxResults: number = 100): Promise<GCSFileMetadata[]> {
     try {
-        const [files] = await bucket.getFiles({
+        const [files] = await bucketHandle().bucket.getFiles({
             prefix,
             maxResults
         });
@@ -396,6 +412,7 @@ export async function batchDelete(filePaths: string[]): Promise<BatchDeleteResul
  */
 export async function checkGCSHealth(): Promise<GCSHealthStatus> {
     try {
+        const { name: bucketName, bucket } = bucketHandle();
         // Try to get bucket metadata
         const [metadata] = await bucket.getMetadata();
 
@@ -412,7 +429,7 @@ export async function checkGCSHealth(): Promise<GCSHealthStatus> {
         return {
             healthy: false,
             error: message,
-            bucket: bucketName
+            bucket: configuredStorageBucket()
         };
     }
 }

@@ -13,15 +13,10 @@
 
 import { Storage, type File } from '@google-cloud/storage';
 import { googleStorageAuthOptions } from '@/lib/gcp-storage-auth';
+import { configuredStorageBucket } from '@/lib/storage-bucket';
 
 function getBucketName(): string {
-  return (
-    process.env.GCP_STORAGE_BUCKET ||
-    process.env.GCS_BUCKET_NAME ||
-    process.env.GCS_BUCKET ||
-    process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ||
-    'tatt-pro-assets'
-  );
+  return configuredStorageBucket();
 }
 
 function getProjectId(): string | undefined {
