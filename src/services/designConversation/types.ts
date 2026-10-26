@@ -55,7 +55,17 @@ export interface TurnLog {
      *  drawable on the record — the single evocation follow-up mined it
      *  for imagery (TAT-51). Asked at most once per session. */
     | 'evocation-question'
+    /** The same field blocked the proposal for STALLED_FIELD_TURNS turns in
+     *  a row — the bot asked for it directly instead of chatting past it
+     *  (#376). */
+    | 'stalled-field-ask'
     | 'none';
+  /**
+   * The one field holding the proposal back this turn, if any (#376). The
+   * engine reads it off the previous turns to count a stall; absent when
+   * the stage is 'proposal'/'handoff' or nothing blocks.
+   */
+  blockingField?: BlockingField;
   /** Model that served the turn (per-session pinned; fallback noted). */
   model: string;
 }
@@ -79,6 +89,35 @@ export interface ConverseResponse {
   turn: number;
   /** SketchBot's live notepad — the user-meaningful brief so far (TAT-48). */
   notes?: SessionNotes;
+  /**
+   * Why the proposal has not fired yet, in a form the chat may show (#376).
+   * Present only while stage is 'chatting' and a field blocks promotion.
+   */
+  gate?: GateState;
+}
+
+/**
+ * The intake fields the proposal gate can hold on. Field names only — the
+ * confidence score, the formula, and the cadence rule stay in the TurnLog.
+ */
+export type BlockingField = 'placement' | 'meaning' | 'styleTags';
+
+/**
+ * The gate's user-facing state (#376). HARD RULE, same as SessionNotes: the
+ * `line` is consultant copy ("I still need a placement before I can draw"),
+ * never the rationale, never a score — ADR-0012's log-not-speak rule, the
+ * revealNarration precedent.
+ */
+export interface GateState {
+  /** The field holding the proposal back. */
+  blocking: BlockingField;
+  /**
+   * True once the same field has blocked for STALLED_FIELD_TURNS consecutive
+   * turns — the chat shows `line` so a stalled session is visibly stalled.
+   */
+  stalled: boolean;
+  /** The one spoken line for this field. */
+  line: string;
 }
 
 /**
@@ -142,4 +181,6 @@ export interface ConversationTurnResult {
   turnLog: TurnLog;
   /** The notepad projection of `record` — the ONLY record view the UI gets. */
   notes: SessionNotes;
+  /** The proposal gate's user-facing state, when something blocks (#376). */
+  gate?: GateState;
 }

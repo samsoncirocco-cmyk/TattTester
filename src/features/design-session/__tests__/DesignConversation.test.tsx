@@ -172,6 +172,60 @@ async function reachProposal() {
 }
 
 describe('DesignConversation', () => {
+  // -------------------------------------------------------------------
+  // The gate line (#376): a session that is stalled on one field says so.
+  // Only the engine's spoken line renders — never a field name, a score,
+  // or the cadence rule.
+  // -------------------------------------------------------------------
+  it('shows the gate line once the same field has stalled the proposal, and clears it when it settles', async () => {
+    const GATE_LINE = 'I still need a placement before I can draw.';
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(converseResponse()))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          converseResponse({
+            reply: 'A memorial for your dad — what did he love?',
+            turn: 1,
+            gate: { blocking: 'placement', stalled: false, line: GATE_LINE },
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          converseResponse({
+            reply: 'where on your body do you want this?',
+            turn: 2,
+            gate: { blocking: 'placement', stalled: true, line: GATE_LINE },
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(converseResponse({ reply: 'Left forearm it is.', turn: 3 }))
+      );
+
+    render(<DesignConversation />);
+    await screen.findByText(OPENER);
+
+    // One blocked turn is ordinary conversation — nothing extra on screen.
+    sendReply('for my dad');
+    await screen.findByText('A memorial for your dad — what did he love?');
+    expect(screen.queryByTestId('gate-line')).toBeNull();
+
+    // Stalled: the status line renders under the bot's direct ask.
+    sendReply('old fishing trips, quiet strength');
+    await screen.findByText('where on your body do you want this?');
+    const line = screen.getByTestId('gate-line');
+    expect(line.textContent).toBe(GATE_LINE);
+    expect(line.getAttribute('role')).toBe('status');
+    // Internal gate data never renders as copy.
+    expect(screen.queryByText(/stalled|blocking|confidence|missingFields/i)).toBeNull();
+
+    // The answer settles the field: the next response carries no gate.
+    sendReply('left forearm');
+    await screen.findByText('Left forearm it is.');
+    expect(screen.queryByTestId('gate-line')).toBeNull();
+  });
+
   it('releases the first reply line when SketchBot never answers the opening request', async () => {
     vi.useFakeTimers();
     try {
