@@ -12,6 +12,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 // collection().doc(), runTransaction(tx => …), tx.get()/tx.set({merge}), and
 // FieldValue.arrayUnion (applied at set time).
 const ARRAY_UNION = Symbol('arrayUnion');
+const DELETE_FIELD = Symbol('deleteField');
 
 type DocStore = Map<string, Record<string, unknown>>;
 const docStore: DocStore = new Map();
@@ -30,7 +31,9 @@ function makeRef(id: string) {
       const prev = options?.merge ? docStore.get(id) ?? {} : {};
       const next: Record<string, unknown> = { ...prev };
       for (const [k, v] of Object.entries(patch)) {
-        if (v && typeof v === 'object' && (v as { __op?: symbol }).__op === ARRAY_UNION) {
+        if (v === DELETE_FIELD) {
+          delete next[k];
+        } else if (v && typeof v === 'object' && (v as { __op?: symbol }).__op === ARRAY_UNION) {
           const existing = Array.isArray(next[k]) ? (next[k] as unknown[]) : [];
           const additions = (v as { values: unknown[] }).values.filter((x) => !existing.includes(x));
           next[k] = [...existing, ...additions];
@@ -61,6 +64,7 @@ const fakeDb = {
 
 const FieldValue = {
   arrayUnion: (...values: unknown[]) => ({ __op: ARRAY_UNION, values }),
+  delete: () => DELETE_FIELD,
 };
 
 vi.mock('firebase-admin/firestore', () => ({
@@ -564,5 +568,102 @@ describe('Stripe webhook — account.updated releases held deposits', () => {
 
     const res = await POST(makeRequest(event));
     expect(res.status).toBe(200);
+  });
+});
+
+// ── checkout.session.expired releases the slot hold (REA gap #1) ────────────
+// The session's expires_at is pinned to the hold, so this event means the
+// customer never paid. The hold doc must flip to released and the booking
+// record must walk back from `held` to `pending`; a converted (paid) hold must
+// never be touched, however the event arrives.
+function makeExpiredEvent(id: string, metadata: Record<string, string>) {
+  return {
+    id,
+    type: 'checkout.session.expired',
+    created: CREATED_EPOCH,
+    data: {
+      object: {
+        id: 'cs_expired_1',
+        mode: 'payment',
+        payment_status: 'unpaid',
+        status: 'expired',
+        metadata,
+      },
+    },
+  };
+}
+
+const EXPIRED_HOLD = {
+  holdId: 'hold_exp',
+  artistId: 'artist_1',
+  bookingId: 'BK-EXP00001',
+  date: '2026-08-01',
+  startTime: '14:00',
+  endTime: '16:00',
+  timezone: 'America/Phoenix',
+  createdAt: CREATED_ISO,
+  expiresAt: CREATED_ISO,
+  status: 'active',
+};
+
+describe('Stripe webhook — checkout.session.expired releases the hold', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    docStore.clear();
+    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test_dummy';
+    docStore.set('hold_exp', { ...EXPIRED_HOLD });
+    docStore.set('BK-EXP00001', {
+      bookingId: 'BK-EXP00001',
+      status: 'held',
+      holdId: 'hold_exp',
+      holdExpiresAt: CREATED_ISO,
+      heldSlot: { date: '2026-08-01' },
+    });
+  });
+
+  it('releases the hold and walks the booking back to pending', async () => {
+    const event = makeExpiredEvent('evt_exp_1', { holdId: 'hold_exp', bookingId: 'BK-EXP00001' });
+    constructEventMock.mockReturnValueOnce(event);
+
+    const res = await POST(makeRequest(event));
+    expect(res.status).toBe(200);
+
+    expect(docStore.get('hold_exp')!.status).toBe('released');
+    const booking = docStore.get('BK-EXP00001')!;
+    expect(booking.status).toBe('pending');
+    expect(booking.holdId).toBeUndefined();
+    expect(booking.heldSlot).toBeUndefined();
+  });
+
+  it('never un-sells a converted hold, even if an expired event arrives for it', async () => {
+    docStore.set('hold_exp', { ...EXPIRED_HOLD, status: 'converted' });
+    docStore.set('BK-EXP00001', { ...docStore.get('BK-EXP00001')!, status: 'deposit_paid' });
+    const event = makeExpiredEvent('evt_exp_2', { holdId: 'hold_exp', bookingId: 'BK-EXP00001' });
+    constructEventMock.mockReturnValueOnce(event);
+
+    await POST(makeRequest(event));
+    expect(docStore.get('hold_exp')!.status).toBe('converted');
+    expect(docStore.get('BK-EXP00001')!.status).toBe('deposit_paid');
+  });
+
+  it('leaves a booking alone when it has moved on to a newer hold', async () => {
+    docStore.set('BK-EXP00001', { ...docStore.get('BK-EXP00001')!, holdId: 'hold_newer' });
+    const event = makeExpiredEvent('evt_exp_3', { holdId: 'hold_exp', bookingId: 'BK-EXP00001' });
+    constructEventMock.mockReturnValueOnce(event);
+
+    await POST(makeRequest(event));
+    expect(docStore.get('hold_exp')!.status).toBe('released');
+    expect(docStore.get('BK-EXP00001')!.status).toBe('held');
+    expect(docStore.get('BK-EXP00001')!.holdId).toBe('hold_newer');
+  });
+
+  it('is a no-op for a request-mode session (no holdId in metadata)', async () => {
+    const event = makeExpiredEvent('evt_exp_4', { bookingId: 'BK-EXP00001' });
+    constructEventMock.mockReturnValueOnce(event);
+
+    const res = await POST(makeRequest(event));
+    expect(res.status).toBe(200);
+    expect(docStore.get('hold_exp')!.status).toBe('active');
+    expect(docStore.get('BK-EXP00001')!.status).toBe('held');
   });
 });

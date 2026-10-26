@@ -2,9 +2,16 @@
  * Take an exclusive hold on one slot, before checkout.
  *
  * This is the step that makes a booking a reservation. The client picks a time,
- * this route reserves it for 30 minutes, and only then may they pay for it. A
+ * this route reserves it for HOLD_TTL_MINUTES, and only then may they pay for
+ * it. A
  * second client asking for the same time gets 409 and sees it gone from their
- * grid.
+ * grid. A booking re-holding its own slot (reload, retry, return from a
+ * cancelled checkout) refreshes the window instead of colliding with itself.
+ *
+ * DELETE releases a hold early — the client abandoned the review step or came
+ * back from Stripe's cancel page — so the slot goes back on sale now rather
+ * than when the TTL lapses. Owner-checked through the booking the hold belongs
+ * to, because releasing someone else's hold is a way to steal their slot.
  *
  * The route refuses to hold a slot the offer would not currently show. That
  * matters: a client could otherwise post any time at all — 3am, a day the
@@ -21,7 +28,11 @@ import { verifyApiAuth } from '@/lib/api-auth';
 import { verifyFirebaseToken } from '@/lib/auth-dal';
 import { ensureAdminApp } from '@/lib/firebase-admin';
 import { getBookingOffer } from '@/lib/booking-offer';
-import { placeHold } from '@/lib/booking-holds-persistence';
+import {
+  getHold,
+  placeHold,
+  releaseHoldById,
+} from '@/lib/booking-holds-persistence';
 import { canTransition, type BookingStatus } from '@/lib/booking';
 
 export const runtime = 'nodejs';
@@ -160,9 +171,9 @@ export async function POST(req: NextRequest) {
           { merge: true }
         );
     } catch (err) {
-      // The hold itself is taken and will lapse on its own in 30 minutes, so
+      // The hold itself is taken and will lapse on its own at its TTL, so
       // nothing is over-booked. Log loudly: the booking record is now behind.
-      console.error(`[hold] booking ${bookingId} not stamped with hold:`, err);
+      console.error('[hold] booking not stamped with hold:', { bookingId }, err);
     }
   }
 
@@ -176,4 +187,117 @@ export async function POST(req: NextRequest) {
       timezone: result.hold.timezone,
     },
   });
+}
+
+interface ReleasePayload {
+  holdId?: string;
+}
+
+/**
+ * Release a hold before it lapses.
+ *
+ * `holdId` comes from the query string (`?holdId=`) or the JSON body. Unknown
+ * ids are 404. A hold that has already been paid for is never released here —
+ * that would put a sold slot back on sale under a client who paid for it.
+ * Ownership is the booking's: the hold names the booking it belongs to, and
+ * that booking's `uid` must be the caller (an ownerless record from the
+ * anonymous path is allowed through, matching POST).
+ */
+export async function DELETE(req: NextRequest) {
+  const authError = await verifyApiAuth(req);
+  if (authError) return authError;
+
+  const caller = await verifyFirebaseToken(req);
+
+  let holdId = new URL(req.url).searchParams.get('holdId') ?? undefined;
+  if (!holdId) {
+    try {
+      const body = (await req.json()) as ReleasePayload;
+      holdId = body?.holdId;
+    } catch {
+      // No body is fine when the query string carried the id.
+    }
+  }
+  if (!holdId || typeof holdId !== 'string') {
+    return NextResponse.json({ error: 'holdId is required.' }, { status: 400 });
+  }
+
+  const hold = await getHold(holdId);
+  if (!hold) {
+    return NextResponse.json(
+      { error: 'No such hold.', code: 'HOLD_NOT_FOUND' },
+      { status: 404 }
+    );
+  }
+
+  const cred = ensureAdminApp();
+  if (cred) {
+    try {
+      const { getFirestore } = await import('firebase-admin/firestore');
+      const snap = await getFirestore()
+        .collection('booking_requests')
+        .doc(hold.bookingId)
+        .get();
+      if (snap.exists) {
+        const ownerUid = ((snap.data() as Record<string, unknown>).uid as string | null) ?? null;
+        if (ownerUid && ownerUid !== (caller?.uid ?? null)) {
+          return NextResponse.json({ error: 'Hold does not belong to you.' }, { status: 403 });
+        }
+      }
+    } catch (err) {
+      // Fail CLOSED for the same reason POST does: this hands out control over
+      // an exclusive claim on an artist's time.
+      console.error('[hold] release ownership check failed — refusing:', err);
+      return NextResponse.json({ error: 'Could not verify your booking.' }, { status: 503 });
+    }
+  }
+
+  if (hold.status === 'converted') {
+    return NextResponse.json(
+      { error: 'That time has been paid for and cannot be released.' },
+      { status: 409 }
+    );
+  }
+  if (hold.status === 'released') {
+    // Idempotent: a retry of a release that already happened is a success.
+    return NextResponse.json({ released: true, holdId, alreadyReleased: true });
+  }
+
+  const released = await releaseHoldById(holdId);
+  if (!released) {
+    return NextResponse.json(
+      { error: 'Could not release the hold right now.' },
+      { status: 503 }
+    );
+  }
+
+  // Walk the booking record back to `pending` so /bookings stops saying the
+  // time is held. Best-effort, and only when the record still points at this
+  // hold — a newer hold on the same booking must not be clobbered.
+  if (cred) {
+    try {
+      const { getFirestore, FieldValue } = await import('firebase-admin/firestore');
+      const ref = getFirestore().collection('booking_requests').doc(hold.bookingId);
+      const snap = await ref.get();
+      if (snap.exists) {
+        const doc = snap.data() as Record<string, unknown>;
+        if (doc.status === 'held' && doc.holdId === holdId && canTransition('held', 'pending')) {
+          await ref.set(
+            {
+              status: 'pending',
+              holdId: FieldValue.delete(),
+              holdExpiresAt: FieldValue.delete(),
+              heldSlot: FieldValue.delete(),
+              holdReleasedAt: new Date().toISOString(),
+            },
+            { merge: true }
+          );
+        }
+      }
+    } catch (err) {
+      console.error('[hold] booking not walked back after release:', { bookingId: hold.bookingId }, err);
+    }
+  }
+
+  return NextResponse.json({ released: true, holdId });
 }

@@ -22,6 +22,7 @@ import { getApiAuthHeaders } from "@/lib/client-api-auth";
 import type { BookingStatus } from "@/lib/booking";
 import { depositHoldDays } from "@/lib/deposit-hold";
 import { bookingSuccessMoneyCopy } from "@/lib/money-copy";
+import { requestReplyPromise } from "@/lib/request-reply-window";
 import { TattooPrepPlan } from "../BookingConfidence";
 
 /** Statuses at or past a paid deposit — safe to say "Deposit paid". */
@@ -326,6 +327,7 @@ function SuccessContent() {
   // Reservation vs request (ADR 0027) — the same honest discriminator that
   // drives the timeline below: a fetched .ics proves a concrete slot.
   const reserved = calendarIcs !== null;
+  const artistLabel = server?.artistName ?? artist ?? "the artist";
 
   const paymentStatusCopy = isPaid ? (
     <>
@@ -335,7 +337,7 @@ function SuccessContent() {
         ? "Your appointment is confirmed. Check Your bookings for the latest details."
         : reserved
           ? "Your deposit cleared and your time is booked. Check Your bookings for the latest details."
-          : "Your deposit cleared. Your requested time is with the artist — they confirm the final slot. Check Your bookings for the latest status."}
+          : `Your deposit cleared. Your requested time is with the artist. ${requestReplyPromise(artistLabel, artistClaimed)} Check Your bookings for the latest status.`}
       <br />
       Balance settles at the shop.
     </>
@@ -376,8 +378,8 @@ function SuccessContent() {
   // Two honest variants (ADR 0027), keyed on `reserved` above. Reservation:
   // the deposit confirmed a concrete, exclusively-held slot — nothing further
   // to wait on before the session. Request: the deposit accompanies an ask,
-  // and the artist still confirms or counters — no invented response windows.
-  const artistLabel = server?.artistName ?? artist ?? "the artist";
+  // and the artist still confirms or counters — within the stated reply window
+  // (REA gap #3), the same sentence the request card shows.
   const whenLabel = date ? (time ? `${date} at ${time}` : date) : null;
 
   const timelineSteps: TimelineStep[] = reserved
@@ -417,9 +419,7 @@ function SuccessContent() {
         },
         {
           title: "Artist review",
-          detail: artistClaimed
-            ? `${artistLabel} confirms your time or suggests another. Response times vary — there's no set window.`
-            : `TatT follows up with ${artistLabel} outside the booking product and relays any reply. Response times vary — there's no set window.`,
+          detail: requestReplyPromise(artistLabel, artistClaimed),
         },
         {
           title: "Your session",

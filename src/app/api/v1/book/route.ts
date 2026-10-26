@@ -7,6 +7,7 @@ import { verifyFirebaseToken } from '@/lib/auth-dal';
 import { ensureAdminApp } from '@/lib/firebase-admin';
 import { validateBookingRequest } from '@/lib/booking';
 import { getRosterArtistById } from '@/lib/artists-graph';
+import { REQUEST_REPLY_HOURS } from '@/lib/request-reply-window';
 
 // In-memory rate limiter: ip -> list of timestamps
 const rateLimitMap = new Map<string, number[]>();
@@ -170,6 +171,6 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     success: true,
     bookingId,
-    message: `Booking request received! Your confirmation number is ${bookingId}. The artist will contact you within 24 hours.`,
+    message: `Booking request received! Your confirmation number is ${bookingId}. You hear back within ${REQUEST_REPLY_HOURS} hours.`,
   });
 }
