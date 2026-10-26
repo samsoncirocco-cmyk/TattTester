@@ -8,6 +8,7 @@ import { ensureAdminApp } from '@/lib/firebase-admin';
 import { validateBookingRequest } from '@/lib/booking';
 import { getRosterArtistById } from '@/lib/artists-graph';
 import { REQUEST_REPLY_HOURS } from '@/lib/request-reply-window';
+import { withIdempotency } from '@/lib/idempotency';
 
 // In-memory rate limiter: ip -> list of timestamps
 const rateLimitMap = new Map<string, number[]>();
@@ -32,6 +33,13 @@ export async function POST(request: NextRequest) {
   // so this resolves to the same verified user.
   const user = await verifyFirebaseToken(request);
 
+  // A double-click or a retry of the same submit attempt replays the first
+  // booking instead of minting a second one or spending the rate limit twice
+  // (spec 5). A 429 is never stored, so it is never replayed.
+  return withIdempotency(request, 'capture', user?.uid, () => capture(request, user?.uid ?? null));
+}
+
+async function capture(request: NextRequest, uid: string | null): Promise<NextResponse> {
   // Rate limit by IP
   const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown';
   if (!checkRateLimit(ip)) {
@@ -131,7 +139,7 @@ export async function POST(request: NextRequest) {
       bookingId,
       ...parsed.value,
       brief,
-      uid: user?.uid ?? null,
+      uid,
       status: 'pending',
       createdAt: new Date().toISOString(),
       ip,

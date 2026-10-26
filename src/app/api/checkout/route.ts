@@ -38,6 +38,11 @@ import { depositCentsForSize, type TattooSize } from "@/lib/booking";
 import { checkoutFeeMoneyCopy } from "@/lib/money-copy";
 import { depositHoldDays } from "@/lib/deposit-hold";
 import { getRosterArtistById } from "@/lib/artists-graph";
+import {
+  REPLAY_UNTIL_HEADER,
+  stripeCheckoutIdempotencyKey,
+  withIdempotency,
+} from "@/lib/idempotency";
 
 export const runtime = "nodejs";
 
@@ -99,6 +104,17 @@ export async function POST(req: NextRequest) {
   const caller = await verifyFirebaseToken(req);
   const callerUid = caller?.uid ?? null;
 
+  // A retried checkout for the same submit attempt replays the first session
+  // URL instead of refreshing the hold and opening a second session (spec 5).
+  return withIdempotency(req, "checkout", callerUid, () =>
+    createCheckout(req, callerUid),
+  );
+}
+
+async function createCheckout(
+  req: NextRequest,
+  callerUid: string | null,
+): Promise<NextResponse> {
   let body: Partial<CheckoutPayload>;
   try {
     body = (await req.json()) as Partial<CheckoutPayload>;
@@ -434,7 +450,14 @@ export async function POST(req: NextRequest) {
             metadata,
           };
 
-    const session = await stripe.checkout.sessions.create({
+    // Floored to the minute so two identical requests in the same minute
+    // produce identical Stripe params (and so the idempotency key below is
+    // never sent with different params, which Stripe rejects). Flooring only
+    // ever ends the session earlier than the hold, never later.
+    const sessionExpiresAtSec = holdExpiresAtMs
+      ? Math.floor(holdExpiresAtMs / 60_000) * 60
+      : null;
+    const sessionParams: Stripe.Checkout.SessionCreateParams = {
       mode: "payment",
       success_url: `${baseUrl}/book/success?${successParams.toString()}`,
       cancel_url: cancelUrl,
@@ -476,9 +499,19 @@ export async function POST(req: NextRequest) {
       // Stripe stops accepting payment for this session the moment the hold
       // lapses. This is the load-bearing half of the reservation: without it a
       // client could pay twenty minutes after their slot went back on sale.
-      ...(holdExpiresAtMs
-        ? { expires_at: Math.floor(holdExpiresAtMs / 1000) }
-        : {}),
+      ...(sessionExpiresAtSec ? { expires_at: sessionExpiresAtSec } : {}),
+    };
+    // Stripe-side idempotency (spec 5): a duplicate request cannot open two
+    // live sessions for the same booking, hold and amount — even when our own
+    // idempotency store is down. Keyed on the hold the caller SENT, not the
+    // refreshed one, which is new on every call.
+    const session = await stripe.checkout.sessions.create(sessionParams, {
+      idempotencyKey: stripeCheckoutIdempotencyKey({
+        bookingId,
+        holdId,
+        amountCents: depositAmountInCents + bookingFeeInCents,
+        params: sessionParams,
+      }),
     });
 
     if (!session.url) {
@@ -488,7 +521,15 @@ export async function POST(req: NextRequest) {
         { status: 502 },
       );
     }
-    return NextResponse.json({ sessionUrl: session.url });
+    // A replay of this response must not outlive the session it points at
+    // (Stripe's default session life is 24 hours; stay inside it).
+    const replayUntilMs = sessionExpiresAtSec
+      ? sessionExpiresAtSec * 1000
+      : Date.now() + 23 * 60 * 60 * 1000;
+    return NextResponse.json(
+      { sessionUrl: session.url },
+      { headers: { [REPLAY_UNTIL_HEADER]: String(replayUntilMs) } },
+    );
   } catch (error) {
     const message =
       error instanceof Error
