@@ -46,6 +46,14 @@ import {
   MAX_REQUESTED_SLOTS,
   type RequestedSlot,
 } from "@/lib/booking";
+import {
+  IDEMPOTENCY_HEADER_NAME,
+  REQUEST_IN_FLIGHT_COPY,
+  attemptFor,
+  isNetworkFailure,
+  isRequestInFlight,
+  type SubmitAttempt,
+} from "./submitAttempt";
 
 /** One concrete bookable time, as offered by the server. */
 export type OfferedSlot = {
@@ -240,6 +248,14 @@ export default function BookClient({
   /** True once we hand the browser to Stripe — then the hold must NOT be released on pagehide. */
   const redirectingRef = useRef(false);
   /**
+   * Synchronous double-submit lock (spec 5). `phase` is React state, so a
+   * second click before the re-render would start a second submit; a ref
+   * flips immediately.
+   */
+  const inFlightRef = useRef(false);
+  /** The current submit attempt's idempotency key (see ./submitAttempt). */
+  const attemptRef = useRef<SubmitAttempt | null>(null);
+  /**
    * Set when a reservation degrades mid-flow: the slot was taken between
    * loading the page and pressing book, or holds went unavailable. The UI drops
    * to the request model and says so, rather than retrying into a promise it
@@ -335,6 +351,9 @@ export default function BookClient({
     if (step === 2 && i < 2 && holdIdRef.current) {
       void releaseHold(holdIdRef.current);
     }
+    // Leaving review ends the attempt: a stored hold answer must not be
+    // replayed for a hold we just released.
+    if (i < 2) attemptRef.current = null;
     setStep(i);
   };
 
@@ -385,12 +404,45 @@ export default function BookClient({
   const timeChosen = reserving ? Boolean(selectedSlot) : selectedDates.length > 0;
 
   const submit = async () => {
+    if (inFlightRef.current) return;
     if (!artist || !detailsValid || !timeChosen) return;
+    inFlightRef.current = true;
     setPhase("submitting");
     setError(null);
 
+    // One key for this attempt across capture, hold and checkout. It is kept
+    // only when a request failed without an answer (see ./submitAttempt).
+    const attempt = attemptFor(
+      attemptRef.current,
+      JSON.stringify({
+        bookingId,
+        selectedSlot,
+        selectedDates,
+        timePref,
+        designId,
+        size,
+        placement,
+        description,
+        budget,
+        name,
+        email,
+        phone,
+      }),
+    );
+    attemptRef.current = attempt;
+    let keepAttempt = false;
+    /** Same attempt still running on the server: say so, keep the key. */
+    const stillWorking = () => {
+      keepAttempt = true;
+      setError(REQUEST_IN_FLIGHT_COPY);
+      setPhase("form");
+    };
+
     try {
-      const authHeaders = await getApiAuthHeaders();
+      const authHeaders = {
+        ...(await getApiAuthHeaders()),
+        [IDEMPOTENCY_HEADER_NAME]: attempt.key,
+      };
 
       // 1. Capture the booking request — this is the real record. A resumed
       // visit already has one: re-using its id is what lets the hold below be
@@ -415,6 +467,10 @@ export default function BookClient({
         }),
       });
       const bookData = await bookRes.json().catch(() => null);
+      if (isRequestInFlight(bookRes.status, bookData)) {
+        stillWorking();
+        return;
+      }
       // Tier flipped while the form was open — follow the same intro relay
       // path checkout uses rather than surfacing a generic booking error.
       if (
@@ -458,6 +514,10 @@ export default function BookClient({
         });
         const holdData = await holdRes.json().catch(() => null);
 
+        if (isRequestInFlight(holdRes.status, holdData)) {
+          stillWorking();
+          return;
+        }
         if (holdRes.status === 409) {
           // Somebody else took it between the page loading and this click.
           // Stay on the reservation product: the artist's calendar is still
@@ -511,6 +571,10 @@ export default function BookClient({
         }),
       });
       const payData = await payRes.json().catch(() => null);
+      if (isRequestInFlight(payRes.status, payData)) {
+        stillWorking();
+        return;
+      }
 
       if (payRes.ok && typeof payData?.sessionUrl === "string") {
         redirectingRef.current = true;
@@ -568,8 +632,14 @@ export default function BookClient({
     } catch (err) {
       // A hold without a checkout behind it reserves nothing anyone can pay for.
       void releaseHold(holdIdRef.current);
+      // No answer came back, so the request may have landed: a retry must be
+      // the same attempt, which the server then replays instead of repeating.
+      keepAttempt = isNetworkFailure(err);
       setError(err instanceof Error ? err.message : "Something broke. Try again.");
       setPhase("form");
+    } finally {
+      inFlightRef.current = false;
+      if (!keepAttempt) attemptRef.current = null;
     }
   };
 

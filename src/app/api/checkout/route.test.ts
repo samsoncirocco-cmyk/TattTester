@@ -469,3 +469,59 @@ describe("POST /api/checkout — reservation hold lifecycle", () => {
     expect(sessionArgs().metadata.holdId).toBe("hold_refreshed");
   });
 });
+
+// Spec 5: Stripe-side idempotency and the route-level replay.
+describe("POST /api/checkout — idempotency (spec 5)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getRosterArtistByIdMock.mockResolvedValue({ id: "artist_1", bookingTier: "bookable" });
+    getArtistStripeMock.mockResolvedValue({
+      id: "artist_1",
+      name: "Nadia Ink",
+      claimVerified: true,
+      stripeAccountId: "acct_1",
+      chargesEnabled: true,
+    });
+    getHoldMock.mockResolvedValue(LIVE_HOLD);
+    placeHoldMock.mockResolvedValue({ ok: true, hold: { ...LIVE_HOLD, holdId: "hold_refreshed" } });
+    createSessionMock.mockResolvedValue({ id: "cs_i", url: "https://checkout.stripe.com/c/cs_i" });
+  });
+
+  it("passes an idempotencyKey built from booking, sent hold and amount", async () => {
+    await POST(makeRequest({ holdId: "hold_live", bookingId: "BK-RESUME01" }));
+    const opts = createSessionMock.mock.calls[0][1];
+    expect(opts.idempotencyKey).toMatch(/^checkout:BK-RESUME01:hold_live:16500:[0-9a-f]{16}$/);
+    // expires_at is floored to the minute so identical requests share params,
+    // and never lands after the hold it is pinned to.
+    const args = sessionArgs();
+    expect(args.expires_at % 60).toBe(0);
+    expect(args.expires_at * 1000).toBeLessThanOrEqual(Date.parse(LIVE_HOLD.expiresAt));
+  });
+
+  it("request mode keys on nohold", async () => {
+    await POST(makeRequest({ bookingId: "BK-REQ00001" }));
+    expect(createSessionMock.mock.calls[0][1].idempotencyKey).toMatch(
+      /^checkout:BK-REQ00001:nohold:16500:/,
+    );
+  });
+
+  it("same Idempotency-Key replays the session url without a second session", async () => {
+    const { createMemoryStore, setIdempotencyStoreForTests } = await import("@/lib/idempotency");
+    setIdempotencyStoreForTests(createMemoryStore());
+    try {
+      const keyed = () => {
+        const r = makeRequest({ bookingId: "BK-REQ00001" });
+        r.headers.set("Idempotency-Key", "attempt-1");
+        return r;
+      };
+      const a = await POST(keyed());
+      const b = await POST(keyed());
+      expect(await b.json()).toEqual(await a.json());
+      expect(createSessionMock).toHaveBeenCalledTimes(1);
+      // The internal replay-window header never reaches the client.
+      expect(a.headers.get("x-idempotency-replay-until")).toBeNull();
+    } finally {
+      setIdempotencyStoreForTests(undefined);
+    }
+  });
+});

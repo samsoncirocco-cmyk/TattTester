@@ -335,3 +335,46 @@ describe('POST /api/v1/book — taken-down artists are not bookable', () => {
     expect(firestoreSetMock).not.toHaveBeenCalled();
   });
 });
+
+// Spec 5: an Idempotency-Key makes a retried capture one booking.
+describe('POST /api/v1/book — idempotency key (spec 5)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    verifyApiAuthMock.mockResolvedValue(null);
+    verifyFirebaseTokenMock.mockResolvedValue({ uid: 'uid-1' });
+    ensureAdminAppMock.mockReturnValue('sa-json');
+    firestoreSetMock.mockResolvedValue(undefined);
+  });
+
+  function keyed(body: Record<string, unknown>, key: string, ip: string) {
+    return new NextRequest('http://localhost/api/v1/book', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-forwarded-for': ip, 'Idempotency-Key': key },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('same key twice creates one booking and does not consume the limit twice', async () => {
+    const { createMemoryStore, setIdempotencyStoreForTests } = await import('@/lib/idempotency');
+    const store = createMemoryStore();
+    setIdempotencyStoreForTests(store);
+    try {
+      const ip = '10.9.9.1';
+      const a = await POST(keyed(VALID_BODY, 'attempt-1', ip));
+      const b = await POST(keyed(VALID_BODY, 'attempt-1', ip));
+      expect(await b.json()).toEqual(await a.json());
+      expect(firestoreSetMock).toHaveBeenCalledTimes(1);
+      // Only 1 of the 5 per hour was used: four more attempts succeed, the sixth trips.
+      for (let i = 2; i <= 5; i++) {
+        expect((await POST(keyed(VALID_BODY, `attempt-${i}`, ip))).status).toBe(200);
+      }
+      const limited = await POST(keyed(VALID_BODY, 'attempt-6', ip));
+      expect(limited.status).toBe(429);
+      // The 429 is not stored, so it can never be replayed as the answer.
+      expect([...store.records.values()].every((r) => r.status === 'done')).toBe(true);
+      expect(store.records.size).toBe(5);
+    } finally {
+      setIdempotencyStoreForTests(undefined);
+    }
+  });
+});

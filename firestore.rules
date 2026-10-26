@@ -61,6 +61,15 @@ service cloud.firestore {
     // could delete one could steal a slot out from under whoever holds it.
     match /booking_holds/{holdId} {
       allow read, write: if false;
+    }
+
+    // Idempotency records (spec 5) — stored responses for retried booking,
+    // hold and checkout calls, which can carry a Stripe session URL. Server
+    // only, like booking_holds.
+    match /idempotency_keys/{keyHash} {
+      allow read, write: if false;
+    }
+
     // Shared design links — written server-side only (Admin SDK via
     // /api/v1/designs/share, which records the owner uid on the doc).
     // Opening a share link is the product feature, so a single-doc `get`

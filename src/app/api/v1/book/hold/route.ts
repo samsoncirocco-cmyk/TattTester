@@ -34,6 +34,7 @@ import {
   releaseHoldById,
 } from '@/lib/booking-holds-persistence';
 import { canTransition, type BookingStatus } from '@/lib/booking';
+import { REPLAY_UNTIL_HEADER, withIdempotency } from '@/lib/idempotency';
 
 export const runtime = 'nodejs';
 
@@ -50,6 +51,16 @@ export async function POST(req: NextRequest) {
   if (authError) return authError;
 
   const caller = await verifyFirebaseToken(req);
+  // A retried hold for the same submit attempt replays the first answer
+  // instead of placing (and releasing) a second hold (spec 5). The hold
+  // transaction below still decides the slot either way.
+  return withIdempotency(req, 'hold', caller?.uid, () => placeHoldForCaller(req, caller));
+}
+
+async function placeHoldForCaller(
+  req: NextRequest,
+  caller: Awaited<ReturnType<typeof verifyFirebaseToken>>,
+): Promise<NextResponse> {
   let body: HoldPayload;
   try {
     body = (await req.json()) as HoldPayload;
@@ -177,16 +188,20 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({
-    holdId: result.hold.holdId,
-    expiresAt: result.hold.expiresAt,
-    slot: {
-      date: result.hold.date,
-      startTime: result.hold.startTime,
-      endTime: result.hold.endTime,
-      timezone: result.hold.timezone,
+  return NextResponse.json(
+    {
+      holdId: result.hold.holdId,
+      expiresAt: result.hold.expiresAt,
+      slot: {
+        date: result.hold.date,
+        startTime: result.hold.startTime,
+        endTime: result.hold.endTime,
+        timezone: result.hold.timezone,
+      },
     },
-  });
+    // Never replay a hold past its own expiry.
+    { headers: { [REPLAY_UNTIL_HEADER]: String(Date.parse(result.hold.expiresAt)) } },
+  );
 }
 
 interface ReleasePayload {
