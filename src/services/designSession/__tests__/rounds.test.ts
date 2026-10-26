@@ -28,6 +28,7 @@ import {
 import { getSignedUrl } from '@/services/gcs-service';
 import { recordSpend } from '@/lib/budget-tracker';
 import type { IntakeRecord } from '../../intake/types';
+import { logger } from '@/lib/logger';
 
 vi.mock('../../intake', () => ({ extractIntake: vi.fn() }));
 // Partial mock: the paid council calls are stubbed, but the module's pure
@@ -133,6 +134,15 @@ const vertexRoute = {
   negativePrompt: '',
   fallbackChain: [],
   reasoning: 'test route',
+};
+
+// The only pin a session with customer photos can have (ADR-0050): photos
+// force the nano-banana-2 lane at the reveal, and it is the one model that
+// takes reference images — so it is the pin a reference-chain test needs.
+const nanoBananaRoute = {
+  ...vertexRoute,
+  modelId: 'nano-banana-2',
+  provider: 'replicate' as const,
 };
 
 let imageCounter = 0;
@@ -389,6 +399,7 @@ describe('refineRound — the charged next round', () => {
   });
 
   it('chains the picked cut as the LEADING reference, photos persisting after it', async () => {
+    mockRouteGeneration.mockReturnValue(nanoBananaRoute);
     const session = await startSession(startRequest);
 
     // Attach a customer reference photo the way the conversation does.
@@ -715,6 +726,84 @@ describe('the picked-cut reference is bucket-verified (config drift guard)', () 
     expect(mockGetSignedUrl).not.toHaveBeenCalled();
     for (const [request] of mockGenerate.mock.calls.slice(2)) {
       expect(request.referenceImages).toBeUndefined();
+    }
+  });
+});
+
+describe('the picked cut rides the way the pinned model can take it', () => {
+  type TestRoute = Omit<typeof vertexRoute, 'provider'> & { provider: 'vertex-ai' | 'replicate' };
+  async function refineFrom(route: TestRoute): Promise<{ sessionId: string; pickedPath: string }> {
+    mockRouteGeneration.mockReturnValue(route as never);
+    const session = await startSession(startRequest);
+    const stored = (await memorySessionStore.get(session.id)) as StoredSession;
+    expect(stored.pinnedModelId).toBe(route.modelId);
+    await recordRoundPick(session.id, { pickedId: 'v2' });
+    mockGetSignedUrl.mockClear();
+    await refineRound(session.id);
+    const pickedPath = stored.variations[1].imageUrl!.replace(`${BUCKET_URL}/`, '');
+    return { sessionId: session.id, pickedPath };
+  }
+
+  it('flux-dev (source, no references): the pick becomes the image-to-image source', async () => {
+    const { pickedPath } = await refineFrom({
+      ...vertexRoute,
+      modelId: 'flux-dev',
+      provider: 'replicate' as const,
+    });
+
+    expect(mockGetSignedUrl.mock.calls.map(([path]) => path)).toEqual([pickedPath]);
+    const roundCalls = mockGenerate.mock.calls.slice(2);
+    expect(roundCalls).toHaveLength(2);
+    for (const [request] of roundCalls) {
+      expect(request.modelId).toBe('flux-dev');
+      expect(request.referenceImages).toBeUndefined();
+      expect(request.sourceImage).toBe(`https://signed.test/${pickedPath}`);
+      expect(request.sourceStrength).toBeGreaterThan(0);
+      expect(request.sourceStrength).toBeLessThan(1);
+    }
+  });
+
+  it('krea2 (neither): the pick is dropped with a log and the round renders from its prompt', async () => {
+    const info = vi.spyOn(logger, 'info');
+    const { sessionId } = await refineFrom({
+      ...vertexRoute,
+      modelId: 'krea2',
+      provider: 'replicate' as const,
+    });
+
+    expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    for (const [request] of mockGenerate.mock.calls.slice(2)) {
+      expect(request.modelId).toBe('krea2');
+      expect(request.referenceImages).toBeUndefined();
+      expect(request.sourceImage).toBeUndefined();
+    }
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'design_session.round_lead_dropped',
+        session_id: sessionId,
+        variation_id: 'v2',
+        pinned_model_id: 'krea2',
+      })
+    );
+    info.mockRestore();
+  });
+
+  it('imagen3 (the Vertex pin, neither): dropped, never sent as a source', async () => {
+    await refineFrom(vertexRoute);
+
+    for (const [request] of mockGenerate.mock.calls.slice(2)) {
+      expect(request.modelId).toBe('imagen3');
+      expect(request.referenceImages).toBeUndefined();
+      expect(request.sourceImage).toBeUndefined();
+    }
+  });
+
+  it('nano-banana-2 (references): the pick still leads the reference chain', async () => {
+    const { pickedPath } = await refineFrom(nanoBananaRoute);
+
+    for (const [request] of mockGenerate.mock.calls.slice(2)) {
+      expect(request.referenceImages).toEqual([`https://signed.test/${pickedPath}`]);
+      expect(request.sourceImage).toBeUndefined();
     }
   });
 });
