@@ -223,6 +223,8 @@ describe('converse — conversation lifecycle', () => {
       pinnedModel: undefined,
       // Passed through purely for the provider-failover / degraded-mode logs.
       sessionId: opened.sessionId,
+      // First turn: no TurnLogs yet for the stall rule (#376) to count.
+      previousTurnLogs: [],
     });
 
     // Everything persisted on the stored session (ADR-0022 day-one logs).
@@ -251,6 +253,41 @@ describe('converse — conversation lifecycle', () => {
     expect(runTurnMock.mock.calls[0][0].pinnedModel).toBeUndefined();
     expect(runTurnMock.mock.calls[1][0].pinnedModel).toBe('gemini-2.0-flash');
     expect(runTurnMock.mock.calls[2][0].pinnedModel).toBe('openrouter-fallback');
+  });
+
+  it('hands every previous TurnLog to the engine so the stall rule can count (#376)', async () => {
+    const opened = await converse({});
+    runTurnMock.mockResolvedValueOnce(
+      turnResult({ turnLog: turnLog({ turn: 1, blockingField: 'placement' }) })
+    );
+    await converse({ sessionId: opened.sessionId, message: 'something for my grandmother' });
+    runTurnMock.mockResolvedValueOnce(
+      turnResult({ turnLog: turnLog({ turn: 2, blockingField: 'placement' }) })
+    );
+    await converse({ sessionId: opened.sessionId, message: 'she loved her garden' });
+
+    expect(runTurnMock.mock.calls[0][0].previousTurnLogs).toEqual([]);
+    expect(runTurnMock.mock.calls[1][0].previousTurnLogs).toEqual([
+      expect.objectContaining({ turn: 1, blockingField: 'placement' }),
+    ]);
+  });
+
+  it('surfaces the gate state while chatting and drops it at the proposal (#376)', async () => {
+    const opened = await converse({});
+    const gate = { blocking: 'placement' as const, stalled: true, line: 'I still need a placement before I can draw.' };
+    runTurnMock.mockResolvedValueOnce(turnResult({ gate }));
+    const chatting = await converse({ sessionId: opened.sessionId, message: 'she loved her garden' });
+    expect(chatting.gate).toEqual(gate);
+    // Only the spoken state crosses: never the TurnLog or its score.
+    expect(JSON.stringify(chatting)).not.toContain('confidence');
+    expect(JSON.stringify(chatting)).not.toContain('missingFields');
+
+    runTurnMock.mockResolvedValueOnce(
+      turnResult({ stage: 'proposal', playback: 'a hummingbird on the forearm', gate })
+    );
+    const proposal = await converse({ sessionId: opened.sessionId, message: 'forearm' });
+    expect(proposal.stage).toBe('proposal');
+    expect(proposal.gate).toBeUndefined();
   });
 
   it('counts user turns across the conversation', async () => {

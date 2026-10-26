@@ -6,6 +6,7 @@ import type { DesignSession } from '@/services/designSession/types';
 import type {
   ConversationMessage,
   ConversationStage,
+  GateState,
   SessionNotes,
 } from '@/services/designConversation/types';
 import { isConfirmationIntent } from '../services/confirmationIntent';
@@ -97,6 +98,11 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
   // SketchBot's notepad (TAT-48): the latest whitelisted projection of the
   // brief — the ONLY record view the server sends, never raw telemetry.
   const [notes, setNotes] = useState<SessionNotes | undefined>();
+  // The proposal gate's spoken state (#376): set from every converse
+  // response, cleared when the response carries none (the field settled, or
+  // the stage moved on). Only its `line` ever renders — the field name is
+  // data for the stalled check, never copy.
+  const [gate, setGate] = useState<GateState | undefined>();
   // Tap-to-fix prefill for the chat input; the nonce re-triggers the same
   // prefix on a second tap.
   const [prefill, setPrefill] = useState<{ text: string; nonce: number } | undefined>();
@@ -135,6 +141,7 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
         setPlayback(response.playback);
         setHandoffUrl(response.handoffUrl);
         if (response.notes) setNotes(response.notes);
+        setGate(response.gate);
         setMessages((prev) => [...prev, { role: 'bot', text: response.reply }]);
         // Fast lane (ADR-0028): a proposal on turn 1 means the first input
         // was already a complete prompt — the reply above is the announce
@@ -267,6 +274,11 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
   // questions — surface the skip.
   const showFastLane =
     stage === 'chatting' && !pending && !error && !signInNeeded && notes?.sufficient === true;
+  // A stalled gate (#376): the same field has held the proposal back for
+  // two turns running, so the session says why there is no render yet —
+  // one consultant line under the bot's direct ask, never the rationale.
+  const showGateLine =
+    stage === 'chatting' && !pending && !error && !signInNeeded && gate?.stalled === true;
 
   // First-run empty state: the user hasn't spoken yet (neither typed nor
   // deep-linked). Starter chips + example strip scaffold the blank box; the
@@ -303,6 +315,18 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
       )}
 
       {pending && <ThinkingLine label="Typing" />}
+
+      {/* Gate state (#376): why SketchBot has not offered cuts yet. Status,
+          not a second question — the bot's bubble above already asked. */}
+      {showGateLine && gate && (
+        <p
+          role="status"
+          data-testid="gate-line"
+          className="font-body text-[12px] uppercase tracking-[0.18em] text-white/55"
+        >
+          {gate.line}
+        </p>
+      )}
 
       {/* The account beat (ADR-0041). getApiAuthHeaders already opened the
           sign-in modal on its way out; this is what the conversation looks

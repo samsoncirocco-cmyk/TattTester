@@ -25,7 +25,12 @@ import {
   PROPOSAL_AFFORDANCE,
   PROPOSAL_LEAD,
   PROPOSAL_REMINDER,
+  STALLED_PLACEMENT_ASK,
+  STALLED_PLACEMENT_REASK,
+  STALLED_MEANING_ASK,
 } from '../internal/persona';
+import { STALLED_FIELD_TURNS, DEFAULT_PLACEMENT } from '../internal/gate';
+import type { TurnLog } from '../types';
 import { resetStyleTagCache } from '../internal/ontology';
 import { buildPlayback } from '../internal/engine';
 import {
@@ -1255,5 +1260,212 @@ describe('runTurn — draw request (TAT-48 visible fast lane)', () => {
     // capability refusal — only capability language is forbidden.)
     expect(result.reply.toLowerCase()).toContain('where on your body');
     expect(result.reply).not.toMatch(/can'?t (show|draw|generate)|cannot (show|draw|generate)|limit/i);
+  });
+});
+
+/* ── the stall rule (#376) ───────────────────────────────────────────────── */
+
+describe('runTurn — stalled-field ask (#376)', () => {
+  /** Everything but placement: 0.3 meaning + 0.2 style + 0.1 axes = 0.6. */
+  const NO_PLACEMENT_PAYLOAD = {
+    // No person in the meaning: the evocation follow-up (TAT-51) must not be
+    // what fires here — this block is about the gate, not the mine.
+    reply: 'A hummingbird mid-hover — what pulls you toward that moment?',
+    record: {
+      placement: '',
+      styleTags: ['fine line'],
+      meaning: 'a hummingbird hovering over a lily, delicate and warm',
+      references: [],
+      ambiguousAxes: ['color-blackwork', 'literal-abstract'],
+    },
+  };
+
+  function blockedLog(blockingField: TurnLog['blockingField'], turn: number): TurnLog {
+    return {
+      turn,
+      confidence: 0.6,
+      missingFields: ['placement'],
+      firedRule: 'none',
+      model: DEFAULT_VERTEX_MODEL,
+      ...(blockingField ? { blockingField } : {}),
+    };
+  }
+
+  it('names the blocking field on the first blocked turn but lets the model reply through', async () => {
+    configureVertex();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(vertexResponse(NO_PLACEMENT_PAYLOAD)));
+
+    const result = await runTurn({ messages: MESSAGES, userTurn: 2, previousTurnLogs: [] });
+
+    expect(result.stage).toBe('chatting');
+    expect(result.turnLog.firedRule).toBe('none');
+    expect(result.reply).toBe(NO_PLACEMENT_PAYLOAD.reply);
+    expect(result.turnLog.blockingField).toBe('placement');
+    // The gate state travels, not yet stalled: one blocked turn is conversation.
+    expect(result.gate).toEqual({
+      blocking: 'placement',
+      stalled: false,
+      line: expect.stringMatching(/placement/i),
+    });
+    // Never the score or the rule in the spoken line (ADR-0012 log-not-speak).
+    expect(result.gate?.line).not.toMatch(/confidence|threshold|rule|0\.\d/i);
+  });
+
+  it(`asks for the field outright on the ${STALLED_FIELD_TURNS}nd consecutive block`, async () => {
+    configureVertex();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(vertexResponse(NO_PLACEMENT_PAYLOAD)));
+
+    const result = await runTurn({
+      messages: MESSAGES,
+      userTurn: 3,
+      previousTurnLogs: [blockedLog(undefined, 1), blockedLog('placement', 2)],
+    });
+
+    expect(result.stage).toBe('chatting');
+    expect(result.turnLog.firedRule).toBe('stalled-field-ask');
+    expect(result.reply).toBe(STALLED_PLACEMENT_ASK);
+    expect(result.reply.toLowerCase()).toContain('where on your body');
+    expect(result.reply).not.toMatch(/limit|turn|cap/i);
+    expect(result.gate).toEqual({
+      blocking: 'placement',
+      stalled: true,
+      line: expect.any(String),
+    });
+  });
+
+  it('resets the count when the blocking field changes', async () => {
+    configureVertex();
+    // Placement arrived this turn; now nothing to draw blocks instead.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        vertexResponse({
+          ...SPARSE_PAYLOAD,
+          record: { ...SPARSE_PAYLOAD.record, placement: 'left forearm' },
+        })
+      )
+    );
+
+    const result = await runTurn({
+      messages: MESSAGES,
+      userTurn: 3,
+      previousTurnLogs: [blockedLog('placement', 1), blockedLog('placement', 2)],
+    });
+
+    expect(result.turnLog.firedRule).toBe('none');
+    expect(result.turnLog.blockingField).toBe('meaning');
+    expect(result.gate?.stalled).toBe(false);
+    expect(result.reply).toBe(SPARSE_PAYLOAD.reply);
+  });
+
+  it('asks for the field directly once the new field has blocked twice in a row', async () => {
+    configureVertex();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        vertexResponse({
+          ...SPARSE_PAYLOAD,
+          record: { ...SPARSE_PAYLOAD.record, placement: 'left forearm' },
+        })
+      )
+    );
+
+    const result = await runTurn({
+      messages: MESSAGES,
+      userTurn: 4,
+      previousTurnLogs: [blockedLog('placement', 1), blockedLog('placement', 2), blockedLog('meaning', 3)],
+    });
+
+    expect(result.turnLog.firedRule).toBe('stalled-field-ask');
+    expect(result.reply).toBe(STALLED_MEANING_ASK);
+  });
+
+  it('takes a short answer to the direct ask as the placement, even when extraction misses it', async () => {
+    configureVertex();
+    const messages: ConversationMessage[] = [
+      ...MESSAGES,
+      { role: 'bot', text: STALLED_PLACEMENT_ASK },
+      { role: 'user', text: 'left shoulder blade' },
+    ];
+    // The model still returns no placement — the deterministic settle wins.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(vertexResponse(NO_PLACEMENT_PAYLOAD)));
+
+    const result = await runTurn({
+      messages,
+      userTurn: 4,
+      previousTurnLogs: [blockedLog('placement', 2), blockedLog('placement', 3)],
+    });
+
+    expect(result.record.placement).toBe('left shoulder blade');
+    // 0.3 placement + 0.3 meaning + 0.2 style + 0.1 axes clears the gate.
+    expect(result.stage).toBe('proposal');
+    expect(result.turnLog.firedRule).toBe('judgment');
+    expect(result.playback).toContain('left shoulder blade');
+    expect(result.gate).toBeUndefined();
+    expect(result.turnLog.blockingField).toBeUndefined();
+  });
+
+  it('commits to the default placement and lets the customer steer when the direct ask is talked past', async () => {
+    configureVertex();
+    const messages: ConversationMessage[] = [
+      ...MESSAGES,
+      { role: 'bot', text: STALLED_PLACEMENT_ASK },
+      {
+        role: 'user',
+        text: 'honestly the garden mattered more than anything, always out there at dawn with the birds',
+      },
+    ];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(vertexResponse(NO_PLACEMENT_PAYLOAD)));
+
+    const result = await runTurn({
+      messages,
+      userTurn: 4,
+      previousTurnLogs: [blockedLog('placement', 2), blockedLog('placement', 3)],
+    });
+
+    // A long reply is conversation, not an answer — nothing settled.
+    expect(result.record.placement).toBeUndefined();
+    expect(result.turnLog.firedRule).toBe('stalled-field-ask');
+    expect(result.reply).toBe(STALLED_PLACEMENT_REASK);
+    expect(result.reply).toContain(DEFAULT_PLACEMENT);
+  });
+
+  it('a hand-back on the committed-default re-ask takes the default and proposes', async () => {
+    configureVertex();
+    const messages: ConversationMessage[] = [
+      ...MESSAGES,
+      { role: 'bot', text: STALLED_PLACEMENT_REASK },
+      { role: 'user', text: 'sure, you pick' },
+    ];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(vertexResponse(NO_PLACEMENT_PAYLOAD)));
+
+    const result = await runTurn({
+      messages,
+      userTurn: 5,
+      previousTurnLogs: [
+        blockedLog('placement', 2),
+        blockedLog('placement', 3),
+        blockedLog('placement', 4),
+      ],
+    });
+
+    expect(result.record.placement).toBe(DEFAULT_PLACEMENT);
+    expect(result.stage).toBe('proposal');
+    expect(result.playback).toContain(DEFAULT_PLACEMENT);
+  });
+
+  it('never fires on a proposal turn — the gate has nothing to say once the brief is complete', async () => {
+    configureVertex();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(vertexResponse(RICH_PAYLOAD)));
+
+    const result = await runTurn({
+      messages: MESSAGES,
+      userTurn: 3,
+      previousTurnLogs: [blockedLog('placement', 1), blockedLog('placement', 2)],
+    });
+
+    expect(result.stage).toBe('proposal');
+    expect(result.turnLog.firedRule).toBe('judgment');
+    expect(result.gate).toBeUndefined();
   });
 });
