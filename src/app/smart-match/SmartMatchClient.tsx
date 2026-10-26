@@ -14,6 +14,18 @@ import { useMatchStore, type ArtistMatch } from "@/store/useMatchStore";
 import { deriveReasonChips } from "@/features/match-pulse/services/matchReasonChips";
 import type { DesignSession } from "@/services/designSession/types";
 import { useStylePreferences } from "@/lib/tattStorage";
+import {
+  INTENTS,
+  RATES,
+  appliedLine,
+  filtersInPlay,
+  intentToFilters,
+  parseIntentParam,
+  parseRateParam,
+  rateToBudget,
+  type IntentId,
+  type RateId,
+} from "./intentFilters";
 
 /**
  * Preference form → live semantic match → hands off to /swipe.
@@ -35,6 +47,13 @@ import { useStylePreferences } from "@/lib/tattStorage";
  * the AR mirror) arrive as /smart-match?styles=<canonical,names> — those
  * pills come pre-selected but nothing auto-runs; the user still owns the
  * search. Garbage style names are dropped by parseStylesParam, never thrown.
+ *
+ * Intent and rate pills (spec 15): "What are you after?" drives
+ * `has_portfolio` (a big piece or a cover-up asks for shown work) and
+ * "Hourly rate you're comfortable with" sends `budget` in dollars per hour —
+ * the unit the artist data has. Both live in the URL (?intent=big&rate=250)
+ * so refresh and back keep them. No radius control: the engine measures no
+ * distance yet, so a radius pill would be a promise nothing keeps.
  */
 
 type Status = "idle" | "searching" | "error";
@@ -132,6 +151,25 @@ export default function SmartMatchClient() {
     parseStylesParam(explicitStyles)
   );
   const [locationInput, setLocationInput] = useState("");
+  const [intent, setIntent] = useState<IntentId | null>(() =>
+    parseIntentParam(searchParams.get("intent"))
+  );
+  const [rate, setRate] = useState<RateId>(() => parseRateParam(searchParams.get("rate")));
+
+  // Selections live in the URL so refresh and back keep them; replaceState
+  // rather than router.replace so toggling a pill never re-renders the route.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (intent) url.searchParams.set("intent", intent);
+    else url.searchParams.delete("intent");
+    if (rate !== "any") url.searchParams.set("rate", rate);
+    else url.searchParams.delete("rate");
+    const next = url.pathname + url.search;
+    if (next !== window.location.pathname + window.location.search) {
+      window.history.replaceState(window.history.state, "", next);
+    }
+  }, [intent, rate]);
   // Placement + meaning lifted from the design brief; folded into the
   // semantic query so the vector search gets real signal, not just pills.
   const [briefContext, setBriefContext] = useState("");
@@ -145,13 +183,22 @@ export default function SmartMatchClient() {
   };
 
   const runSearch = useCallback(
-    async (opts: { styles: string[]; location: string; briefContext: string }) => {
+    async (opts: {
+      styles: string[];
+      location: string;
+      briefContext: string;
+      intent: IntentId | null;
+      rate: RateId;
+    }) => {
       setStatus("searching");
       setErrorMsg("");
 
       try {
         const authHeaders = await getApiAuthHeaders();
         const location = opts.location.trim();
+        const { hasPortfolio } = intentToFilters(opts.intent);
+        // `budget` is an hourly rate in whole dollars (see intentFilters.ts).
+        const budget = rateToBudget(opts.rate);
 
         const res = await fetch("/api/v1/match/semantic", {
           method: "POST",
@@ -163,10 +210,17 @@ export default function SmartMatchClient() {
             style_preferences: opts.styles,
             location: location || null,
             max_results: 20,
+            has_portfolio: hasPortfolio,
+            ...(budget !== null ? { budget } : {}),
           }),
         });
 
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+          // Surface the route's own reason (e.g. a 400 from preference
+          // validation) instead of a bare status code.
+          const errBody = (await res.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(errBody?.error || `HTTP ${res.status}`);
+        }
         const data = await res.json();
         if (!data.success) throw new Error(data.error || "Matching failed");
 
@@ -191,7 +245,12 @@ export default function SmartMatchClient() {
 
         if (matches.length === 0 && broadened.length === 0) {
           setStatus("error");
-          setErrorMsg("No artists match that combination yet — try fewer styles or a broader location.");
+          const inPlay = filtersInPlay(opts.intent, opts.rate);
+          setErrorMsg(
+            inPlay
+              ? `No artists match that combination yet (${inPlay}) — try loosening a filter, fewer styles or a broader location.`
+              : "No artists match that combination yet — try fewer styles or a broader location."
+          );
           return;
         }
 
@@ -210,8 +269,8 @@ export default function SmartMatchClient() {
   );
 
   const handleSubmit = useCallback(
-    () => runSearch({ styles, location: locationInput, briefContext }),
-    [runSearch, styles, locationInput, briefContext]
+    () => runSearch({ styles, location: locationInput, briefContext, intent, rate }),
+    [runSearch, styles, locationInput, briefContext, intent, rate]
   );
 
   // Design-session prefill: fetch the brief, map its ontology tags onto the
@@ -239,7 +298,8 @@ export default function SmartMatchClient() {
         const context = [brief.placement, brief.meaning].filter(Boolean).join(" ");
         setStyles(mappedStyles);
         setBriefContext(context);
-        await runSearch({ styles: mappedStyles, location: "", briefContext: context });
+        // The pills are the customer's; the brief prefill leaves them as set.
+        await runSearch({ styles: mappedStyles, location: "", briefContext: context, intent, rate });
       } catch (err) {
         // Silent fallback — the blank form still works without the brief.
         console.warn("[SmartMatch] Design-session prefill failed:", err);
@@ -249,6 +309,8 @@ export default function SmartMatchClient() {
     return () => {
       cancelled = true;
     };
+    // intent/rate are read once at prefill time; prefillRan guards re-runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [designSessionId, runSearch]);
 
   // A saved taste profile is a gentle default, never an override. Explicit
@@ -324,6 +386,47 @@ export default function SmartMatchClient() {
                 className="bg-black text-white placeholder-white/30 focus:outline-none text-[10px] uppercase tracking-[0.2em] border hairline focus:border-pink px-3 py-3 font-body w-full max-w-xs"
               />
             </div>
+
+            <div>
+              <span className="block text-[10px] uppercase tracking-[0.25em] text-pink font-body mb-3">
+                What are you after?
+              </span>
+              <div className="flex flex-wrap gap-2" role="group" aria-label="What are you after?">
+                {INTENTS.map((i) => (
+                  <StylePill
+                    key={i.id}
+                    label={i.label}
+                    active={intent === i.id}
+                    onClick={() => setIntent((prev) => (prev === i.id ? null : i.id))}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <span className="block text-[10px] uppercase tracking-[0.25em] text-pink font-body mb-3">
+                Hourly rate you&apos;re comfortable with
+              </span>
+              <div className="flex flex-wrap gap-2" role="group" aria-label="Hourly rate you're comfortable with">
+                {RATES.map((r) => (
+                  <StylePill
+                    key={r.id}
+                    label={r.label}
+                    active={rate === r.id}
+                    onClick={() => setRate(r.id)}
+                  />
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] text-white/40 font-body leading-[1.6]">
+                Based on artists&apos; listed hourly rates, with some give. Many artists haven&apos;t listed one.
+              </p>
+            </div>
+
+            {appliedLine(intent, rate) && (
+              <p role="status" className="text-[11px] uppercase tracking-[0.18em] text-pink/80 font-body">
+                {appliedLine(intent, rate)}
+              </p>
+            )}
           </div>
 
           {status === "error" && (
