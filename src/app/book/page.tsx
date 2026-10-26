@@ -14,6 +14,8 @@ import { getBookingOffer } from "@/lib/booking-offer";
 // on the review step renders from this so the copy can't drift from the rate.
 import { PLATFORM_FEE_BPS } from "@/lib/stripe";
 import { depositHoldDays } from "@/lib/deposit-hold";
+import { readClaimedArtistExtras } from "@/lib/artist-profile-extras-store";
+import { hasPolicies } from "@/lib/artist-profile-extras";
 
 // The artist comes from the live graph and availability from Firestore
 // on every request — never statically rendered.
@@ -50,6 +52,8 @@ export default async function BookPage({
 
   let artist: BookArtist | null = null;
   let artistLoadFailed = false;
+  /** Set when a claimed artist wrote policies (spec 16): /book points at them. */
+  let policiesHref: string | null = null;
 
   /**
    * The honest default, and what every artist gets unless a live calendar read
@@ -86,6 +90,9 @@ export default async function BookPage({
           availabilityNote: availability.note ?? null,
           claimed: found.claimed,
         };
+        if (found.claimed && hasPolicies(await readClaimedArtistExtras(found))) {
+          policiesHref = `/artists/${found.slug}#before-you-book`;
+        }
 
         // Reservation or request, decided per artist from live signals. The
         // server guarantees `slots` is empty unless the mode is "reservation",
@@ -133,6 +140,7 @@ export default async function BookPage({
       feePercent={PLATFORM_FEE_BPS / 100}
       holdDays={depositHoldDays()}
       resume={resume}
+      policiesHref={policiesHref}
     />
   );
 }

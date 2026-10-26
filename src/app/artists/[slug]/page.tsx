@@ -15,6 +15,8 @@ import { formatNextOpening, readNextOpenings } from "@/lib/next-opening";
 // Server component — reading the take rate here keeps the money sentence in
 // step with PLATFORM_FEE_BPS (never imported into client components).
 import { PLATFORM_FEE_BPS } from "@/lib/stripe";
+import { readClaimedArtistExtras } from "@/lib/artist-profile-extras-store";
+import BeforeYouBook from "./BeforeYouBook";
 
 // 10k+ artists live in the graph — profiles render on demand, never at build.
 export const dynamic = "force-dynamic";
@@ -72,6 +74,9 @@ export default async function ArtistProfilePage({
   const nextOpening = bookable
     ? (await readNextOpenings([artist.id])).get(artist.id) ?? null
     : null;
+  // Spec 16: the artist's own policies, FAQ and travel. Claimed only — the
+  // unclaimed branch never reads them (the store helper enforces it too).
+  const extras = artist.claimed ? await readClaimedArtistExtras(artist) : undefined;
 
   const nameParts = artist.name.split(" ");
   const lastName = nameParts.pop() ?? artist.name;
@@ -307,6 +312,8 @@ export default async function ArtistProfilePage({
                 )}
               </div>
             )}
+
+            <BeforeYouBook artistName={artist.name} extras={extras} />
 
             {/* BOOKING MODULE — the register flips here (ADR-0032): the
                 showcase above stays loud, the commitment affordance is quiet. */}

@@ -194,6 +194,7 @@ export default function BookClient({
   feePercent,
   holdDays,
   resume = null,
+  policiesHref = null,
 }: {
   artist: BookArtist | null;
   requestedArtistId: string;
@@ -208,6 +209,8 @@ export default function BookClient({
   holdDays: number;
   /** Booking state carried in the URL from an earlier visit, if any. */
   resume?: BookResume | null;
+  /** Link to the artist's own policies (spec 16); null when they wrote none. */
+  policiesHref?: string | null;
 }) {
   const { addBooking } = useBookings();
   const { designs } = useDesigns();
@@ -853,6 +856,14 @@ export default function BookClient({
             timezone={offer.timezone}
             feeSentence={feeModelMoneyCopy(feePercent, artist.claimed, holdDays)}
           />
+
+          {policiesHref && (
+            <p className="mt-4 text-[12px] font-body">
+              <a href={policiesHref} className="text-quiet underline hover:text-white">
+                Read {artist.name}&apos;s policies
+              </a>
+            </p>
+          )}
 
           <BookingPathExplainer
             mode={reserving ? "reservation" : "request"}

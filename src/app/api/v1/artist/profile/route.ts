@@ -5,12 +5,20 @@
  * claim binding. The client never supplies artistId. Instagram is deliberately
  * immutable here because it is the identity anchor; hosted portfolio images
  * remain outside this endpoint until the licensed-media path in TAT-40 exists.
+ *
+ * Spec 16 adds three artist-written groups — `policies`, `faqs`,
+ * `travelDates` — stored in Firestore (`artist_profile_extras/{artistId}`)
+ * but edited here, through the same claim resolution, and recorded in
+ * `artistManagedFields` like every other artist-owned field. The Neo4j write
+ * runs first and re-checks ownership, so a revoked claim saves nothing.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyApiAuth } from '@/lib/api-auth';
 import { verifyFirebaseToken } from '@/lib/auth-dal';
 import { getArtistByClaimedUid } from '@/lib/artist-stripe';
 import { validateArtistProfilePatch } from '@/lib/artist-profile';
+import { splitProfilePatch, validateExtrasPatch } from '@/lib/artist-profile-extras';
+import { readArtistExtras, writeArtistExtras } from '@/lib/artist-profile-extras-store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -72,7 +80,12 @@ export async function GET(req: NextRequest) {
       { artistId: artist.id, uid: artist.claimedByUid },
     );
     if (!rows.length) throw new Error('Verified artist disappeared during lookup.');
-    return NextResponse.json({ profile: rows[0] });
+    // Extras are additive: a store hiccup must not hide the rest of the profile.
+    const extras = await readArtistExtras(artist.id).catch((err) => {
+      console.warn('[artist/profile] extras read failed:', err);
+      return null;
+    });
+    return NextResponse.json({ profile: rows[0], extras });
   } catch (err) {
     console.error('[artist/profile] read failed:', err);
     return NextResponse.json({ error: 'Could not read your profile.' }, { status: 503 });
@@ -96,10 +109,30 @@ export async function PATCH(req: NextRequest) {
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
   }
-  const parsed = validateArtistProfilePatch(body);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return NextResponse.json({ error: 'Profile must be an object.' }, { status: 400 });
+  }
+  const { extras: extrasRaw, scalar } = splitProfilePatch(body as Record<string, unknown>);
+  const extras = validateExtrasPatch(extrasRaw);
+  if (!extras.ok) return NextResponse.json({ error: extras.error }, { status: 400 });
+  const hasScalar = Object.keys(scalar).length > 0;
+  const parsed = hasScalar
+    ? validateArtistProfilePatch(scalar)
+    : ({ ok: true, value: {}, fields: [] } as const);
   if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+  if (!parsed.fields.length && !extras.fields.length) {
+    return NextResponse.json({ error: 'No editable profile fields were supplied.' }, { status: 400 });
+  }
 
-  const assignments = parsed.fields.map((field) => `a.${field} = $${field}`).join(',\n           ');
+  const assignments = [
+    ...parsed.fields.map((field) => `a.${field} = $${field}`),
+    `a.artistManagedFields = reduce(
+             fields = coalesce(a.artistManagedFields, []),
+             field IN $managedFields |
+               CASE WHEN field IN fields THEN fields ELSE fields + field END
+           )`,
+    'a.profileManagedAtEpochMs = timestamp()',
+  ].join(',\n           ');
   try {
     const rows = await runQuery(
       `MATCH (a:Artist {
@@ -107,19 +140,13 @@ export async function PATCH(req: NextRequest) {
          claimedByUid: $uid,
          claimVerificationStatus: 'verified'
        })
-       SET ${assignments},
-           a.artistManagedFields = reduce(
-             fields = coalesce(a.artistManagedFields, []),
-             field IN $managedFields |
-               CASE WHEN field IN fields THEN fields ELSE fields + field END
-           ),
-           a.profileManagedAtEpochMs = timestamp()
+       SET ${assignments}
        RETURN ${PROFILE_RETURN}`,
       {
         artistId: artist.id,
         uid: artist.claimedByUid,
         ...parsed.value,
-        managedFields: parsed.fields,
+        managedFields: [...parsed.fields, ...extras.fields],
       },
       true,
     );
@@ -129,7 +156,23 @@ export async function PATCH(req: NextRequest) {
         { status: 409 },
       );
     }
-    return NextResponse.json({ saved: true, profile: rows[0] });
+    let savedExtras = null;
+    if (extras.fields.length) {
+      try {
+        savedExtras = await writeArtistExtras(artist.id, extras.value, artist.claimedByUid ?? "");
+      } catch (err) {
+        console.error('[artist/profile] extras write failed:', err);
+        return NextResponse.json(
+          { error: 'Could not save your policies, questions or travel dates.' },
+          { status: 503 },
+        );
+      }
+    }
+    return NextResponse.json({
+      saved: true,
+      profile: rows[0],
+      ...(savedExtras ? { extras: savedExtras } : {}),
+    });
   } catch (err) {
     console.error('[artist/profile] write failed:', err);
     return NextResponse.json({ error: 'Could not save your profile.' }, { status: 503 });

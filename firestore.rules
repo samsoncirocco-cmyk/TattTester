@@ -70,6 +70,13 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Artist-written policies, FAQ and travel dates (spec 16). Written only
+    // through PATCH /api/v1/artist/profile (Admin SDK, claim-verified) and read
+    // server-side for claimed profiles only.
+    match /artist_profile_extras/{artistId} {
+      allow read, write: if false;
+    }
+
     // Shared design links — written server-side only (Admin SDK via
     // /api/v1/designs/share, which records the owner uid on the doc).
     // Opening a share link is the product feature, so a single-doc `get`

@@ -94,7 +94,7 @@ node scripts/execute-takedown.mjs \
 does nothing. Use `--scope images` when the artist wants only the photographs
 gone and is happy for the listing to stay.
 
-### Step 4 — The two things the script cannot do
+### Step 4 — The three things the script cannot do
 
 1. **The homepage snapshot.** `src/data/featured-artists.json` is committed and
    static. If the artist appears in it, no database filter removes them:
@@ -103,6 +103,12 @@ gone and is happy for the listing to stay.
    ```
 2. **Caches.** CDN and browser caches may serve the deleted
    `storage.googleapis.com` URLs for a while. Nothing to do but wait.
+3. **Artist-written profile extras (claimed artists only).** Policies, FAQ and
+   travel dates (spec 16) live in Firestore at
+   `artist_profile_extras/{artistId}`, not on the graph node, so the scrub
+   above does not reach them. They stop rendering once the node is removed,
+   but the text is still stored. Delete that one document in the Firebase
+   console (or with the Admin SDK) to finish the removal.
 
 ### Step 5 — Reply to the artist
 
