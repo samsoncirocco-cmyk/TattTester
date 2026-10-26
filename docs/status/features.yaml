@@ -1,6 +1,6 @@
 schema_version: 1
-verified_against: 18301f0
-verified_on: 2026-08-10
+verified_against: a37dde1
+verified_on: 2026-10-26
 
 statuses:
   implemented: Source and focused test evidence exist; production operation is not implied.
@@ -302,6 +302,28 @@ features:
       - src/app/pricing/page.tsx
     limitations:
       - Pricing copy has no focused page test at this snapshot.
+
+  design_session_resume:
+    status: implemented
+    evidence:
+      - src/app/api/v1/design-session/resume/route.ts
+      - src/services/designSession/internal/resume.ts
+      - src/services/designSession/__tests__/resume.test.ts
+      - src/app/api/v1/design-session/resume/route.test.ts
+      - src/features/design-session/__tests__/DesignConversation.test.tsx
+    limitations:
+      - Dismissing the latest owned session does not fall back to an older one. The pointer tracks one session.
+      - A signed-out chat on a second device cannot resume until the session is owned, which happens at the first charged action.
+
+  first_run_funnel:
+    status: implemented
+    evidence:
+      - src/lib/funnel.ts
+      - src/app/api/v1/funnel/route.ts
+      - src/app/api/v1/funnel/route.test.ts
+      - src/components/funnel/FunnelBeacon.tsx
+    limitations:
+      - Events are first-party logs only. Wiring a vendor is an owner decision.
 
   shared_design_links:
     status: implemented

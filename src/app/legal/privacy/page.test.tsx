@@ -53,7 +53,7 @@ describe('PrivacyPage — v1.0 published policy', () => {
     render(<PrivacyPage />);
     const text = document.body.textContent ?? '';
     expect(text).toContain('v1.0');
-    expect(text).toContain('Last updated: 30 July 2026');
+    expect(text).toContain('Last updated: 26 October 2026');
     expect(text).not.toContain('draft');
     expect(text).not.toContain('Draft — not yet reviewed by a lawyer');
     expect(text).toMatch(/announce material changes on this page/i);

@@ -42,8 +42,8 @@ function SignupPageInner() {
       <div className="grid grid-cols-1 lg:grid-cols-2 min-h-[calc(100vh-140px)]">
         <AuthBrandPanel
           quiet
-          quote="Described my sleeve in one sentence, had two cuts before my coffee went cold. My artist worked straight off the stencil."
-          attribution="River M. — Pro member"
+          quote="Describe the idea in your own words. Two cuts come back. The tattoo is still your artist's."
+          attribution="Directions, not a finished tattoo"
         />
 
         {/* FORM */}
@@ -58,7 +58,7 @@ function SignupPageInner() {
 
             <QuietHeadline>Join the cult</QuietHeadline>
             <p className="mt-5 text-[14px] text-quiet-dim font-body leading-[1.7]">
-              Free forever. Upgrade when you outgrow it.
+              25 free designs to start. A one-time credit pack after that — never a subscription.
             </p>
 
             <form

@@ -85,6 +85,16 @@ export const API_ROUTE_SECURITY: Record<string, RouteSecurityEntry> = {
   'v1/design-session/[id]/round/pick': { class: 'firebase-auth' },
   'v1/design-session/[id]/round/reroll': { class: 'firebase-auth' },
   'v1/design-session/converse': { class: 'firebase-auth' },
+  'v1/design-session/resume': {
+    class: 'public',
+    reason:
+      'Reloading /design restores an in-progress session for a signed-out visitor who holds the unguessable session id (same capability model as converse). A Bearer token, when present, is verified and selects that account\'s latest owned session. Mismatches return an empty resume, never another person\'s transcript.',
+  },
+  'v1/funnel': {
+    class: 'public',
+    reason:
+      'Anonymous first-run funnel beacons: an allowlisted event name and a page path. No account id, no prompt text, and no forward to a third-party analytics vendor.',
+  },
   'v1/designs/share': { class: 'firebase-auth' },
   'v1/designs/share/[shareId]': {
     class: 'public',

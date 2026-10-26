@@ -42,6 +42,14 @@ export const PLACEMENT_GATE_QUESTION =
   "one thing i can't call for you: where on your body this lands. " +
   'everything else about the design bends around that.';
 
+/**
+ * True when a reply already asks where the tattoo goes. The stall guard
+ * (#376) only replaces a reply that wandered off without asking.
+ */
+export function asksAboutPlacement(text: string): boolean {
+  return /\bplacement\b|where (?:on|does|do|would|should|is|are|'s)|on your body/i.test(text);
+}
+
 /** Opening words of the playback — also how the engine detects it already fired. */
 export const PROPOSAL_LEAD = "here's what i'm hearing:";
 

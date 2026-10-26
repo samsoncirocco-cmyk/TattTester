@@ -5,10 +5,12 @@ import SlashHeadline from "@/components/punk/SlashHeadline";
 import TapeCTA from "@/components/punk/TapeCTA";
 import ArtistCard from "@/components/punk/ArtistCard";
 import SmsDisclosure from "@/components/sketchbot/SmsDisclosure";
+import FunnelBeacon from "@/components/funnel/FunnelBeacon";
 import { getSketchBotSmsContact } from "@/lib/sketchbot-sms";
 import { getFeaturedArtists } from "@/lib/featured-artists";
 import { artistSlug } from "@/lib/artist-slug";
 import { EXAMPLE_DESIGNS } from "@/lib/example-designs";
+import { CANONICAL_ORIGIN, SITE_DESCRIPTION, SITE_NAME } from "@/lib/site";
 
 // The featured grid is curated but suppression-checked against the live graph,
 // so a completed takedown drops off the homepage on its own rather than waiting
@@ -23,6 +25,7 @@ export const revalidate = 60;
 // to "/" explicitly; every other page keeps the layout's relative behavior.
 export const metadata: Metadata = {
   alternates: { canonical: "/" },
+  description: SITE_DESCRIPTION,
 };
 
 const STEPS = [
@@ -34,12 +37,27 @@ const STEPS = [
   {
     n: "02",
     title: "Generate",
-    body: "AI cuts two passes in seconds. Pick the one that bites. Iterate or ship.",
+    body: "Two directions come back. Pick the one that's closer. One more round if you want it tighter.",
   },
   {
     n: "03",
     title: "Connect",
-    body: "Match with vetted artists who actually do this style. Book the chair.",
+    body: "Match with artist profiles in this style. Claimed and unclaimed are labeled. Then book the chair.",
+  },
+];
+
+const TRUST = [
+  {
+    title: "Two cuts, not a tattoo",
+    body: "What comes back is a direction. Your artist owns the final piece.",
+  },
+  {
+    title: "Profiles, labeled",
+    body: "Claimed and unclaimed pages say which is which. Unclaimed work stays credited to the artist.",
+  },
+  {
+    title: "No card to start",
+    body: "The conversation is open. An account shows up when it's time to draw.",
   },
 ];
 
@@ -51,17 +69,39 @@ export default async function Home() {
   // TAT-49: the published SMS door. Env-gated — no number, no mention.
   const sms = getSketchBotSmsContact();
 
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    name: SITE_NAME,
+    url: `${CANONICAL_ORIGIN}/`,
+    description: SITE_DESCRIPTION,
+  };
+
   return (
     <StudioShell>
+      <FunnelBeacon event="landing" />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
       <div className="flex flex-col">
         {/* HERO — full-bleed studio photo, left-weighted scrim */}
         <section className="relative min-h-[520px] md:min-h-[620px] overflow-hidden flex">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/images/hero.png"
-            alt="Tattoo in progress at the studio"
-            className="absolute inset-0 w-full h-full object-cover object-[center_35%]"
-          />
+          {/* WebP is the LCP file (~50KB). The JPEG fallback is the same
+              photo, still far smaller than the original mislabeled JPEG. */}
+          <picture>
+            <source srcSet="/images/hero.webp" type="image/webp" />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/images/hero-og.jpg"
+              alt="Tattoo in progress at the studio"
+              width={1024}
+              height={1024}
+              fetchPriority="high"
+              decoding="sync"
+              className="absolute inset-0 w-full h-full object-cover object-[center_35%]"
+            />
+          </picture>
           <div className="absolute inset-0 bg-[linear-gradient(90deg,#0a0a0a_22%,rgba(10,10,10,0.5)_55%,rgba(10,10,10,0.15)_100%)]" />
           <div className="absolute inset-0 bg-[linear-gradient(0deg,#0a0a0a_4%,transparent_40%)]" />
           <div className="halftone absolute inset-0" />
@@ -82,11 +122,12 @@ export default async function Home() {
               className="rise rise-2 text-balance"
             />
 
-            <p className="rise rise-3 mt-5 md:mt-7 max-w-[40ch] text-[15px] leading-[1.55] text-white/70 font-body">
+            <p className="rise rise-3 mt-5 md:mt-7 max-w-[42ch] text-[15px] leading-[1.55] text-white/70 font-body">
               Forever is a big ask —{" "}
               <span className="scribble text-pink">test it first</span>. Tell
               SketchBot your idea and get two cuts back before a needle gets
-              anywhere near you.
+              anywhere near you. Then see it on your skin and find an artist.
+              The tattoo itself stays theirs.
             </p>
 
             {/* The conversation, in one beat. Mock copy in styled bubbles —
@@ -106,9 +147,12 @@ export default async function Home() {
                 wherever it renders (ADR-0035/0036). */}
             <div className="rise rise-5 mt-7 md:mt-9 flex flex-col gap-4">
               {/* TAT-45 converged loud CTAs onto TapeCTA; keep that here. */}
-              <TapeCTA href="/design" size="lg" className="self-start">
+              <TapeCTA href="/design" size="lg" className="self-start w-full sm:w-auto">
                 Start talking
               </TapeCTA>
+              <p className="text-[12px] text-white/55 font-body max-w-[36ch]">
+                No card to start the conversation.
+              </p>
 
               {sms && (
                 <div>
@@ -127,6 +171,23 @@ export default async function Home() {
               )}
             </div>
           </div>
+        </section>
+
+        {/* Honest trust — no counts, no customers, no "vetted" roster. */}
+        <section aria-label="What you can count on" className="px-6 md:px-12 py-10 md:py-14 border-t-2 hairline">
+          <ul className="max-w-6xl mx-auto grid grid-cols-1 sm:grid-cols-3 gap-8 sm:gap-10">
+            {TRUST.map((item) => (
+              <li key={item.title}>
+                <h2 className="font-display text-white text-[22px] md:text-[26px] tracking-wide leading-none">
+                  {item.title}
+                  <span className="text-pink">.</span>
+                </h2>
+                <p className="mt-3 text-[13px] text-white/65 font-body leading-[1.55] max-w-[36ch]">
+                  {item.body}
+                </p>
+              </li>
+            ))}
+          </ul>
         </section>
 
         {/* HOW IT WORKS */}

@@ -274,3 +274,5 @@ export async function attachReference(
 }
 
 export { storeReferencePhoto } from './internal/referencePhotos';
+export { resolveDesignResume, dismissDesignResume } from './internal/resume';
+export type { DesignSessionResume } from './types';

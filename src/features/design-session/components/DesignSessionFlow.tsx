@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { trackFunnel } from '@/lib/funnel';
 import type { DesignSession } from '@/services/designSession/types';
 import { refineInviteLine } from '@/services/designSession/roundPlan';
 import { settledAxes } from '@/services/intake/settledAxes';
@@ -100,6 +101,16 @@ export function DesignSessionFlow({ initialSession }: { initialSession?: DesignS
   const [placementAnswer, setPlacementAnswer] = useState('');
   const [meaningAnswer, setMeaningAnswer] = useState('');
   const [session, setSession] = useState<DesignSession | null>(initialSession ?? null);
+  const generatedTracked = useRef(
+    Boolean(initialSession?.variations?.some((variation) => variation.imageUrl))
+  );
+  useEffect(() => {
+    if (generatedTracked.current) return;
+    if (session?.variations?.some((variation) => variation.imageUrl)) {
+      generatedTracked.current = true;
+      trackFunnel('design_generated');
+    }
+  }, [session]);
   const [error, setError] = useState<string | null>(null);
   const [lastAction, setLastAction] = useState<SessionAction | null>(null);
   // The ADR-0048 downgrade notice for the latest charged round — spoken,

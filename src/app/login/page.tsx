@@ -42,8 +42,8 @@ function LoginPageInner() {
       <div className="grid grid-cols-1 lg:grid-cols-2 min-h-[calc(100vh-140px)]">
         <AuthBrandPanel
           quiet
-          quote="Walked in with a prompt, walked out with a booked chair. The stencil was already in my artist's inbox."
-          attribution="Dana K. — Free tier"
+          quote="Describe the idea in your own words. Two cuts come back. The tattoo is still your artist's."
+          attribution="Directions, not a finished tattoo"
         />
 
         <div className="px-6 md:px-12 py-14 md:py-20 flex flex-col justify-center">
