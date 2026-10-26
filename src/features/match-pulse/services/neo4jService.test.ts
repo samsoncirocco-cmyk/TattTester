@@ -180,3 +180,81 @@ describe("findMatchingArtists (demo mode)", () => {
     expect(results.length).toBe(0);
   });
 });
+
+// Spec 14: the swipe card leads with the artist's work, but only through the
+// same SHOW_UNCLAIMED_PORTFOLIOS gate the roster and profile use. A match
+// mapper that returned an unclaimed artist's scraped photo with the switch
+// off would be the most exposed third-party-image leak in the product.
+describe("findMatchingArtists heroImage gate (spec 14)", () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+    vi.resetModules();
+    vi.doUnmock("@/lib/neo4j");
+  });
+
+  async function mapWithEnv(showUnclaimed: string | undefined) {
+    vi.resetModules();
+    process.env.NEXT_PUBLIC_DEMO_MODE = "false";
+    process.env.NEXT_PUBLIC_NEO4J_ENABLED = "true";
+    if (showUnclaimed === undefined) delete process.env.SHOW_UNCLAIMED_PORTFOLIOS;
+    else process.env.SHOW_UNCLAIMED_PORTFOLIOS = showUnclaimed;
+
+    const rows = [
+      {
+        id: "claimed", name: "Claimed Artist", city: "Austin", styles: ["Blackwork"],
+        portfolio: [], portfolioImages: ["https://img.example/claimed-work.jpg"],
+        claimedByUid: "uid-1", tags: [], score: 80,
+      },
+      {
+        id: "unclaimed", name: "Scraped Artist", city: "Austin", styles: ["Blackwork"],
+        portfolio: [], portfolioImages: ["https://img.example/scraped-work.jpg"],
+        claimedByUid: null, tags: [], score: 70,
+      },
+      {
+        id: "bare", name: "No Images", city: "Austin", styles: ["Blackwork"],
+        portfolio: [], portfolioImages: null, claimedByUid: null, tags: [], score: 60,
+      },
+    ];
+    let capturedQuery = "";
+    vi.doMock("@/lib/neo4j", () => ({
+      NEO4J_DATABASE: undefined,
+      NEO4J_QUERY_TIMEOUT: 5000,
+      getNeo4jDriver: () => ({
+        session: () => ({
+          executeRead: async (work: (tx: { run: (q: string) => unknown }) => unknown) =>
+            work({
+              run: (q: string) => {
+                capturedQuery = q;
+                return { records: rows.map((r) => ({ toObject: () => r })) };
+              },
+            }),
+          close: async () => {},
+        }),
+      }),
+    }));
+    const { findMatchingArtists } = await import("./neo4jService");
+    const results = await findMatchingArtists({ styles: ["Blackwork"] });
+    return { results, capturedQuery };
+  }
+
+  it("returns a gated heroImage and asks the graph for the fields the gate needs", async () => {
+    const { results, capturedQuery } = await mapWithEnv(undefined);
+    expect(capturedQuery).toContain("a.portfolioImages AS portfolioImages");
+    expect(capturedQuery).toContain("a.claimedByUid AS claimedByUid");
+    const byId = Object.fromEntries(results.map((r) => [r.id, r]));
+    expect(byId.claimed.heroImage).toBe("https://img.example/claimed-work.jpg");
+    expect(byId.unclaimed.heroImage).toBe("https://img.example/scraped-work.jpg");
+    expect(byId.bare.heroImage).toBeNull();
+    // The uid is an input to the gate, never part of the payload.
+    expect("claimedByUid" in byId.claimed).toBe(false);
+  });
+
+  it("withholds an unclaimed artist's image when SHOW_UNCLAIMED_PORTFOLIOS=false", async () => {
+    const { results } = await mapWithEnv("false");
+    const byId = Object.fromEntries(results.map((r) => [r.id, r]));
+    expect(byId.claimed.heroImage).toBe("https://img.example/claimed-work.jpg");
+    expect(byId.unclaimed.heroImage).toBeNull();
+  });
+});

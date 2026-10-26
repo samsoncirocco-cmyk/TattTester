@@ -38,9 +38,11 @@ vi.mock("@/lib/tattStorage", () => ({
 }));
 
 const setMatches = vi.fn();
+const setBroadened = vi.fn();
 vi.mock("@/store/useMatchStore", () => ({
-  useMatchStore: (selector: (s: { setMatches: typeof setMatches }) => unknown) =>
-    selector({ setMatches }),
+  useMatchStore: (
+    selector: (s: { setMatches: typeof setMatches; setBroadened: typeof setBroadened }) => unknown
+  ) => selector({ setMatches, setBroadened }),
 }));
 
 function jsonResponse(body: unknown, ok = true, status = 200) {
@@ -79,6 +81,7 @@ beforeEach(() => {
   fetchMock.mockReset();
   push.mockClear();
   setMatches.mockClear();
+  setBroadened.mockClear();
   searchParams = new URLSearchParams();
   savedStylePreferences = [];
   vi.stubGlobal("fetch", fetchMock);
@@ -375,5 +378,77 @@ describe("SmartMatchClient design-session prefill", () => {
     expect(
       screen.getByRole("button", { name: "Fine Line" }).getAttribute("aria-pressed"),
     ).toBe("false");
+  });
+});
+
+describe("SmartMatchClient second deck (spec 14)", () => {
+  it("maps broadened results with the same shape as primary ones and stores them apart", async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        success: true,
+        query_info: { graphSource: "live" },
+        matches: [
+          { id: "a1", name: "Ink Nova", score: 88, styles: ["Blackwork"], heroImage: "https://img/a1.jpg" },
+        ],
+        broadened: [
+          { id: "b1", name: "Near Miss", score: 40, styles: ["Fine Line"], heroImage: null },
+          // Server already excludes primary ids; the client de-dupes too.
+          { id: "a1", name: "Ink Nova", score: 88, styles: ["Blackwork"] },
+        ],
+        broadened_reason: "Also nearby / similar — fewer than a handful of exact matches for your filters",
+      })
+    );
+    render(<SmartMatchClient />);
+    fireEvent.click(screen.getByRole("button", { name: "Blackwork" }));
+    fireEvent.click(screen.getByRole("button", { name: /find artists/i }));
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/swipe"));
+
+    expect(setMatches).toHaveBeenCalledWith([
+      expect.objectContaining({ artistId: "a1", deck: "primary", heroImage: "https://img/a1.jpg" }),
+    ]);
+    expect(setBroadened).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          artistId: "b1",
+          artistName: "Near Miss",
+          deck: "broadened",
+          heroImage: null,
+          reasonChips: expect.any(Array),
+        }),
+      ],
+      "Also nearby / similar — fewer than a handful of exact matches for your filters"
+    );
+  });
+
+  it("goes straight to the alternatives deck when the primary set is empty but near-matches exist", async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        success: true,
+        query_info: { graphSource: "live" },
+        matches: [],
+        broadened: [{ id: "b1", name: "Near Miss", score: 40 }],
+        broadened_reason: "fewer than a handful",
+      })
+    );
+    render(<SmartMatchClient />);
+    fireEvent.click(screen.getByRole("button", { name: /find artists/i }));
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/swipe"));
+    expect(setMatches).toHaveBeenCalledWith([]);
+    expect(setBroadened).toHaveBeenCalledWith(
+      [expect.objectContaining({ artistId: "b1" })],
+      "fewer than a handful"
+    );
+    expect(screen.queryByText(/no artists match/i)).toBeNull();
+  });
+
+  it("keeps the empty-state message when both decks are empty", async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ success: true, query_info: { graphSource: "live" }, matches: [], broadened: [] })
+    );
+    render(<SmartMatchClient />);
+    fireEvent.click(screen.getByRole("button", { name: /find artists/i }));
+    await screen.findByText(/no artists match that combination yet/i);
+    expect(push).not.toHaveBeenCalled();
+    expect(setMatches).not.toHaveBeenCalled();
   });
 });

@@ -10,6 +10,7 @@ import { styleMatchVariants } from '@/lib/style-vocabulary';
 import { PUBLIC_ARTIST_CLAUSE } from '@/lib/artist-visibility';
 import { NOT_REMOVED_CLAUSE } from '@/lib/takedown';
 import { DEMO_PORTFOLIO_IMAGES } from '@/lib/demo-images';
+import { pickHeroImage } from '@/lib/hero-image';
 
 // Type Definitions
 export interface ArtistPreferences {
@@ -39,6 +40,10 @@ export interface ArtistRecord {
      *  server-side; match surfaces never mount iframes from these — only
      *  the artist profile page renders embeds. */
     portfolioPermalinks?: string[];
+    /** The artist's best displayable work image for the swipe card (spec 14),
+     *  chosen by pickHeroImage from the SHOW_UNCLAIMED_PORTFOLIOS-gated set.
+     *  Null when nothing may be shown — the card falls back to its monogram. */
+    heroImage?: string | null;
     instagram?: string;
     embedding_id?: string;
     tags?: string[];
@@ -110,6 +115,7 @@ const MOCK_ARTISTS: ArtistRecord[] = [
         hourlyRate: 250,
         portfolio: [DEMO_PORTFOLIO_IMAGES[0]],
         portfolioImages: [DEMO_PORTFOLIO_IMAGES[0]],
+        heroImage: DEMO_PORTFOLIO_IMAGES[0],
         instagram: '@luna.ink',
         tags: ['color', 'bold', 'traditional'],
         score: 95,
@@ -125,6 +131,7 @@ const MOCK_ARTISTS: ArtistRecord[] = [
         hourlyRate: 300,
         portfolio: [DEMO_PORTFOLIO_IMAGES[1]],
         portfolioImages: [DEMO_PORTFOLIO_IMAGES[1]],
+        heroImage: DEMO_PORTFOLIO_IMAGES[1],
         instagram: '@kai.tattoo',
         tags: ['traditional', 'japanese', 'detail'],
         score: 88,
@@ -140,6 +147,7 @@ const MOCK_ARTISTS: ArtistRecord[] = [
         hourlyRate: 200,
         portfolio: [DEMO_PORTFOLIO_IMAGES[2]],
         portfolioImages: [DEMO_PORTFOLIO_IMAGES[2]],
+        heroImage: DEMO_PORTFOLIO_IMAGES[2],
         instagram: '@river.minimal',
         tags: ['minimalist', 'geometric', 'clean'],
         score: 82,
@@ -155,6 +163,7 @@ const MOCK_ARTISTS: ArtistRecord[] = [
         hourlyRate: 220,
         portfolio: [DEMO_PORTFOLIO_IMAGES[3]],
         portfolioImages: [DEMO_PORTFOLIO_IMAGES[3]],
+        heroImage: DEMO_PORTFOLIO_IMAGES[3],
         instagram: '@alex.storm.ink',
         tags: ['bold', 'color', 'american traditional'],
         score: 78,
@@ -446,6 +455,8 @@ export async function findMatchingArtists(preferences: ArtistPreferences): Promi
       styles AS styles,
       a.hourlyRate AS hourlyRate,
       portfolio AS portfolio,
+      a.portfolioImages AS portfolioImages,
+      a.claimedByUid AS claimedByUid,
       a.instagram AS instagram,
       a.embedding_id AS embedding_id,
       tags AS tags,
@@ -474,6 +485,16 @@ export async function findMatchingArtists(preferences: ArtistPreferences): Promi
         styles: record.styles || [],
         hourlyRate: record.hourlyRate,
         portfolio: record.portfolio || [],
+        // The one gate between stored portfolio and any render surface
+        // (src/lib/portfolio-display): an unclaimed artist's scraped images
+        // are withheld when SHOW_UNCLAIMED_PORTFOLIOS=false, and the card
+        // shows its monogram instead. claimedByUid itself never leaves here.
+        heroImage: pickHeroImage(
+            filterPortfolioForDisplay({
+                portfolioImages: record.portfolioImages,
+                claimedByUid: record.claimedByUid,
+            })
+        ),
         instagram: record.instagram,
         embedding_id: record.embedding_id,
         tags: record.tags || [],
