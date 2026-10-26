@@ -8,6 +8,13 @@ import QuietCTA from "@/components/quiet/QuietCTA";
 import { artistIdFromSlug } from "@/lib/artist-slug";
 import { pickHeroImage } from "@/lib/hero-image";
 import { getRosterArtistById, instagramUrl } from "@/lib/artists-graph";
+import { minimumDepositCents } from "@/lib/booking";
+import { feeModelMoneyCopy } from "@/lib/money-copy";
+import { depositHoldDays } from "@/lib/deposit-hold";
+import { formatNextOpening, readNextOpenings } from "@/lib/next-opening";
+// Server component — reading the take rate here keeps the money sentence in
+// step with PLATFORM_FEE_BPS (never imported into client components).
+import { PLATFORM_FEE_BPS } from "@/lib/stripe";
 
 // 10k+ artists live in the graph — profiles render on demand, never at build.
 export const dynamic = "force-dynamic";
@@ -58,6 +65,13 @@ export default async function ArtistProfilePage({
     );
   }
   if (!artist) notFound();
+
+  const bookable = artist.bookingTier === "bookable";
+  // Spec 4: the deposit floor and the cached next opening, bookable artists only.
+  const depositFrom = `$${(minimumDepositCents() / 100).toLocaleString("en-US")}`;
+  const nextOpening = bookable
+    ? (await readNextOpenings([artist.id])).get(artist.id) ?? null
+    : null;
 
   const nameParts = artist.name.split(" ");
   const lastName = nameParts.pop() ?? artist.name;
@@ -309,7 +323,7 @@ export default async function ArtistProfilePage({
                   }
                   size="md"
                 >
-                  {artist.bookingTier === "bookable" ? "Book the chair" : "Request an intro"}
+                  {bookable ? `Book the chair — deposit from ${depositFrom}` : "Request an intro"}
                 </QuietCTA>
                 {igUrl && (
                   <a
@@ -332,11 +346,29 @@ export default async function ArtistProfilePage({
                   </a>
                 )}
               </div>
+              {bookable && nextOpening && (
+                <p
+                  data-testid="profile-next-opening"
+                  className="mt-5 text-[12px] text-quiet font-body"
+                >
+                  Next opening {formatNextOpening(nextOpening)}
+                </p>
+              )}
               <p className="mt-5 text-[12px] text-quiet-dim font-body leading-[1.7]">
-                {artist.bookingTier === "bookable"
+                {bookable
                   ? "A deposit holds your request — the artist confirms the time."
-                  : "TatT will relay your request to the artist’s shop. No deposit is taken."}
+                  : "TattTester will relay your request to the artist’s shop. No deposit is taken."}
               </p>
+              {bookable && (
+                // The money sentence (ADR-0036 law 2): this module names a
+                // deposit, so it says who pays what and who keeps what.
+                <p
+                  data-testid="profile-money-sentence"
+                  className="mt-3 text-[12px] text-quiet-dim font-body leading-[1.7]"
+                >
+                  {feeModelMoneyCopy(PLATFORM_FEE_BPS / 100, artist.claimed, depositHoldDays())}
+                </p>
+              )}
             </div>
 
             {/* Provenance label (ADR-0036 law 3): an unclaimed profile says

@@ -58,6 +58,22 @@ export function bookingReviewMoneyCopy(
     : `This profile has not joined TatT yet, so we hold the artist deposit while we relay your request to ${artistName}. If they do not claim and complete setup within ${holdDays} days, TatT automatically refunds your deposit in full. Our ${feePercent}% booking fee is shown separately at checkout.`;
 }
 
+/**
+ * The one-sentence fee model (spec 4 §4.4, ADR-0007 percentage) for the
+ * pricing page, the /book header and the profile booking module. The claimed
+ * variant is the spec's paste-ready sentence; the unclaimed variant adds the
+ * held-deposit truth (ADR-0006/0008) per the ADR-0036 amendment.
+ */
+export function feeModelMoneyCopy(
+  feePercent: number,
+  artistClaimed = true,
+  holdDays = depositHoldDays(),
+): string {
+  return artistClaimed
+    ? `You pay the deposit plus a ${feePercent}% booking fee. The artist keeps 100% of the deposit; the booking fee is the only part TattTester keeps.`
+    : `You pay the deposit plus a ${feePercent}% booking fee. This profile has not joined TattTester yet, so we hold the deposit while we relay your request: it goes to the artist in full when they claim, or comes back to you in full after ${holdDays} days if they do not. The booking fee is the only part TattTester keeps.`;
+}
+
 export function artistDepositNotificationMoneyCopy(amount: string): string {
   return `The client paid your ${amount} deposit plus TattTester’s booking fee. You keep the full ${amount} deposit; the fee is the only part TattTester keeps.`;
 }

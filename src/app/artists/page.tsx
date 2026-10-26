@@ -4,6 +4,7 @@ import ArtistCard from "@/components/punk/ArtistCard";
 import SlashHeadline from "@/components/punk/SlashHeadline";
 import RosterControls from "./RosterControls";
 import { pickHeroImage } from "@/lib/hero-image";
+import { formatNextOpening, readNextOpenings } from "@/lib/next-opening";
 import {
   browseArtists,
   ROSTER_STYLES,
@@ -43,6 +44,10 @@ export default async function ArtistsPage({
 
   const roster: RosterPage = await browseArtists({ q, style, hasPortfolio }, sp.page);
   const { artists, total, page, pageCount } = roster;
+  // Spec 4: the cached next-opening hint, one batched read for the page.
+  // Cards carry no money (spec 4 open question 1); price lives on the
+  // profile and /book, where the money sentence sits beside it.
+  const openings = await readNextOpenings(artists.map((a) => a.id));
 
   return (
     <StudioShell>
@@ -90,6 +95,9 @@ export default async function ArtistsPage({
                 showFavorite
                 favoriteSize={20}
                 favoritePosition="top-right"
+                nextOpening={
+                  openings.get(a.id) ? formatNextOpening(openings.get(a.id)!) : undefined
+                }
               />
             ))}
           </div>

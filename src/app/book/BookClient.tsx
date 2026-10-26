@@ -33,7 +33,7 @@ import QuietCTA from "@/components/quiet/QuietCTA";
 import ReceiptCard from "@/components/quiet/ReceiptCard";
 import { useBookings, useDesigns, type TattDesign } from "@/lib/tattStorage";
 import { getApiAuthHeaders } from "@/lib/client-api-auth";
-import { bookingReviewMoneyCopy } from "@/lib/money-copy";
+import { bookingReviewMoneyCopy, feeModelMoneyCopy } from "@/lib/money-copy";
 import { requestReplyPromise } from "@/lib/request-reply-window";
 import {
   BookingPathExplainer,
@@ -43,9 +43,18 @@ import {
 } from "./BookingConfidence";
 import {
   depositDollarsForSize,
+  depositLadderLabel,
   MAX_REQUESTED_SLOTS,
   type RequestedSlot,
 } from "@/lib/booking";
+import { addDaysToISODate, toZonedISODate } from "@/lib/scheduling-engine";
+import {
+  ArtistZoneLine,
+  BookingHeaderFacts,
+  cityFromLocation,
+  yourTimeLabel,
+  zoneAbbreviation,
+} from "./BookTimezone";
 import {
   IDEMPOTENCY_HEADER_NAME,
   REQUEST_IN_FLIGHT_COPY,
@@ -60,6 +69,10 @@ export type OfferedSlot = {
   date: string;
   startTime: string;
   endTime: string;
+  durationMinutes?: number;
+  /** ISO-8601 instant with the artist's offset (spec 4). Absent on a resumed slot from the URL. */
+  startsAt?: string;
+  endsAt?: string;
 };
 
 /**
@@ -72,7 +85,10 @@ export type BookOffer = {
   label: string;
   detail: string;
   slots: OfferedSlot[];
+  /** The artist's IANA zone — what every time on this page is expressed in. */
   timezone?: string;
+  /** First offered slot as an ISO instant; reservation mode only. */
+  nextOpeningAt?: string;
 };
 
 /**
@@ -125,16 +141,22 @@ const BUDGETS = [
   { value: "flexible", label: "Flexible — let the artist quote" },
 ];
 
-/** Next `count` real calendar days starting tomorrow. No fake gaps. */
-function upcomingDays(count: number): { iso: string; date: Date }[] {
+/**
+ * Next `count` real calendar days starting tomorrow. No fake gaps. "Tomorrow"
+ * is the artist's tomorrow when their zone is known (spec 4), else the
+ * browser's.
+ */
+function upcomingDays(count: number, timeZone?: string): { iso: string; date: Date }[] {
   const out: { iso: string; date: Date }[] = [];
   const today = new Date();
+  const localToday = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(
+    today.getDate(),
+  ).padStart(2, "0")}`;
+  const base = timeZone ? toZonedISODate(today.getTime(), timeZone) : localToday;
   for (let i = 1; i <= count; i++) {
-    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i);
-    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-      d.getDate(),
-    ).padStart(2, "0")}`;
-    out.push({ iso, date: d });
+    const iso = addDaysToISODate(base, i);
+    const [y, m, d] = iso.split("-").map(Number);
+    out.push({ iso, date: new Date(y, m - 1, d) });
   }
   return out;
 }
@@ -283,7 +305,16 @@ export default function BookClient({
   const [bookingId, setBookingId] = useState<string | null>(resume?.bookingId ?? null);
   const [paymentsUnavailable, setPaymentsUnavailable] = useState(false);
 
-  const days = useMemo(() => upcomingDays(28), []);
+  const days = useMemo(() => upcomingDays(28, offer.timezone), [offer.timezone]);
+  // The customer's own clock, read after mount so server and client render agree.
+  const [customerZone, setCustomerZone] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    try {
+      setCustomerZone(Intl.DateTimeFormat().resolvedOptions().timeZone || undefined);
+    } catch {
+      setCustomerZone(undefined);
+    }
+  }, []);
   // Offered slots plus the ones this customer lost, so a lost time is shown
   // as "Taken" rather than quietly missing.
   const slotsByDate = useMemo(() => {
@@ -769,6 +800,13 @@ export default function BookClient({
             </div>
           </div>
 
+          <BookingHeaderFacts
+            ladderLabel={depositLadderLabel()}
+            nextOpeningAt={reserving ? offer.nextOpeningAt : undefined}
+            timezone={offer.timezone}
+            feeSentence={feeModelMoneyCopy(feePercent, artist.claimed, holdDays)}
+          />
+
           <BookingPathExplainer
             mode={reserving ? "reservation" : "request"}
             artistName={artist.name}
@@ -866,6 +904,10 @@ export default function BookClient({
                 </p>
               )}
 
+              {reserving && (
+                <ArtistZoneLine timezone={offer.timezone} location={artist.location} />
+              )}
+
               {reserving ? (
                 <div className="mt-8 space-y-8">
                   {slotsByDate.map(([date, daySlots]) => (
@@ -939,6 +981,14 @@ export default function BookClient({
               <div className="mt-10">
                 <div className="text-[12px] text-quiet-dim mb-4 font-body">
                   Time of day
+                  {offer.timezone && zoneAbbreviation(offer.timezone, Date.now()) && (
+                    <>
+                      {" — "}
+                      {/* "Morning" is the artist's morning (spec 4 §5.4). */}
+                      in {cityFromLocation(artist.location) ?? "the artist's"} time (
+                      {zoneAbbreviation(offer.timezone, Date.now())})
+                    </>
+                  )}
                 </div>
                 <div className="flex flex-wrap gap-3">
                   {TIME_PREFS.map((t) => (
@@ -1163,10 +1213,27 @@ export default function BookClient({
                   </dt>
                   <dd className="mt-1.5 text-quiet">
                     {reserving && selectedSlot
-                      ? `${formatSlotDate(selectedSlot.date)} · ${selectedSlot.startTime}`
+                      ? [
+                          formatSlotDate(selectedSlot.date),
+                          "·",
+                          selectedSlot.startTime,
+                          offer.timezone
+                            ? zoneAbbreviation(
+                                offer.timezone,
+                                Date.parse(selectedSlot.startsAt ?? "") || Date.now(),
+                              )
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" ")
                       : selectedDates
                           .map((iso) => shortDate(new Date(`${iso}T00:00:00`)))
                           .join(" · ")}
+                    {reserving && selectedSlot && customerZone && yourTimeLabel(selectedSlot, customerZone) && (
+                      <span data-testid="your-time" className="block mt-1 text-quiet-dim">
+                        = {yourTimeLabel(selectedSlot, customerZone)}
+                      </span>
+                    )}
                   </dd>
                 </div>
                 <div>
@@ -1292,8 +1359,8 @@ export default function BookClient({
                   {phase === "submitting"
                     ? "Preparing checkout…"
                     : reserving
-                      ? "Hold time & continue"
-                      : "Send request & continue"}
+                      ? `Pay $${deposit} deposit to hold`
+                      : `Pay $${deposit} deposit to request`}
                 </QuietCTA>
               )}
             </div>
