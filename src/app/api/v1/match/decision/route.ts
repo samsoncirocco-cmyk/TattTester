@@ -21,7 +21,7 @@ export const runtime = 'nodejs';
 const ARTIST_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export function isValidArtistId(value: unknown): value is string {
+function isValidArtistId(value: unknown): value is string {
   return typeof value === 'string' && ARTIST_ID.test(value);
 }
 

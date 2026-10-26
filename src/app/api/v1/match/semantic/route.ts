@@ -1,33 +1,47 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyApiAuth } from '@/lib/api-auth';
+import { verifyApiAuthWithUser } from '@/lib/api-auth';
+import { rateLimit, rateLimitResponse } from '@/lib/rate-limit';
 import { findMatchingArtists, type MatchResult } from '@/features/match-pulse/services/hybridMatchService';
+import { validatePreferences } from './validate';
 
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
     // Auth check
-    const authError = await verifyApiAuth(req);
+    const { error: authError, user } = await verifyApiAuthWithUser(req);
     if (authError) return authError;
 
+    // Each uncached search costs an embedding call plus graph queries; the
+    // limiter existed but was never wired to this route.
+    const limit = await rateLimit(req, 'semantic-match', user.uid);
+    if (!limit.allowed) return rateLimitResponse(limit);
+
     try {
-        const body = await req.json();
+        let body;
+        try {
+            body = await req.json();
+        } catch {
+            return NextResponse.json({ error: 'Invalid JSON body.', code: 'INVALID_PREFERENCES' }, { status: 400 });
+        }
         const {
             query,
             location,
             style_preferences = [],
-            budget,
-            radius = 25,
             max_results = 10,
-            has_portfolio = false
         } = body;
+
+        const validated = validatePreferences(body);
+        if (!validated.ok) {
+            return NextResponse.json({ error: validated.error, code: 'INVALID_PREFERENCES' }, { status: 400 });
+        }
 
         // Build preferences object
         const preferences = {
             location: location || null,
             styles: style_preferences,
-            budget: budget || null,
-            distance: radius,
-            hasPortfolio: !!has_portfolio
+            budget: validated.budget,
+            distance: validated.radius,
+            hasPortfolio: validated.hasPortfolio
         };
 
         // Execute hybrid matching

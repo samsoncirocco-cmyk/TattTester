@@ -72,3 +72,29 @@ describe("findMatchingArtists — broadened items carry the primary fields (spec
     expect(Array.isArray(extra!.reasons)).toBe(true);
   });
 });
+
+describe("findMatchingArtists — portfolio and rate filters are relaxable (spec 15)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("broadens a thin result caused by has_portfolio or budget and names what was relaxed", async () => {
+    const neo4j = await import("@/features/match-pulse/services/neo4jService");
+    vi.mocked(neo4j.findMatchingArtists).mockImplementation(async (preferences) => {
+      const narrow = { id: "artist-narrow", name: "Narrow Match", city: "Brooklyn", styles: ["Traditional"] };
+      const extra = { id: "artist-extra-1", name: "Extra One", city: "Queens", styles: ["Blackwork"] };
+      if (preferences.hasPortfolio || preferences.budget) return [narrow];
+      return [narrow, extra];
+    });
+    const { findMatchingArtists } = await import("../hybridMatchService");
+
+    const result = await findMatchingArtists(
+      "tattoo artist",
+      { styles: [], location: null, hasPortfolio: true, budget: 150 },
+      10
+    );
+    expect(result.matches.map((m) => m.id)).toEqual(["artist-narrow"]);
+    expect(result.broadened.map((m) => m.id)).toEqual(["artist-extra-1"]);
+    expect(result.broadenedReason).toContain("relaxed: portfolio, rate");
+  });
+});
