@@ -406,9 +406,16 @@ export async function findMatchingArtists(
                 // and are always kept in a separate, clearly-labeled list.
                 let broadened: MatchedArtist[] = [];
                 let broadenedReason: string | undefined;
-                const hasRelaxableFilters = Boolean(
-                    (preferences.styles && preferences.styles.length > 0) || preferences.location
-                );
+                // Every filter the relaxed call drops (it passes only
+                // keywords) can be the reason a result is thin — including
+                // the portfolio and rate filters spec 15 made live. Name the
+                // ones in play so the client can say what was loosened.
+                const relaxedFilters: string[] = [];
+                if (preferences.styles && preferences.styles.length > 0) relaxedFilters.push('style');
+                if (preferences.location) relaxedFilters.push('location');
+                if (preferences.hasPortfolio) relaxedFilters.push('portfolio');
+                if (preferences.budget) relaxedFilters.push('rate');
+                const hasRelaxableFilters = relaxedFilters.length > 0;
                 if (topMatches.length < THIN_RESULT_THRESHOLD && hasRelaxableFilters) {
                     const relaxedGraphResults = await executeGraphQuery({
                         keywords
@@ -419,7 +426,7 @@ export async function findMatchingArtists(
                         .filter((m) => !primaryIds.has(String(m.id)))
                         .slice(0, MAX_BROADENED_RESULTS);
                     if (broadened.length > 0) {
-                        broadenedReason = 'Also nearby / similar — fewer than a handful of exact matches for your filters';
+                        broadenedReason = `Also nearby / similar — fewer than a handful of exact matches for your filters (relaxed: ${relaxedFilters.join(', ')})`;
                     }
                 }
 

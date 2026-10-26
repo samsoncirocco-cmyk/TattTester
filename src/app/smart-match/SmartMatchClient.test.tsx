@@ -452,3 +452,91 @@ describe("SmartMatchClient second deck (spec 14)", () => {
     expect(setMatches).not.toHaveBeenCalled();
   });
 });
+
+describe("SmartMatchClient intent and rate pills (spec 15)", () => {
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/smart-match");
+    fetchMock.mockImplementation(async () => jsonResponse(liveMatchResponse));
+  });
+
+  it("sends has_portfolio false and no budget by default", async () => {
+    render(<SmartMatchClient />);
+    fireEvent.click(screen.getByRole("button", { name: /find artists/i }));
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/swipe"));
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.has_portfolio).toBe(false);
+    expect("budget" in body).toBe(false);
+    expect("radius" in body).toBe(false);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("maps a big piece to has_portfolio and a rate pill to budget, says so, and keeps them in the URL", async () => {
+    render(<SmartMatchClient />);
+    fireEvent.click(screen.getByRole("button", { name: "Big piece or sleeve" }));
+    fireEvent.click(screen.getByRole("button", { name: "Up to $250/hr" }));
+    expect(screen.getByRole("status").textContent).toBe(
+      "Showing artists with portfolios. Rates are a guide — artists who haven't listed one are still shown."
+    );
+    expect(window.location.search).toBe("?intent=big&rate=250");
+
+    fireEvent.click(screen.getByRole("button", { name: /find artists/i }));
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/swipe"));
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.has_portfolio).toBe(true);
+    expect(body.budget).toBe(250);
+  });
+
+  it("restores the pills from URL params and ignores unknown values", () => {
+    searchParams = new URLSearchParams("intent=coverup&rate=9999");
+    render(<SmartMatchClient />);
+    expect(
+      screen.getByRole("button", { name: "Cover-up" }).getAttribute("aria-pressed")
+    ).toBe("true");
+    expect(
+      screen.getByRole("button", { name: "No limit" }).getAttribute("aria-pressed")
+    ).toBe("true");
+  });
+
+  it("leaves the pills untouched by a ?ds= prefill and sends them with the auto-run", async () => {
+    searchParams = new URLSearchParams("ds=sess-1&intent=big");
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).startsWith("/api/v1/design-session/")) {
+        return jsonResponse(completeSessionEnvelope);
+      }
+      return jsonResponse(liveMatchResponse);
+    });
+    render(<SmartMatchClient />);
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/swipe?ds=sess-1"));
+    expect(
+      screen.getByRole("button", { name: "Big piece or sleeve" }).getAttribute("aria-pressed")
+    ).toBe("true");
+    const matchCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/v1/match/semantic");
+    const body = JSON.parse((matchCall![1] as RequestInit).body as string);
+    expect(body.has_portfolio).toBe(true);
+    expect(body.style_preferences).toEqual(["Fine Line", "Blackwork"]);
+  });
+
+  it("shows the route's validation message instead of a bare HTTP 400", async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ error: "budget must be a number between 1 and 2000 (dollars per hour).", code: "INVALID_PREFERENCES" }, false, 400)
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<SmartMatchClient />);
+    fireEvent.click(screen.getByRole("button", { name: /find artists/i }));
+    expect(await screen.findByText(/budget must be a number between 1 and 2000/i)).toBeTruthy();
+    expect(screen.queryByText(/HTTP 400/)).toBeNull();
+  });
+
+  it("names the filters in play when a selection removes everyone", async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ success: true, query_info: { graphSource: "live" }, matches: [], broadened: [] })
+    );
+    render(<SmartMatchClient />);
+    fireEvent.click(screen.getByRole("button", { name: "Cover-up" }));
+    fireEvent.click(screen.getByRole("button", { name: "Up to $150/hr" }));
+    fireEvent.click(screen.getByRole("button", { name: /find artists/i }));
+    expect(
+      await screen.findByText(/no artists match that combination yet \(with portfolios, up to \$150\/hr\)/i)
+    ).toBeTruthy();
+  });
+});
