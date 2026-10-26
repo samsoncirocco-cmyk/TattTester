@@ -40,6 +40,21 @@ export type InboundOutcome =
       text: string;
       sessionId: string;
       phone: string;
+      /**
+       * Linked account charged for the reveal (ADR-0041). Absent when the
+       * texter has no account — the phone-keyed free-reveal cap still applies.
+       */
+      uid?: string;
+      /**
+       * Generation credit reserved at arm time. executeReveal releases it on
+       * failure or downgrade. Absent for an unlinked texter and in demo mode.
+       */
+      credit?: {
+        id: string;
+        source: 'free' | 'paid';
+        freeRemaining: number;
+        paidRemaining: number;
+      };
       /** Matches profile.revealArmedAt — executeReveal aborts if superseded. */
       armedAt: string;
     }
@@ -139,10 +154,11 @@ export interface SmsProfile {
    */
   placementArmedAt?: string | null;
   /**
-   * The generation-credit reservation charged for the in-flight REFINE
-   * round (ADR-0049). Persisted at reserve time — not only in the deferred
-   * closure — so a reservation orphaned by a crash between arm and delivery
-   * is reconcilable from the profile. Cleared when the round settles.
+   * The generation-credit reservation charged for the in-flight reveal
+   * (ADR-0041) or REFINE round (ADR-0049). Persisted at reserve time — not
+   * only in the deferred closure — so a reservation orphaned by a crash
+   * between arm and delivery is reconcilable from the profile. Cleared when
+   * the render settles.
    */
   pendingCreditReservationId?: string | null;
   /**

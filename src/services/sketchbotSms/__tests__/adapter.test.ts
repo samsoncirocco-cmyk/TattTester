@@ -25,6 +25,7 @@ import {
   ROUND_FAILED_TEXT,
   BUDGET_EXHAUSTED_TEXT,
   REVEAL_FAILED_TEXT,
+  REVEAL_FAILED_NO_REFUND_TEXT,
   CRITIQUE_FAILED_TEXT,
   REFINE_FAILED_TEXT,
 } from '../internal/render';
@@ -1143,6 +1144,9 @@ describe('the two-cut rounds (ADR-0049)', () => {
     it('restarts the design when the session belongs to another account — refused pre-charge (#338 item 1)', async () => {
       mockLinked('user-1');
       await driveToPicked();
+      // The reveal itself now reserves a credit (#397). This assertion is
+      // about the refused REFINE, which must not reserve a second one.
+      vi.mocked(reserveGenerationCredit).mockClear();
       vi.mocked(claimSessionOwnership).mockRejectedValueOnce(
         new DesignSessionError('SESSION_NOT_FOUND', 'No design session')
       );
@@ -1161,6 +1165,7 @@ describe('the two-cut rounds (ADR-0049)', () => {
     it('propagates a transient store error instead of silently discarding the session', async () => {
       mockLinked('user-1');
       await driveToPicked();
+      vi.mocked(reserveGenerationCredit).mockClear();
       vi.mocked(claimSessionOwnership).mockRejectedValueOnce(new Error('firestore hiccup'));
 
       await expect(handleInbound({ phone: PHONE, body: 'REFINE' })).rejects.toThrow(
@@ -1341,6 +1346,7 @@ describe('the two-cut rounds (ADR-0049)', () => {
     it('never double-fires a round on an impatient second REFINE', async () => {
       mockLinked('user-1');
       await driveToPicked();
+      vi.mocked(reserveGenerationCredit).mockClear();
       await handleInbound({ phone: PHONE, body: 'REFINE' });
 
       const again = await handleInbound({ phone: PHONE, body: 'REFINE' });
@@ -1353,6 +1359,7 @@ describe('the two-cut rounds (ADR-0049)', () => {
     it('refuses the round when the global budget is gone, before the credit', async () => {
       mockLinked('user-1');
       await driveToPicked();
+      vi.mocked(reserveGenerationCredit).mockClear();
       vi.mocked(checkBudget).mockResolvedValueOnce({
         allowed: false,
         spentCents: 50_000,
@@ -1506,6 +1513,199 @@ describe('spend guardrails', () => {
     // And the proposal is still live: budget back → the yes works.
     const retry = await handleInbound({ phone: PHONE, body: 'yes' });
     expect(retry.kind).toBe('reveal');
+  });
+});
+
+describe('linked reveal credits (ADR-0041, #397)', () => {
+  const credit = { id: 'res-1', source: 'free' as const, freeRemaining: 24, paidRemaining: 0 };
+
+  it('reserves one shared credit at arm time and defers the render', async () => {
+    mockLinked('user-1');
+    await driveToProposal();
+
+    const outcome = await handleInbound({ phone: PHONE, body: 'yes' });
+
+    expect(claimSessionOwnership).toHaveBeenCalledWith('s1', 'user-1', { stamp: true });
+    expect(reserveGenerationCredit).toHaveBeenCalledWith('user-1');
+    expect(outcome).toMatchObject({ kind: 'reveal', uid: 'user-1', credit });
+    expect(confirmProposal).not.toHaveBeenCalled();
+    const profile = await memoryProfileStore.get(PHONE);
+    expect(profile?.pendingCreditReservationId).toBe('res-1');
+  });
+
+  it('leaves the ledger alone for an unlinked number', async () => {
+    await driveToProposal();
+
+    const outcome = await handleInbound({ phone: PHONE, body: 'yes' });
+
+    expect(outcome.kind).toBe('reveal');
+    expect(reserveGenerationCredit).not.toHaveBeenCalled();
+    expect(claimSessionOwnership).not.toHaveBeenCalled();
+  });
+
+  it('refuses an empty meter before taking the daily slot', async () => {
+    mockLinked('user-1');
+    await driveToProposal();
+    vi.mocked(reserveGenerationCredit).mockRejectedValueOnce(new GenerationCreditsExhaustedError());
+
+    const outcome = await handleInbound({ phone: PHONE, body: 'yes' });
+
+    expect(outcome.kind).toBe('reply');
+    if (outcome.kind === 'reply') expect(outcome.text).toContain('free generations');
+    const profile = await memoryProfileStore.get(PHONE);
+    expect(profile?.lastStage).toBe('proposal');
+    expect(profile?.dailyReveals.count).toBe(0);
+    expect(profile?.totalReveals).toBe(0);
+    expect(confirmProposal).not.toHaveBeenCalled();
+  });
+
+  it('does not reserve a credit when the global budget is already gone', async () => {
+    mockLinked('user-1');
+    await driveToProposal();
+    vi.mocked(checkBudget).mockResolvedValueOnce({
+      allowed: false,
+      spentCents: 50_000,
+      remainingCents: 0,
+    });
+
+    const outcome = await handleInbound({ phone: PHONE, body: 'yes' });
+
+    expect(outcome).toEqual({ kind: 'reply', text: BUDGET_EXHAUSTED_TEXT });
+    expect(reserveGenerationCredit).not.toHaveBeenCalled();
+  });
+
+  it('restarts without charging when the session belongs to another account', async () => {
+    mockLinked('user-1');
+    await driveToProposal();
+    vi.mocked(claimSessionOwnership).mockRejectedValueOnce(
+      new DesignSessionError('SESSION_NOT_FOUND', 'No design session')
+    );
+    vi.mocked(converse).mockResolvedValueOnce(turn('chatting', { sessionId: 's2' }));
+
+    const outcome = await handleInbound({ phone: PHONE, body: 'yes' });
+
+    expect(reserveGenerationCredit).not.toHaveBeenCalled();
+    expect(outcome.kind).toBe('reply');
+    const profile = await memoryProfileStore.get(PHONE);
+    expect(profile?.activeSessionId).toBe('s2');
+  });
+
+  it('keeps the credit on delivery and records the reservation on the reveal claim', async () => {
+    mockLinked('user-1');
+    await driveToProposal();
+    const armed = await handleInbound({ phone: PHONE, body: 'yes' });
+    if (armed.kind !== 'reveal') throw new Error('expected reveal');
+    vi.mocked(confirmProposal).mockResolvedValueOnce(
+      revealedSession() as unknown as Awaited<ReturnType<typeof confirmProposal>>
+    );
+
+    const delivery = await executeReveal(
+      armed.sessionId,
+      PHONE,
+      armed.armedAt,
+      armed.credit,
+      armed.uid
+    );
+
+    expect(confirmProposal).toHaveBeenCalledWith('s1', { reservationId: 'res-1' });
+    expect(releaseGenerationCredit).not.toHaveBeenCalled();
+    expect(delivery.cuts).toHaveLength(2);
+    expect(delivery.closingText).not.toContain('credit is back');
+    const profile = await memoryProfileStore.get(PHONE);
+    expect(profile?.lastStage).toBe('revealed');
+    expect(profile?.pendingCreditReservationId).toBeNull();
+  });
+
+  it('releases the credit when the reveal fails', async () => {
+    mockLinked('user-1');
+    await driveToProposal();
+    const armed = await handleInbound({ phone: PHONE, body: 'yes' });
+    if (armed.kind !== 'reveal') throw new Error('expected reveal');
+    vi.mocked(confirmProposal).mockRejectedValueOnce(new Error('provider blew up'));
+
+    const delivery = await executeReveal(
+      armed.sessionId,
+      PHONE,
+      armed.armedAt,
+      armed.credit,
+      armed.uid
+    );
+
+    expect(delivery.cuts).toHaveLength(0);
+    expect(delivery.closingText).toBe(REVEAL_FAILED_TEXT);
+    expect(releaseGenerationCredit).toHaveBeenCalledWith('user-1', credit);
+    const profile = await memoryProfileStore.get(PHONE);
+    expect(profile?.lastStage).toBe('proposal');
+    expect(profile?.pendingCreditReservationId).toBeNull();
+    expect(profile?.dailyReveals.count).toBe(0);
+  });
+
+  it('does not claim the credit is back when the release fails', async () => {
+    mockLinked('user-1');
+    await driveToProposal();
+    const armed = await handleInbound({ phone: PHONE, body: 'yes' });
+    if (armed.kind !== 'reveal') throw new Error('expected reveal');
+    vi.mocked(confirmProposal).mockRejectedValueOnce(new Error('provider blew up'));
+    vi.mocked(releaseGenerationCredit).mockRejectedValueOnce(new Error('firestore down'));
+
+    const delivery = await executeReveal(
+      armed.sessionId,
+      PHONE,
+      armed.armedAt,
+      armed.credit,
+      armed.uid
+    );
+
+    expect(delivery.closingText).toBe(REVEAL_FAILED_NO_REFUND_TEXT);
+    const profile = await memoryProfileStore.get(PHONE);
+    expect(profile?.pendingCreditReservationId).toBe('res-1');
+  });
+
+  it('releases the credit on a downgraded reveal and says so', async () => {
+    mockLinked('user-1');
+    await driveToProposal();
+    const armed = await handleInbound({ phone: PHONE, body: 'yes' });
+    if (armed.kind !== 'reveal') throw new Error('expected reveal');
+    vi.mocked(confirmProposal).mockResolvedValueOnce({
+      ...revealedSession(),
+      downgraded: true,
+      downgradeReason: 'REPLICATE_ERROR',
+    } as unknown as Awaited<ReturnType<typeof confirmProposal>>);
+
+    const delivery = await executeReveal(
+      armed.sessionId,
+      PHONE,
+      armed.armedAt,
+      armed.credit,
+      armed.uid
+    );
+
+    expect(delivery.cuts).toHaveLength(2);
+    expect(delivery.closingText).toContain('credit is back');
+    expect(releaseGenerationCredit).toHaveBeenCalledWith('user-1', credit);
+    const profile = await memoryProfileStore.get(PHONE);
+    expect(profile?.pendingCreditReservationId).toBeNull();
+  });
+
+  it('hands the credit back when the daily cap refuses the reveal', async () => {
+    vi.stubEnv('SKETCHBOT_SMS_REVEALS_PER_DAY', '1');
+    mockLinked('user-1');
+    await driveToProposal();
+    const first = await handleInbound({ phone: PHONE, body: 'yes' });
+    expect(first.kind).toBe('reveal');
+    vi.mocked(confirmProposal).mockResolvedValueOnce(
+      revealedSession() as unknown as Awaited<ReturnType<typeof confirmProposal>>
+    );
+    if (first.kind === 'reveal') {
+      await executeReveal(first.sessionId, PHONE, first.armedAt, first.credit, first.uid);
+    }
+
+    await restartAndDriveToProposal();
+    const second = await handleInbound({ phone: PHONE, body: 'yes' });
+
+    expect(second.kind).toBe('reply');
+    expect(releaseGenerationCredit).toHaveBeenCalledWith('user-1', credit);
+    expect(confirmProposal).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -108,6 +108,13 @@ export function linkGateText(signupUrl: string): string {
 export const REVEAL_FAILED_TEXT =
   "That render didn't come together — my fault, not yours, and it didn't count against you. Give it another go in a few minutes.";
 
+/**
+ * Same failure, but the generation-credit release did not land. The copy
+ * must not claim the ledger was untouched.
+ */
+export const REVEAL_FAILED_NO_REFUND_TEXT =
+  "That render didn't come together — my fault, not yours. Give it another go in a few minutes.";
+
 /** Conversation providers all down (the web flow's 503 path, in voice). */
 export function unavailableText(webUrl: string): string {
   return `I'm having trouble thinking straight right now. Try me again shortly — or design on the site: ${webUrl}`;

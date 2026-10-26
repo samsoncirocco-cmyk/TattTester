@@ -257,7 +257,9 @@ export async function POST(req: NextRequest) {
         const delivery = await executeReveal(
           outcome.sessionId,
           outcome.phone,
-          outcome.armedAt
+          outcome.armedAt,
+          outcome.credit,
+          outcome.uid
         );
         // Re-check STOP between ack and delivery — never message an
         // opted-out number (Twilio would refuse too; we don't even try).
