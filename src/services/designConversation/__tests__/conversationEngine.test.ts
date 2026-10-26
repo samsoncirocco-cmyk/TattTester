@@ -22,6 +22,7 @@ import { scoreRecord, CONFIDENCE_THRESHOLD } from '../internal/confidence';
 // copy change look like nine behavioural regressions.
 import {
   HANDOFF_MESSAGE,
+  PLACEMENT_GATE_QUESTION,
   PROPOSAL_AFFORDANCE,
   PROPOSAL_LEAD,
   PROPOSAL_REMINDER,
@@ -224,6 +225,52 @@ describe('runTurn — judgment cadence', () => {
     expect(result.turnLog.confidence).toBeGreaterThanOrEqual(CONFIDENCE_THRESHOLD);
     expect(result.stage).toBe('chatting');
     expect(result.turnLog.firedRule).toBe('none');
+  });
+});
+
+describe('runTurn — placement stall (#376)', () => {
+  const wandering = {
+    reply: 'Love the koi. Tell me more about the mood.',
+    record: {
+      placement: '',
+      styleTags: ['japanese'],
+      meaning: 'a koi for perseverance',
+      references: [],
+      ambiguousAxes: [],
+    },
+  };
+
+  it('asks directly once a second turn still has no placement and the model did not ask', async () => {
+    configureVertex();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(vertexResponse(wandering)));
+
+    const result = await runTurn({ messages: MESSAGES, userTurn: 2 });
+
+    expect(result.stage).toBe('chatting');
+    expect(result.turnLog.firedRule).toBe('placement-stall-ask');
+    expect(result.turnLog.missingFields).toContain('placement');
+    expect(result.reply).toBe(PLACEMENT_GATE_QUESTION);
+    expect(result.playback).toBeUndefined();
+  });
+
+  it('lets the first turn wander — the opener already asked', async () => {
+    configureVertex();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(vertexResponse(wandering)));
+
+    const result = await runTurn({ messages: MESSAGES, userTurn: 1 });
+
+    expect(result.turnLog.firedRule).toBe('none');
+    expect(result.reply).toBe(wandering.reply);
+  });
+
+  it('keeps a model reply that already asks where on the body', async () => {
+    configureVertex();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(vertexResponse(SPARSE_PAYLOAD)));
+
+    const result = await runTurn({ messages: MESSAGES, userTurn: 4 });
+
+    expect(result.turnLog.firedRule).toBe('none');
+    expect(result.reply).toBe(SPARSE_PAYLOAD.reply);
   });
 });
 

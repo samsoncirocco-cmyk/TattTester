@@ -55,6 +55,10 @@ export interface TurnLog {
      *  drawable on the record — the single evocation follow-up mined it
      *  for imagery (TAT-51). Asked at most once per session. */
     | 'evocation-question'
+    /** Placement is still missing after the opening turn and the model
+     *  did not ask for it. The consult was about to stall in 'chatting'
+     *  with no path to a render (#376). */
+    | 'placement-stall-ask'
     | 'none';
   /** Model that served the turn (per-session pinned; fallback noted). */
   model: string;

@@ -26,6 +26,10 @@ export const IP_HEADS_UP_LINE =
   'heads-up: inspired-by take — your artist dials in the exact likeness.';
 export const DRAW_CTA_LABEL = 'ready when you are — draw 2 cuts ▸';
 
+/** Persistent stall signal (#376). The chat question can scroll away. */
+export const PLACEMENT_GAP_LINE =
+  'still need where on your body this goes before I can draw.';
+
 interface NoteRow {
   key: string;
   label: string;
@@ -90,18 +94,38 @@ export interface SketchbotNotesProps {
   /** Proposal reached — anchor the draw CTA at the notepad's bottom. */
   drawReady?: boolean;
   onDraw?: () => void;
+  /** The user has spoken and placement is still empty (#376). */
+  placementNeeded?: boolean;
 }
 
 /** The rows + heads-up + CTA, shared by the desktop card and mobile sheet. */
-function NotesBody({ notes, locked = false, onFix, drawReady = false, onDraw }: SketchbotNotesProps) {
+function NotesBody({
+  notes,
+  locked = false,
+  onFix,
+  drawReady = false,
+  onDraw,
+  placementNeeded = false,
+}: SketchbotNotesProps) {
   const rows = notes ? rowsFrom(notes) : [];
+  const gap = placementNeeded ? (
+    <p role="status" className="px-2 pb-2 font-body text-[12px] leading-[1.5] text-pink">
+      {PLACEMENT_GAP_LINE}
+    </p>
+  ) : null;
 
   if (rows.length === 0) {
-    return <p className="font-body text-[13px] text-white/40">{NOTES_EMPTY_LINE}</p>;
+    return (
+      <div className="space-y-2">
+        <p className="font-body text-[13px] text-white/40">{NOTES_EMPTY_LINE}</p>
+        {gap}
+      </div>
+    );
   }
 
   return (
     <div className="space-y-1">
+      {gap}
       {rows.map((row) =>
         locked || !onFix ? (
           <div key={row.key} className="flex gap-3 px-2 py-1.5">

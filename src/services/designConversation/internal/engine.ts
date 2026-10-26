@@ -16,6 +16,10 @@
  *                                                with a hard downstream
  *                                                dependency; ADR-0021
  *                                                amendment)
+ *   turn >= 2, no placement, and the model
+ *     reply never asks where it goes          → 'chatting' (same direct
+ *                                                question — a consult must
+ *                                                not stall in silence, #376)
  *   confidence >= threshold AND placement
  *     + meaning present                       → 'proposal' (judgment)
  *   otherwise                                 → 'chatting'
@@ -47,6 +51,7 @@ import {
   buildSystemPrompt,
   HANDOFF_MESSAGE,
   PLACEMENT_GATE_QUESTION,
+  asksAboutPlacement,
   SUBJECT_GATE_QUESTION,
   proposalReply,
   proposalFollowUp,
@@ -81,6 +86,14 @@ import { scoreRecord, CONFIDENCE_THRESHOLD } from './confidence';
 import { buildSessionNotes } from './notes';
 import { converseWithProviders, type RawTurnPayload } from './providers';
 import { isDemoMode, runDemoTurn } from './demoScript';
+
+/**
+ * How many user turns may pass with placement still empty before the
+ * engine stops trusting the model to ask. Turn 1 can wander. Turn 2
+ * without a placement question is the stall #376 saw in production
+ * (four turns, firedRule none, missingFields: [placement]).
+ */
+const PLACEMENT_STALL_TURN = 2;
 
 /** Cadence caps (ADR-0021) — deterministic code, never exposed as limits. */
 export const FORCE_PROPOSAL_TURN = 12;
@@ -1191,6 +1204,17 @@ export async function runConversationTurn(
           repeated: candidate,
         });
         candidate = REPEAT_FALLBACK;
+      }
+      // Placement stall (#376). Dedup runs first so a stripped question
+      // still counts as "didn't ask". A reply that already asks is left
+      // alone — the model's wording is fine when it actually asks.
+      if (
+        !hasPlacement &&
+        request.userTurn >= PLACEMENT_STALL_TURN &&
+        !asksAboutPlacement(candidate)
+      ) {
+        firedRule = 'placement-stall-ask';
+        candidate = PLACEMENT_GATE_QUESTION;
       }
     }
     reply = candidate;
