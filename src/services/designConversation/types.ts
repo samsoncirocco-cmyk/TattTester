@@ -94,6 +94,12 @@ export interface ConverseResponse {
    * Present only while stage is 'chatting' and a field blocks promotion.
    */
   gate?: GateState;
+  /**
+   * Present only on the response that CREATED the session (spec 7): the
+   * secret this browser sends back to resume an unowned session from
+   * /design?ds=. The server keeps only its hash.
+   */
+  resumeKey?: string;
 }
 
 /**

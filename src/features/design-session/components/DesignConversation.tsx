@@ -21,6 +21,22 @@ import { CREDITS_EXHAUSTED_CODE } from '@/lib/generation-credits-shared';
 import { useAuthStore } from '@/store/useAuthStore';
 import { refreshCreditBalance } from '../services/creditBalance';
 import { BuyCreditsLink, CreditCountLine } from './CreditBalance';
+import { GeneratingBeat, REVEAL_BEAT_LINES } from './GeneratingBeat';
+import type { SessionRendering } from '@/services/designSession/resumeContract';
+import {
+  LOST_RENDER_LINE,
+  NEW_SKETCH_LABEL,
+  NOT_FOUND_LINE,
+  RENDER_DID_NOT_LAND_LINE,
+  RESUME_LINE,
+  STILL_DRAWING_LINE,
+  clearSessionIdFromUrl,
+  fetchSessionForResume,
+  rememberResumeKey,
+  useSessionPoll,
+  writeSessionIdToUrl,
+  type ResumeFetchResult,
+} from '../services/sessionResume';
 import { ChatBubble } from './ChatBubble';
 import { ChatInput } from './ChatInput';
 import { ExampleStrip } from './ExampleStrip';
@@ -84,8 +100,18 @@ type ConversationAction =
  * Council still runs inside it (never the raw-prompt bypass). An
  * `initialPrompt` (the /design?prompt= deep link) is sent as the user's
  * first message instead of requesting the opener.
+ *
+ * Resume (spec 7): every session puts its id in the address bar as `?ds=`.
+ * Mounted with `initialSessionId`, the conversation re-reads that session
+ * and opens on its last completed state — the chat, or the reveal — and
+ * waits on a render only while its claim is still live. A lost render
+ * (stale claim) or a stranger's/missing session never shows a half state:
+ * the first offers a re-run, the second starts fresh.
  */
-export function DesignConversation({ initialPrompt }: { initialPrompt?: string } = {}) {
+export function DesignConversation({
+  initialPrompt,
+  initialSessionId,
+}: { initialPrompt?: string; initialSessionId?: string } = {}) {
   const [mode, setMode] = useState<SurfaceMode>('conversation');
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [sessionId, setSessionId] = useState<string | undefined>();
@@ -115,6 +141,11 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
   const [prefill, setPrefill] = useState<{ text: string; nonce: number } | undefined>();
   const prefillCount = useRef(0);
   const openerRequested = useRef(false);
+  // Spec 7 resume state: the one quiet line, a reveal still rendering on the
+  // server, and a round render handed on to the reveal flow.
+  const [resumeNotice, setResumeNotice] = useState<string | null>(null);
+  const [awaitingReveal, setAwaitingReveal] = useState(false);
+  const [resumeRendering, setResumeRendering] = useState<SessionRendering | undefined>();
   const uid = useAuthStore((s) => s.user?.uid);
 
   // Spec 8: a signed-in customer sees what they have left. One read when
@@ -155,6 +186,8 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
       action.message === undefined ? { sessionId } : { sessionId, message: action.message }
     )
       .then((response) => {
+        if (response.resumeKey) rememberResumeKey(response.sessionId, response.resumeKey);
+        writeSessionIdToUrl(response.sessionId);
         setSessionId(response.sessionId);
         setStage(response.stage);
         setPlayback(response.playback);
@@ -194,6 +227,78 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
       .finally(() => setPending(false));
   };
 
+  /** A missing or foreign session: say so once, drop `ds`, open fresh. */
+  const startFresh = () => {
+    clearSessionIdFromUrl();
+    setResumeNotice(NOT_FOUND_LINE);
+    runAction({ kind: 'converse' });
+  };
+
+  /**
+   * A reveal render the page was waiting on has settled one way or another.
+   * Revealed: hand over to the reveal flow. Still in intake with no claim:
+   * the render failed and its credit went back through the route, so offer
+   * the re-run. A claim gone stale: the render died, offer the re-run.
+   */
+  const settleReveal = (result: ResumeFetchResult) => {
+    if (result.status !== 'found') return;
+    const { session, resume } = result;
+    if (session.phase !== 'intake') {
+      setAwaitingReveal(false);
+      setRevealSession(session);
+      setMode('reveal');
+      return;
+    }
+    const rendering = resume?.rendering;
+    if (rendering && !rendering.stale) return;
+    setAwaitingReveal(false);
+    setLastAction({ kind: 'confirm' });
+    setError(rendering?.stale ? LOST_RENDER_LINE : RENDER_DID_NOT_LAND_LINE);
+  };
+
+  const hydrate = (id: string) => {
+    setPending(true);
+    fetchSessionForResume(id)
+      .then((result) => {
+        // No resume view means this browser may not see the chat — either
+        // nobody here owns it or it is gone. Never show someone else's cuts.
+        if (result.status !== 'found' || !result.resume) {
+          setPending(false);
+          startFresh();
+          return;
+        }
+        const { session, resume } = result;
+        setResumeNotice(RESUME_LINE);
+        setSessionId(session.id);
+        setMessages(resume.transcript);
+        setStage(resume.stage ?? 'chatting');
+        setPlayback(resume.playback);
+        setHandoffUrl(resume.handoffUrl);
+        if (resume.notes) setNotes(resume.notes);
+        setPending(false);
+        if (session.phase !== 'intake') {
+          setResumeRendering(resume.rendering);
+          setRevealSession(session);
+          setMode('reveal');
+          return;
+        }
+        if (resume.rendering && !resume.rendering.stale) {
+          setAwaitingReveal(true);
+          return;
+        }
+        if (resume.rendering?.stale) {
+          setLastAction({ kind: 'confirm' });
+          setError(LOST_RENDER_LINE);
+        }
+      })
+      .catch(() => {
+        setPending(false);
+        startFresh();
+      });
+  };
+
+  useSessionPoll(sessionId, awaitingReveal, settleReveal);
+
   // Opener on mount — the bot speaks first (ADR-0019). A deep-linked prompt
   // (/design?prompt=…) is the user speaking first instead: it goes out as
   // the first message with no opener round-trip, so a complete prompt takes
@@ -201,6 +306,11 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
   useEffect(() => {
     if (openerRequested.current) return;
     openerRequested.current = true;
+    // `ds` wins over `prompt` (spec 7): a reload resumes, never re-sends.
+    if (initialSessionId) {
+      hydrate(initialSessionId);
+      return;
+    }
     const prompt = initialPrompt?.trim();
     if (prompt) {
       setMessages([{ role: 'user', text: prompt }]);
@@ -246,11 +356,33 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
     );
   }
 
-  const transcript = messages.map((message, i) => (
-    <ChatBubble key={i} role={message.role}>
-      {message.text}
-    </ChatBubble>
-  ));
+  // Spec 7: the one quiet resume (or not-found) line, with a way out to a
+  // clean sketch — a full load, so no resumed state survives it.
+  const resumeBanner = resumeNotice ? (
+    <div
+      role="status"
+      data-testid="resume-notice"
+      className="flex flex-wrap items-baseline justify-between gap-3 font-body text-[12px] uppercase tracking-[0.18em] text-white/55"
+    >
+      <span>{resumeNotice}</span>
+      {resumeNotice === RESUME_LINE && (
+        <a href="/design" className="underline underline-offset-4 hover:text-pink">
+          {NEW_SKETCH_LABEL}
+        </a>
+      )}
+    </div>
+  ) : null;
+
+  const transcript = (
+    <>
+      {resumeBanner}
+      {messages.map((message, i) => (
+        <ChatBubble key={i} role={message.role}>
+          {message.text}
+        </ChatBubble>
+      ))}
+    </>
+  );
 
   // Desktop: persistent panel beside the chat. Mobile: pull-up sheet,
   // default peeking. Locked once the reveal fires — the notepad becomes the
@@ -283,24 +415,27 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
     return withNotepad(
       <>
         {transcript}
-        <DesignSessionFlow initialSession={revealSession} />
+        <DesignSessionFlow initialSession={revealSession} resumeRendering={resumeRendering} />
       </>,
       { locked: true, drawReady: false }
     );
   }
 
-  const showProposal = stage === 'proposal' && !pending && !error && !signInNeeded;
-  const showHandoff = stage === 'handoff' && !pending && !error && !signInNeeded;
+  // A reveal still rendering on the server after a reload is as busy as a
+  // request in flight: no second consent tap, no input (spec 7).
+  const busy = pending || awaitingReveal;
+  const showProposal = stage === 'proposal' && !busy && !error && !signInNeeded;
+  const showHandoff = stage === 'handoff' && !busy && !error && !signInNeeded;
   // The visible fast lane (TAT-48): the record could already generate
   // (ADR-0028 readiness, judged by the engine) but SketchBot still has
   // questions — surface the skip.
   const showFastLane =
-    stage === 'chatting' && !pending && !error && !signInNeeded && notes?.sufficient === true;
+    stage === 'chatting' && !busy && !error && !signInNeeded && notes?.sufficient === true;
   // A stalled gate (#376): the same field has held the proposal back for
   // two turns running, so the session says why there is no render yet —
   // one consultant line under the bot's direct ask, never the rationale.
   const showGateLine =
-    stage === 'chatting' && !pending && !error && !signInNeeded && gate?.stalled === true;
+    stage === 'chatting' && !busy && !error && !signInNeeded && gate?.stalled === true;
 
   // First-run empty state: the user hasn't spoken yet (neither typed nor
   // deep-linked). Starter chips + example strip scaffold the blank box; the
@@ -337,6 +472,13 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
       )}
 
       {pending && <ThinkingLine label="Typing" />}
+
+      {awaitingReveal && (
+        <>
+          <ChatBubble role="bot">{STILL_DRAWING_LINE}</ChatBubble>
+          <GeneratingBeat lines={REVEAL_BEAT_LINES} />
+        </>
+      )}
 
       {/* Gate state (#376): why SketchBot has not offered cuts yet. Status,
           not a second question — the bot's bubble above already asked. */}
@@ -392,7 +534,7 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
       {/* Spec 8: signed in, the opener says what is left; signed out, the
           static "first 25 cuts are free" beat still belongs to sign-in. */}
       {firstRun && uid && <CreditCountLine />}
-      {firstRun && <StarterChips onPick={handleSend} disabled={pending} />}
+      {firstRun && <StarterChips onPick={handleSend} disabled={busy} />}
 
       {/* The visible fast lane (TAT-48): one tap sends the canonical skip
           message through the SAME converse path — the engine's draw-request
@@ -414,7 +556,7 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
           placeholder={INPUT_PLACEHOLDER}
           ariaLabel="Your reply"
           onSubmit={handleSend}
-          disabled={pending}
+          disabled={busy}
           prefill={prefill}
         />
       )}

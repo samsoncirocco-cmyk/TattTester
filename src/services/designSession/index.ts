@@ -35,6 +35,8 @@ import type { ReferenceAnalysis } from '../vision';
 // so API routes can serialize returns as-is without shipping internals to
 // the browser. Internal callers keep the full StoredSession.
 import { toDesignSession } from './internal/store';
+import { mayResume, toResumeView, type ResumeCaller } from './internal/resume';
+import type { SessionResumeView } from './resumeContract';
 import type {
   DesignSession,
   StartSessionRequest,
@@ -48,6 +50,9 @@ import type {
 import type { ConverseRequest, ConverseResponse } from '../designConversation/types';
 
 export { DesignSessionError } from './internal/orchestrator';
+export { DESIGN_SESSION_KEY_HEADER } from './resumeContract';
+export type { SessionResumeView, SessionRendering } from './resumeContract';
+export type { ResumeCaller } from './internal/resume';
 export type { DesignSessionErrorCode, RoundCreditPort } from './internal/orchestrator';
 // The late-bind ownership gate (#338 item 1): stamp on charged actions,
 // guard-only on uncharged mutations. Throws SESSION_NOT_FOUND on mismatch.
@@ -203,6 +208,21 @@ export async function critique(
 /** Fetch a session by id. Throws DesignSessionError (SESSION_NOT_FOUND) when absent. */
 export async function getSession(sessionId: string): Promise<DesignSession> {
   return toDesignSession(await loadById(sessionId));
+}
+
+/**
+ * Fetch a session for /design?ds= (spec 7): the public projection as
+ * getSession returns it, plus the resume view (transcript, notes, render
+ * state) only when `caller` may resume it — the owner of an owned session,
+ * or the browser holding the resume key of an unowned one.
+ */
+export async function getSessionForResume(
+  sessionId: string,
+  caller: ResumeCaller
+): Promise<{ session: DesignSession; resume?: SessionResumeView }> {
+  const stored = await loadById(sessionId);
+  const session = toDesignSession(stored);
+  return mayResume(stored, caller) ? { session, resume: toResumeView(stored) } : { session };
 }
 
 /**
