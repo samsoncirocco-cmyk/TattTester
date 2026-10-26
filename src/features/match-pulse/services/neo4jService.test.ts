@@ -59,6 +59,18 @@ describe("buildNotRemovedClause", () => {
     );
     expect(source).toContain("const NOT_REMOVED = PUBLIC_ARTIST_CLAUSE");
   });
+
+  it("hydrates vector ids by embedding_id or artist id, still behind the public gate (#398)", () => {
+    const source = readFileSync(
+      resolve(process.cwd(), "src/features/match-pulse/services/neo4jService.ts"),
+      "utf8",
+    );
+    const start = source.indexOf("export async function findArtistsByEmbeddingIds");
+    const end = source.indexOf("export async function updateArtistEmbeddingId");
+    const fn = source.slice(start, end);
+    expect(fn).toContain("a.embedding_id IN $embeddingIds OR a.id IN $embeddingIds");
+    expect(fn).toContain("${NOT_REMOVED}");
+  });
 });
 
 describe("buildHasPortfolioClause", () => {

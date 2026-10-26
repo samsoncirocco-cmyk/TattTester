@@ -801,9 +801,13 @@ export async function findArtistsByEmbeddingIds(embeddingIds: string[]): Promise
         return [];
     }
 
+    // Supabase stores the embedding under `artist_id`, which the writer sets
+    // to `embedding_id` (`artist_<id>`) — and some rows use the Artist id
+    // itself. Either key must hydrate, and both stay behind the public gate
+    // so a taken-down or stale artist cannot return as a vector hit (#398).
     const query = `
     MATCH (a:Artist)
-    WHERE a.embedding_id IN $embeddingIds AND ${NOT_REMOVED}
+    WHERE (a.embedding_id IN $embeddingIds OR a.id IN $embeddingIds) AND ${NOT_REMOVED}
     RETURN a
     ORDER BY a.name
   `;
