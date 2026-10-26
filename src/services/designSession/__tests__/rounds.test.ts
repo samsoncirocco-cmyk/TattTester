@@ -677,23 +677,31 @@ describe('legacy sessions (revealed before rounds existed)', () => {
   });
 });
 
-describe('the picked-cut reference is bucket-verified (config drift guard)', () => {
-  it('fails the round loudly when the cut lives in a different bucket than signing', async () => {
+describe('the picked-cut reference is signed where it lives (#390)', () => {
+  it('seeds the round from the cut’s own bucket when config points elsewhere', async () => {
     const session = await startSession(startRequest);
     const stored = (await memorySessionStore.get(session.id)) as StoredSession;
+    const foreignBucket = 'tatt-pro-762958140397-assets';
     stored.variations = stored.variations.map(variation => ({
       ...variation,
-      imageUrl: `https://storage.googleapis.com/some-other-bucket/${variation.id}.png`,
+      imageUrl: `https://storage.googleapis.com/${foreignBucket}/design-sessions/${session.id}/${variation.id}.png`,
     }));
     await memorySessionStore.save(stored);
     await recordRoundPick(session.id, { pickedId: 'v2' });
 
-    await expect(refineRound(session.id)).rejects.toThrow(/some-other-bucket/);
+    const { round } = await refineRound(session.id);
 
-    // Loud and clean: nothing rendered, nothing persisted, slot freed.
-    expect(mockGenerate).toHaveBeenCalledTimes(2); // reveal only
+    // The signer default in this file is tatt-pro-assets. The cut does not
+    // live there; the round still renders, signed against the URL's bucket.
+    expect(round.round).toBe(2);
+    expect(mockGetSignedUrl).toHaveBeenCalledWith(
+      `design-sessions/${session.id}/v2.png`,
+      15 * 60,
+      'read',
+      foreignBucket
+    );
     const after = (await memorySessionStore.get(session.id)) as StoredSession;
-    expect(after.rounds).toHaveLength(1);
+    expect(after.rounds).toHaveLength(2);
     expect(after.roundInFlight).toBeUndefined();
   });
 

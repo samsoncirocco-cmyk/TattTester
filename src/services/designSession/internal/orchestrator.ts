@@ -8,7 +8,7 @@
  */
 import { randomUUID } from 'crypto';
 import { logger } from '@/lib/logger';
-import { signingBucketName } from '@/services/gcs-service';
+import { parseGcsObjectUrl } from '@/lib/storage-bucket';
 import { DEMO_MOCK_IMAGES } from '@/lib/demo-images';
 import { extractIntake } from '../../intake';
 import type { IntakeRecord, VariationAxis } from '../../intake/types';
@@ -622,41 +622,22 @@ export async function recordRoundPick(
   return session;
 }
 
-/** A public GCS object URL split into its bucket and object path. */
-function parseBucketUrl(
-  imageUrl: string | undefined
-): { bucket: string; path: string } | undefined {
-  if (!imageUrl) return undefined;
-  try {
-    const url = new URL(imageUrl);
-    if (url.hostname !== 'storage.googleapis.com') return undefined;
-    // Shape: /<bucket>/<object path>
-    const [, bucket, ...rest] = url.pathname.split('/');
-    const path = rest.join('/');
-    return bucket && path ? { bucket, path: decodeURIComponent(path) } : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
- * The picked cut's object path for the ADR-0050/#333 signed-URL plumbing.
+ * The picked cut as a signable object for the ADR-0050/#333 plumbing.
  *
- * The cut's URL carries its own bucket (imageStorageService's env chain)
- * while getSignedUrl signs against gcs-service's — the chains CAN drift,
- * and a drifted config would seed the round with a signed URL that 404s at
- * the provider. That is a config failure, so it fails the round loudly
- * (before anything is half-shown; the route releases the credit) instead
- * of rendering an unseeded round that quietly ignores the pick.
+ * The URL names its own bucket. Signing follows that bucket rather than the
+ * process's configured one, so a cut written before a bucket change (or
+ * while `GCS_BUCKET_NAME` was unset and the writer used `GCP_STORAGE_BUCKET`)
+ * still seeds the next round (#390).
  *
  * A cut with no usable GCS URL at all is logged, never silent: the round
  * still renders, but the pick could not seed it.
  */
-function pickedCutReferencePath(
+function pickedCutReference(
   sessionId: string,
   picked: Variation
-): string | undefined {
-  const parsed = parseBucketUrl(picked.imageUrl);
+): { bucket: string; path: string } | undefined {
+  const parsed = parseGcsObjectUrl(picked.imageUrl);
   if (!parsed) {
     logger.warn({
       event_type: 'design_session.round_reference_unavailable',
@@ -672,15 +653,7 @@ function pickedCutReferencePath(
     });
     return undefined;
   }
-  const signingBucket = signingBucketName();
-  if (parsed.bucket !== signingBucket) {
-    throw new Error(
-      `Picked cut lives in bucket '${parsed.bucket}' but reference URLs are signed ` +
-        `against '${signingBucket}' — refusing to seed the round with a reference that ` +
-        'would 404 at the provider (check GCS_BUCKET_NAME / GCP_STORAGE_BUCKET drift).'
-    );
-  }
-  return parsed.path;
+  return parsed;
 }
 
 /** What one charged refine round produced (ADR-0049). */
@@ -950,13 +923,24 @@ async function renderRoundCuts(
     // signed-URL plumbing the customer's own photos use — and those photos
     // stay attached after it (nano-banana-2 takes multiple references).
     const photoPaths = referenceImagePaths(session.conversation?.references ?? []);
-    // Bucket-verified (never a signed URL that 404s) and logged when the
-    // cut has no usable GCS path; demo stock images seed nothing by design.
-    const leadPath =
-      demo || !leadCut ? undefined : pickedCutReferencePath(session.id, leadCut);
-    const referencePaths = [...(leadPath ? [leadPath] : []), ...photoPaths];
+    // Signed in the bucket the cut's URL names (never a URL that 404s
+    // because config drifted). Logged when the cut has no usable GCS path;
+    // demo stock images seed nothing by design. Customer photos are paths
+    // written by this process, so they sign against the configured bucket.
+    const lead =
+      demo || !leadCut ? undefined : pickedCutReference(session.id, leadCut);
+    // Paths, not signed URLs: the durable-render identity must survive a
+    // re-mint. The lead path is the object name; the bucket rides only on
+    // the signed URL below.
+    const referencePaths = [...(lead ? [lead.path] : []), ...photoPaths];
+    const signedLead =
+      !demo && lead ? await signedReferenceUrls([lead.path], { bucket: lead.bucket }) : [];
+    const signedPhotos =
+      !demo && photoPaths.length ? await signedReferenceUrls(photoPaths) : [];
     const referenceImages =
-      !demo && referencePaths.length ? await signedReferenceUrls(referencePaths) : undefined;
+      signedLead.length > 0 || signedPhotos.length > 0
+        ? [...signedLead, ...signedPhotos]
+        : undefined;
     const results = await Promise.allSettled(
       enhanced.variations.map(async (structured, index): Promise<Variation> => {
         const prompt = withStyleHint(generationPrompt(structured.prompts), hint);

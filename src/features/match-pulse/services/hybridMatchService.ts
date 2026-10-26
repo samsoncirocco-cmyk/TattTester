@@ -154,6 +154,65 @@ async function generateQueryEmbedding(query: string): Promise<number[]> {
 const VECTOR_SOFT_TIMEOUT_MS = 3000;
 
 /**
+ * Keep only vector hits the public-artist gate can see.
+ *
+ * `searchSimilar` reads Supabase embeddings and knows nothing about
+ * takedown or staleness. `mergeResults` then keeps a vector-only row
+ * verbatim, so a suppressed artist with a surviving embedding comes back
+ * as a match (#398). `findArtistsByEmbeddingIds` already applies
+ * PUBLIC_ARTIST_CLAUSE; a hit it does not return is dropped. A gate that
+ * errors fails closed — an unchecked vector hit is the bypass.
+ */
+async function retainPublicVectorHits(
+    hits: VectorSearchResult[]
+): Promise<VectorSearchResult[]> {
+    if (hits.length === 0) return [];
+
+    const ids = hits
+        .map((hit) => (hit.id === undefined || hit.id === null ? '' : String(hit.id)))
+        .filter((id) => id.length > 0);
+    if (ids.length === 0) return [];
+
+    let artists: Array<Record<string, unknown>>;
+    try {
+        artists = await findArtistsByEmbeddingIds(ids);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        console.warn(`[HybridMatch] Public-artist gate failed — dropping vector hits: ${message}`);
+        return [];
+    }
+
+    const byKey = new Map<string, Record<string, unknown>>();
+    for (const artist of artists) {
+        if (!artist || typeof artist !== 'object') continue;
+        if (artist.id !== undefined && artist.id !== null) byKey.set(String(artist.id), artist);
+        if (typeof artist.embedding_id === 'string' && artist.embedding_id) {
+            byKey.set(artist.embedding_id, artist);
+        }
+    }
+
+    const kept: VectorSearchResult[] = [];
+    for (const hit of hits) {
+        const artist = byKey.get(String(hit.id));
+        if (!artist || artist.id === undefined || artist.id === null) continue;
+        kept.push({
+            ...artist,
+            id: artist.id as string | number,
+            visualSimilarity: hit.visualSimilarity,
+            source: 'vector',
+        } as VectorSearchResult);
+    }
+
+    const dropped = hits.length - kept.length;
+    if (dropped > 0) {
+        console.warn(
+            `[HybridMatch] Dropped ${dropped} vector hit(s) outside the public-artist gate`
+        );
+    }
+    return kept;
+}
+
+/**
  * Execute vector similarity search
  */
 async function executeVectorSearch(query: string, topK: number = 20): Promise<VectorSearchResult[]> {
@@ -364,13 +423,17 @@ export async function findMatchingArtists(
                 const vectorStart = performance.now();
 
                 // Execute vector and graph queries in parallel
-                const [vectorResults, graphResults] = await Promise.all([
+                const [rawVectorResults, graphResults] = await Promise.all([
                     executeVectorSearchSoft(query, 20),
                     executeGraphQuery({
                         ...preferences,
                         keywords: keywords
                     })
                 ]);
+                // After the search, not inside it: the soft timeout must
+                // still bound the embedding call, and a timed-out vector
+                // half is already [] so the gate is a no-op.
+                const vectorResults = await retainPublicVectorHits(rawVectorResults);
 
                 const vectorTime = performance.now() - vectorStart;
                 const mergeStart = performance.now();

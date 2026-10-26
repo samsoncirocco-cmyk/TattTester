@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyApiAuth } from '@/lib/api-auth';
 import { findMatchingArtists, type MatchResult } from '@/features/match-pulse/services/hybridMatchService';
+import { parseSemanticMatchRequest } from './request';
 
 export const runtime = 'nodejs';
 
@@ -9,30 +10,35 @@ export async function POST(req: NextRequest) {
     const authError = await verifyApiAuth(req);
     if (authError) return authError;
 
+    let body: unknown;
     try {
-        const body = await req.json();
-        const {
-            query,
-            location,
-            style_preferences = [],
-            budget,
-            radius = 25,
-            max_results = 10,
-            has_portfolio = false
-        } = body;
+        body = await req.json();
+    } catch {
+        return NextResponse.json(
+            { error: 'Request body must be JSON', code: 'INVALID_JSON' },
+            { status: 400 }
+        );
+    }
 
-        // Build preferences object
+    const parsed = parseSemanticMatchRequest(body);
+    if (!parsed.ok) {
+        return NextResponse.json({ error: parsed.error, code: parsed.code }, { status: 400 });
+    }
+
+    try {
+        const { query, location, styles, budget, distance, hasPortfolio, maxResults } = parsed.value;
+
         const preferences = {
-            location: location || null,
-            styles: style_preferences,
-            budget: budget || null,
-            distance: radius,
-            hasPortfolio: !!has_portfolio
+            location,
+            styles,
+            budget,
+            distance,
+            hasPortfolio,
         };
 
         // Execute hybrid matching
         const startTime = Date.now();
-        const result: MatchResult = await findMatchingArtists(query, preferences, max_results);
+        const result: MatchResult = await findMatchingArtists(query, preferences, maxResults);
         const duration = Date.now() - startTime;
 
         console.log(`[API] Semantic match completed in ${duration}ms, found ${result.matches.length} matches`);

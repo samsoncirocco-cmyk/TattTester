@@ -71,8 +71,13 @@ export async function storeReferencePhoto(
  * Throws on a signing failure — see the module doc for why loud is right
  * here and fail-soft is right at upload.
  */
-export async function signedReferenceUrls(paths: string[]): Promise<string[]> {
-  return Promise.all(paths.map((path) => getSignedUrl(path, REFERENCE_URL_TTL_SECONDS)));
+export async function signedReferenceUrls(
+  paths: string[],
+  opts?: { bucket?: string }
+): Promise<string[]> {
+  return Promise.all(
+    paths.map((path) => getSignedUrl(path, REFERENCE_URL_TTL_SECONDS, 'read', opts?.bucket))
+  );
 }
 
 /**

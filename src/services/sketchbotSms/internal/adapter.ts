@@ -12,7 +12,10 @@
  *      — an unlinked number can never pass this many reveals, ever
  *   3. global budget                checkBudget/recordSpend, the exact same
  *      BUDGET_MAX_SPEND_CENTS pool and cost constants as /api/v1/generate
- *   4. per-phone message rate limit — enforced by the webhook route
+ *   4. generation-credit ledger     reserveGenerationCredit for a LINKED
+ *      reveal (ADR-0041). The same lifetime meter as the web confirm route.
+ *      An unlinked number has no account to meter and stays on guardrail 2.
+ *   5. per-phone message rate limit — enforced by the webhook route
  *      ('sms-inbound' in src/lib/rate-limit.ts)
  *
  * Every refusal is an in-voice SMS reply (honest capacity, a judgment call,
@@ -99,6 +102,7 @@ import {
   REVEAL_ACK,
   BUDGET_EXHAUSTED_TEXT,
   REVEAL_FAILED_TEXT,
+  REVEAL_FAILED_NO_REFUND_TEXT,
   capReachedText,
   linkGateText,
   unavailableText,
@@ -337,7 +341,7 @@ export async function handleInbound(inbound: InboundSms): Promise<InboundOutcome
     profile.lastStage === 'proposal' &&
     isConfirmationIntent(body)
   ) {
-    return withReferenceAck(await armReveal(profile, store), ackText);
+    return withReferenceAck(await armReveal(profile, store, body), ackText);
   }
 
   // ── The refinement answer: the last paid step, and the only one that
@@ -1005,9 +1009,40 @@ export async function executeRefineRound(
   };
 }
 
+/**
+ * Hand a reserved reveal credit back. Clears the profile's pending id only
+ * when it still names THIS reservation — a newer arm has its own.
+ */
+async function releaseRevealCredit(
+  store: ProfileStoreT,
+  phone: string,
+  uid: string,
+  credit: GenerationCreditReservation
+): Promise<boolean> {
+  try {
+    await releaseGenerationCredit(uid, credit);
+  } catch (releaseError) {
+    logger.error({
+      event_type: 'sketchbot_sms.reveal_credit_release_failed',
+      phone_last4: phoneLast4(phone),
+      reservation_id: credit.id,
+      error: releaseError instanceof Error ? releaseError.message : String(releaseError),
+    });
+    return false;
+  }
+  const profile = await store.get(phone);
+  if (profile?.pendingCreditReservationId === credit.id) {
+    profile.pendingCreditReservationId = null;
+    profile.updatedAt = new Date().toISOString();
+    await store.save(profile);
+  }
+  return true;
+}
+
 async function armReveal(
   profile: SmsProfile,
-  store: ProfileStoreT
+  store: ProfileStoreT,
+  body: string
 ): Promise<InboundOutcome> {
   const phone = profile.phone;
   const base = appBaseUrl();
@@ -1029,23 +1064,32 @@ async function armReveal(
     return { kind: 'reply', text: linkGateText(`${base}/signup`) };
   }
 
-  // Guardrail 1 — atomic daily-cap reserve. Consumed BEFORE generation;
-  // refunded only if generation later fails.
-  const reserved = await store.tryConsumeReveal(phone, revealsPerDay());
-  if (!reserved) {
-    logger.info({
-      event_type: 'sketchbot_sms.reveal_cap_hit',
-      phone_last4: phoneLast4(phone),
-    });
-    return { kind: 'reply', text: capReachedText(`${base}/design`) };
+  // A linked reveal spends the account's generation credit (ADR-0041). Stamp
+  // ownership BEFORE that reserve, same as the web confirm route, so a
+  // session that belongs to someone else is never charged. A mismatch
+  // restarts intake with the same message — the refine lane's recovery.
+  if (profile.uid && profile.activeSessionId) {
+    try {
+      await claimSessionOwnership(profile.activeSessionId, profile.uid, { stamp: true });
+    } catch (error) {
+      if (error instanceof DesignSessionError && error.code === 'SESSION_NOT_FOUND') {
+        logger.info({
+          event_type: 'sketchbot_sms.reveal_ownership_refused',
+          phone_last4: phoneLast4(phone),
+          session_id: profile.activeSessionId,
+        });
+        return restartDesign(profile, store, body);
+      }
+      throw error;
+    }
   }
 
   // Guardrail 3 — the global pool. Demo mode renders free stock images, so
-  // budget policy is skipped there, matching the web confirm route.
+  // budget policy is skipped there, matching the web confirm route. Checked
+  // before any slot or credit is taken.
   if (!isDemoMode()) {
     const budget = await checkBudget();
     if (!budget.allowed) {
-      await store.releaseReveal(phone);
       logger.warn({
         event_type: 'sketchbot_sms.budget_exhausted',
         phone_last4: phoneLast4(phone),
@@ -1055,19 +1099,59 @@ async function armReveal(
     }
   }
 
+  // The shared lifetime ledger. Reserved before the daily slot so an empty
+  // meter is told immediately and a refused reveal consumes nothing. Demo
+  // mode renders stock images and does not meter, matching the web route.
+  let credit: GenerationCreditReservation | undefined;
+  if (profile.uid && !isDemoMode()) {
+    try {
+      credit = await reserveGenerationCredit(profile.uid);
+    } catch (error) {
+      if (error instanceof GenerationCreditsExhaustedError) {
+        return { kind: 'reply', text: error.message };
+      }
+      throw error;
+    }
+  }
+
+  // Guardrail 1 — atomic daily-cap reserve. Consumed BEFORE generation;
+  // refunded only if generation later fails. A cap hit after the credit
+  // reserve hands the credit straight back.
+  const reserved = await store.tryConsumeReveal(phone, revealsPerDay());
+  if (!reserved) {
+    if (credit && profile.uid) {
+      await releaseRevealCredit(store, phone, profile.uid, credit);
+    }
+    logger.info({
+      event_type: 'sketchbot_sms.reveal_cap_hit',
+      phone_last4: phoneLast4(phone),
+    });
+    return { kind: 'reply', text: capReachedText(`${base}/design`) };
+  }
+
   // Re-read before mutating: tryConsumeReveal just advanced the counters in
   // the store, and saving the pre-consume object here would silently roll
   // them back — the exact clobber the atomic reserve exists to prevent.
   const fresh = (await store.get(phone)) ?? profile;
   fresh.lastStage = 'reveal-pending';
   fresh.revealArmedAt = new Date().toISOString();
+  fresh.pendingCreditReservationId = credit?.id ?? null;
   fresh.updatedAt = fresh.revealArmedAt;
-  await store.save(fresh);
+  try {
+    await store.save(fresh);
+  } catch (saveError) {
+    if (credit && profile.uid) {
+      await releaseRevealCredit(store, phone, profile.uid, credit);
+    }
+    await store.releaseReveal(phone);
+    throw saveError;
+  }
 
   logger.info({
     event_type: 'sketchbot_sms.reveal_armed',
     phone_last4: phoneLast4(phone),
     session_id: profile.activeSessionId,
+    credit_source: credit?.source,
   });
   return {
     kind: 'reveal',
@@ -1075,6 +1159,8 @@ async function armReveal(
     sessionId: profile.activeSessionId!,
     phone,
     armedAt: fresh.revealArmedAt!,
+    ...(fresh.uid ? { uid: fresh.uid } : {}),
+    ...(credit ? { credit } : {}),
   };
 }
 
@@ -1737,8 +1823,9 @@ async function conversationTurn(
 /**
  * The deferred half of a reveal: runs AFTER the webhook already answered
  * (a round's renders take minutes; Twilio gives webhooks seconds). The daily-cap
- * slot was reserved in armReveal — a failure here refunds it, tells the
- * user honestly, and never leaves them waiting on nothing.
+ * slot and, for a linked account, the generation credit were reserved in
+ * armReveal — a failure here refunds both, tells the user honestly, and
+ * never leaves them waiting on nothing.
  *
  * `armedAt` is the same token pattern as critique/refine: after stale
  * recovery a second yes may arm again, and this callback must not also run.
@@ -1746,7 +1833,9 @@ async function conversationTurn(
 export async function executeReveal(
   sessionId: string,
   phone: string,
-  armedAt: string
+  armedAt: string,
+  credit?: GenerationCreditReservation,
+  uid?: string
 ): Promise<RevealDelivery> {
   const store = resolveProfileStore();
 
@@ -1764,6 +1853,8 @@ export async function executeReveal(
           profile.revealArmedAt !== armedAt));
     if (abandonedBeforeGenerate) {
       await store.releaseReveal(phone);
+      const owner = uid ?? profile.uid;
+      if (owner && credit) await releaseRevealCredit(store, phone, owner, credit);
     }
     logger.info({
       event_type: 'sketchbot_sms.reveal_superseded',
@@ -1775,19 +1866,43 @@ export async function executeReveal(
 
   let session;
   try {
-    session = await confirmProposal(sessionId);
+    session = await confirmProposal(
+      sessionId,
+      credit ? { reservationId: credit.id } : undefined
+    );
   } catch (error) {
-    // Refund the reserved cap slot. Always — this attempt failed. A newer
-    // arm consumed a separate increment; one release leaves that intact.
-    // Re-arm the proposal only when this job is still the armed one.
-    // releaseReveal first, then re-read — saving a pre-release clone would
-    // clobber the refunded counters.
+    // Refund the credit and the cap slot. Always — this attempt failed. A
+    // newer arm consumed a separate increment; one release leaves that
+    // intact. releaseReveal first, then re-read — saving a pre-release
+    // clone would clobber the refunded counters. The credit release does
+    // not write the profile, so it cannot race that read.
+    let creditReleased = !credit;
+    if (credit) {
+      const owner = uid ?? (await store.get(phone))?.uid ?? undefined;
+      if (owner) {
+        try {
+          await releaseGenerationCredit(owner, credit);
+          creditReleased = true;
+        } catch (releaseError) {
+          logger.error({
+            event_type: 'sketchbot_sms.reveal_credit_release_failed',
+            phone_last4: phoneLast4(phone),
+            session_id: sessionId,
+            reservation_id: credit.id,
+            error: releaseError instanceof Error ? releaseError.message : String(releaseError),
+          });
+        }
+      } else {
+        creditReleased = false;
+      }
+    }
     await store.releaseReveal(phone);
     const armed = await store.get(phone);
     if (armed && armed.revealArmedAt === armedAt) {
       const profile = (await store.get(phone)) ?? armed;
       profile.lastStage = 'proposal';
       profile.revealArmedAt = null;
+      if (creditReleased) profile.pendingCreditReservationId = null;
       profile.updatedAt = new Date().toISOString();
       await store.save(profile);
     }
@@ -1795,10 +1910,35 @@ export async function executeReveal(
       event_type: 'sketchbot_sms.reveal_failed',
       phone_last4: phoneLast4(phone),
       session_id: sessionId,
+      credit_released: creditReleased,
       error: error instanceof Error ? error.message : String(error),
     });
-    return { cuts: [], closingText: REVEAL_FAILED_TEXT };
+    return {
+      cuts: [],
+      closingText: credit && !creditReleased ? REVEAL_FAILED_NO_REFUND_TEXT : REVEAL_FAILED_TEXT,
+    };
   }
+
+  const downgraded = session.downgraded === true;
+  let creditReleased = false;
+  if (downgraded && credit) {
+    const owner = uid ?? (await store.get(phone))?.uid ?? undefined;
+    if (owner) {
+      try {
+        await releaseGenerationCredit(owner, credit);
+        creditReleased = true;
+      } catch (releaseError) {
+        logger.error({
+          event_type: 'sketchbot_sms.reveal_credit_release_failed',
+          phone_last4: phoneLast4(phone),
+          session_id: sessionId,
+          reservation_id: credit.id,
+          error: releaseError instanceof Error ? releaseError.message : String(releaseError),
+        });
+      }
+    }
+  }
+  const refundOutstanding = Boolean(downgraded && credit && !creditReleased);
 
   const profile = (await store.get(phone)) ?? newProfile(phone);
   // Paid render already ran — always deliver. Only claim profile state when
@@ -1806,10 +1946,12 @@ export async function executeReveal(
   if (profile.revealArmedAt === armedAt) {
     profile.lastStage = 'revealed';
     profile.revealArmedAt = null;
+    if (!refundOutstanding) profile.pendingCreditReservationId = null;
     profile.updatedAt = new Date().toISOString();
     await store.save(profile);
   } else if (profile.revealArmedAt == null && profile.lastStage === 'proposal') {
     profile.lastStage = 'revealed';
+    if (!refundOutstanding) profile.pendingCreditReservationId = null;
     profile.updatedAt = new Date().toISOString();
     await store.save(profile);
   } else if (profile.revealArmedAt != null) {
@@ -1834,12 +1976,20 @@ export async function executeReveal(
     phone_last4: phoneLast4(phone),
     session_id: session.id,
     provider: session.provider,
+    downgraded,
+    credit_released: creditReleased,
     cuts: cutUrls.length,
   });
 
   // Round one of the pick-to-refine loop (ADR-0049): two cuts captioned by
-  // their poles, then the A/B ask.
+  // their poles, then the A/B ask. A downgrade is said out loud (ADR-0048)
+  // and the credit comes back only when the release landed.
   const labels = roundPoleLabels(liveRound(session), session.variations);
+  const downgradePrefix = !downgraded
+    ? ''
+    : creditReleased
+      ? 'Heads up — these came off my backup lane, so that credit is back. '
+      : 'Heads up — these came off my backup lane. ';
   return {
     cuts: cutUrls.map((mediaUrl, index) => ({
       caption:
@@ -1848,7 +1998,7 @@ export async function executeReveal(
           : cutCaption(index, cutUrls.length),
       mediaUrl,
     })),
-    closingText: roundRevealText(labels[0], labels[1], link),
+    closingText: `${downgradePrefix}${roundRevealText(labels[0], labels[1], link)}`,
   };
 }
 

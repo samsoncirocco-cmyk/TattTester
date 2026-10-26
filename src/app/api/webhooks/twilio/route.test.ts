@@ -304,7 +304,9 @@ describe('reveal delivery', () => {
     expect(executeReveal).toHaveBeenCalledWith(
       's1',
       PHONE,
-      '2026-08-04T00:00:00.000Z'
+      '2026-08-04T00:00:00.000Z',
+      undefined,
+      undefined
     );
     expect(sendMms).toHaveBeenCalledTimes(2);
     expect(sendMms).toHaveBeenNthCalledWith(1, PHONE, 'Cut 1 of 2', ['https://img/1.png']);
