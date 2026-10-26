@@ -17,6 +17,7 @@ import { enhanceStructured, enhanceRound } from '../../council';
 import type { RoundSpread, StructuredEnhanceResult } from '../../council';
 import { generate, routeGeneration } from '../../generation';
 import type { AspectRatio, GenerationRequest } from '../../generation';
+import { pinnedImageInputs } from '../../generation/capabilities';
 import { resolveFixAllowance } from '@/lib/studio-fix-allowance';
 import type {
   Variation,
@@ -250,9 +251,20 @@ function pinnedRequest(
      * The pin bypasses routing, so the photos must ride the request
      * explicitly — the provider refuses loudly if the pinned model cannot
      * take them, which cannot happen in practice: photos force the
-     * nano-banana pin at session start.
+     * nano-banana pin at session start. A round's picked cut joins them
+     * here only when the pin takes references (see leadCutInput).
      */
     referenceImages?: string[];
+    /**
+     * A signed URL of the picked cut as an image-to-image source, for a pin
+     * that takes a source but not references (flux-dev). With a source the
+     * fallback chain shrinks to source-capable models, which today is none:
+     * a round that cannot build on its pick fails loudly instead of quietly
+     * rendering from the prompt alone on a different model.
+     */
+    sourceImage?: string;
+    /** How far the render may move from `sourceImage` (0 keeps it, 1 ignores it). */
+    sourceStrength?: number;
   }
 ): GenerationRequest {
   return {
@@ -263,8 +275,48 @@ function pinnedRequest(
     aspectRatio: pin.aspectRatio,
     allowProviderFallback: opts?.allowDowngrade === true,
     ...(opts?.referenceImages?.length ? { referenceImages: opts.referenceImages } : {}),
+    ...(opts?.sourceImage
+      ? {
+          sourceImage: opts.sourceImage,
+          ...(opts.sourceStrength !== undefined ? { sourceStrength: opts.sourceStrength } : {}),
+        }
+      : {}),
     ...(textGuardEnabled() ? { screenText: {} } : {}),
   };
+}
+
+/**
+ * How far a round's render may move from the picked cut when the cut rides
+ * as an image-to-image source (flux-dev's `prompt_strength`). A round moves
+ * the design one axis step from the pick — bolder, finer, more color — so it
+ * must keep the composition the customer chose while leaving room to change
+ * line weight and fill. The stencil derivation uses 0.9 because it only
+ * redraws; a round re-designs a little, so it sits lower.
+ */
+const ROUND_SOURCE_STRENGTH = 0.75;
+
+/**
+ * How a round's picked cut can inform the next render on this session's pin.
+ *
+ * - `reference`: the pin takes reference images (nano-banana-2): the cut
+ *   leads the reference chain, ahead of the customer's own photos.
+ * - `source`: the pin takes an image-to-image source but no references
+ *   (flux-dev): the cut becomes the render's source.
+ * - `dropped`: the pin takes neither (flux-schnell, krea2, the Vertex
+ *   `imagen3` pin): the round renders from its prompt alone. Sending the
+ *   cut anyway made every such round fail with REFERENCE_IMAGES_UNSUPPORTED
+ *   and an empty fallback chain, so refine and re-roll never worked there.
+ * - `none`: there is no usable cut to send (nothing picked, demo mode, or a
+ *   cut with no bucket path).
+ */
+type LeadCutInput = 'reference' | 'source' | 'dropped' | 'none';
+
+function leadCutInput(pinnedModelId: string, leadPath: string | undefined): LeadCutInput {
+  if (!leadPath) return 'none';
+  const inputs = pinnedImageInputs(pinnedModelId);
+  if (inputs.referenceImages) return 'reference';
+  if (inputs.sourceImage) return 'source';
+  return 'dropped';
 }
 
 /** The image-generation tier: detailed, degrading only if the Council dropped it. */
@@ -954,9 +1006,29 @@ async function renderRoundCuts(
     // cut has no usable GCS path; demo stock images seed nothing by design.
     const leadPath =
       demo || !leadCut ? undefined : pickedCutReferencePath(session.id, leadCut);
-    const referencePaths = [...(leadPath ? [leadPath] : []), ...photoPaths];
+    // The cut rides the way the pinned model can take it — or not at all.
+    const leadInput = leadCutInput(session.pinnedModelId, leadPath);
+    if (leadInput === 'dropped') {
+      logger.info({
+        event_type: 'design_session.round_lead_dropped',
+        session_id: session.id,
+        variation_id: leadCut?.id ?? null,
+        pinned_model_id: session.pinnedModelId,
+        reason: 'pinned model takes neither reference images nor a source image',
+      });
+    }
+    const referencePaths = [
+      ...(leadInput === 'reference' && leadPath ? [leadPath] : []),
+      ...photoPaths,
+    ];
+    const sourcePath = leadInput === 'source' ? leadPath : undefined;
     const referenceImages =
       !demo && referencePaths.length ? await signedReferenceUrls(referencePaths) : undefined;
+    const sourceImage =
+      !demo && sourcePath ? (await signedReferenceUrls([sourcePath]))[0] : undefined;
+    // The staging identity names every image this render was conditioned
+    // on, so a retry reuses a staged render only when the inputs match.
+    const inputPaths = [...(sourcePath ? [sourcePath] : []), ...referencePaths];
     const results = await Promise.allSettled(
       enhanced.variations.map(async (structured, index): Promise<Variation> => {
         const prompt = withStyleHint(generationPrompt(structured.prompts), hint);
@@ -974,11 +1046,17 @@ async function renderRoundCuts(
               { modelId: session.pinnedModelId, aspectRatio: session.pinnedAspectRatio },
               prompt,
               structured.negativePrompt,
-              { allowDowngrade: true, referenceImages }
+              {
+                allowDowngrade: true,
+                referenceImages,
+                ...(sourceImage
+                  ? { sourceImage, sourceStrength: ROUND_SOURCE_STRENGTH }
+                  : {}),
+              }
             ),
             (renders) => { imagesPurchased += renders; },
             (reason) => { downgradeReason ??= reason; },
-            referencePaths
+            inputPaths
           );
         }
         return {
