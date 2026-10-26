@@ -10,6 +10,11 @@ const { verifyFirebaseTokenMock, getArtistByClaimedUidMock, runMock } = vi.hoist
 vi.mock('@/lib/api-auth', () => ({ verifyApiAuth: vi.fn().mockResolvedValue(null) }));
 vi.mock('@/lib/auth-dal', () => ({ verifyFirebaseToken: verifyFirebaseTokenMock }));
 vi.mock('@/lib/artist-stripe', () => ({ getArtistByClaimedUid: getArtistByClaimedUidMock }));
+// Spec 16 extras live in Firestore; keep this file's tests off the network.
+vi.mock('@/lib/artist-profile-extras-store', () => ({
+  readArtistExtras: vi.fn(async () => ({ policies: {}, faqs: [], travelDates: [] })),
+  writeArtistExtras: vi.fn(),
+}));
 vi.mock('neo4j-driver', () => ({ default: { int: (value: number) => value } }));
 vi.mock('@/lib/neo4j', () => ({
   NEO4J_DATABASE: null,

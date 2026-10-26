@@ -5,6 +5,8 @@ import Link from 'next/link';
 import StudioShell from '@/components/studio/StudioShell';
 import { useAuth } from '@/hooks/useAuth';
 import InstagramPortfolioManager from './InstagramPortfolioManager';
+import ProfileExtrasEditor, { EMPTY_EDITOR_EXTRAS, extrasToPatch } from './ProfileExtrasEditor';
+import type { ArtistProfileExtras } from '@/lib/artist-profile-extras';
 
 type Profile = {
   id: string;
@@ -31,6 +33,7 @@ const EMPTY: Profile = {
 export default function ArtistProfileEditor() {
   const { isAuthenticated, loading: authLoading, loginWithGoogle, getIdToken } = useAuth();
   const [profile, setProfile] = useState<Profile>(EMPTY);
+  const [extras, setExtras] = useState<ArtistProfileExtras>(EMPTY_EDITOR_EXTRAS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -48,6 +51,7 @@ export default function ArtistProfileEditor() {
       const data = (await response.json().catch(() => ({}))) as {
         error?: string;
         profile?: Profile;
+        extras?: ArtistProfileExtras | null;
       };
       if (!response.ok) throw new Error(data.error || 'Profile request failed.');
       return data;
@@ -65,6 +69,7 @@ export default function ArtistProfileEditor() {
     void request('GET')
       .then((data) => {
         if (!cancelled && data.profile) setProfile(data.profile);
+        if (!cancelled && data.extras) setExtras(data.extras);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Could not load your profile.');
@@ -94,8 +99,10 @@ export default function ArtistProfileEditor() {
         bookingUrl: profile.bookingUrl,
         city: profile.city,
         state: profile.state,
+        ...extrasToPatch(extras),
       });
       if (data.profile) setProfile(data.profile);
+      if (data.extras) setExtras(data.extras);
       setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save your profile.');
@@ -173,6 +180,13 @@ export default function ArtistProfileEditor() {
                 </div>
               </div>
               <InstagramPortfolioManager artistId={profile.id} />
+              <ProfileExtrasEditor
+                value={extras}
+                onChange={(next) => {
+                  setExtras(next);
+                  setSaved(false);
+                }}
+              />
               <button
                 type="button"
                 disabled={saving}
