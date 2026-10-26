@@ -138,6 +138,15 @@ const vertexRoute = {
   reasoning: 'test route',
 };
 
+// The only pin a session with customer photos can have (ADR-0050): photos
+// force the nano-banana-2 lane at the reveal, and it is the one model that
+// takes reference images — so it is the pin a reference-chain test needs.
+const nanoBananaRoute = {
+  ...vertexRoute,
+  modelId: 'nano-banana-2',
+  provider: 'replicate' as const,
+};
+
 let imageCounter = 0;
 
 /** A successful generate() answer on the pinned model. */
@@ -229,6 +238,7 @@ describe('rerollRound — reject the set, draw fresh on the same axis', () => {
   });
 
   it('seeds from the same references the rejected round used — prior pick leads, photos persist', async () => {
+    mockRouteGeneration.mockReturnValue(nanoBananaRoute);
     const session = await startSession(startRequest);
 
     // Attach a customer reference photo the way the conversation does.
