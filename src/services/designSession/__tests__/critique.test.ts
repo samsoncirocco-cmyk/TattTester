@@ -859,6 +859,9 @@ describe('critique — the reroll-set arm, wired (sprint fix #2)', () => {
     );
     expect(mockGenerate).not.toHaveBeenCalled();
     expect(port.release).not.toHaveBeenCalled();
+    // Spec 8: the web lane renders the buy link from this flag, not a URL in copy.
+    expect(result.buyCredits).toBe(true);
+    expect(result.reply).not.toMatch(/https?:|\/pricing/);
   });
 
   it('maps a round already in flight to honest copy and hands the credit back', async () => {

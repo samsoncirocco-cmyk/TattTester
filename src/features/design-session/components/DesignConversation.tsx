@@ -14,8 +14,13 @@ import {
   converse,
   confirmProposal,
   ConversationUnavailableError,
+  DesignSessionRequestError,
 } from '../services/designSessionApi';
 import { SignInRequiredError } from '@/lib/client-api-auth';
+import { CREDITS_EXHAUSTED_CODE } from '@/lib/generation-credits-shared';
+import { useAuthStore } from '@/store/useAuthStore';
+import { refreshCreditBalance } from '../services/creditBalance';
+import { BuyCreditsLink, CreditCountLine } from './CreditBalance';
 import { ChatBubble } from './ChatBubble';
 import { ChatInput } from './ChatInput';
 import { ExampleStrip } from './ExampleStrip';
@@ -90,6 +95,8 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
   const [revealSession, setRevealSession] = useState<DesignSession | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // An empty meter (402) gets the buy link instead of Retry (spec 8).
+  const [creditsExhausted, setCreditsExhausted] = useState(false);
   // The draw needs an account and there isn't one yet. Distinct from
   // `error`: this is the paywall beat, not a failure, so it gets the
   // account copy and a "draw it" button rather than a red line and RETRY.
@@ -108,9 +115,18 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
   const [prefill, setPrefill] = useState<{ text: string; nonce: number } | undefined>();
   const prefillCount = useRef(0);
   const openerRequested = useRef(false);
+  const uid = useAuthStore((s) => s.user?.uid);
+
+  // Spec 8: a signed-in customer sees what they have left. One read when
+  // the account is known (and again after a sign-in on this page); every
+  // charged response keeps it current after that, with no extra request.
+  useEffect(() => {
+    if (uid) void refreshCreditBalance();
+  }, [uid]);
 
   const runAction = (action: ConversationAction) => {
     setError(null);
+    setCreditsExhausted(false);
     setSignInNeeded(false);
     setLastAction(action);
     setPending(true);
@@ -126,6 +142,9 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
             setSignInNeeded(true);
             return;
           }
+          setCreditsExhausted(
+            err instanceof DesignSessionRequestError && err.code === CREDITS_EXHAUSTED_CODE
+          );
           setError(err instanceof Error ? err.message : 'Something snapped — try again.');
         })
         .finally(() => setPending(false));
@@ -167,6 +186,9 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
           setSignInNeeded(true);
           return;
         }
+        setCreditsExhausted(
+          err instanceof DesignSessionRequestError && err.code === CREDITS_EXHAUSTED_CODE
+        );
         setError(err instanceof Error ? err.message : 'Something snapped — try again.');
       })
       .finally(() => setPending(false));
@@ -345,7 +367,13 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
         </div>
       )}
 
-      {error && (
+      {error && creditsExhausted && (
+        <div className="space-y-3">
+          <ChatBubble role="bot">{error}</ChatBubble>
+          <BuyCreditsLink />
+        </div>
+      )}
+      {error && !creditsExhausted && (
         <div className="space-y-3">
           <ChatBubble role="bot">{error}</ChatBubble>
           <button
@@ -361,6 +389,9 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
       {/* First-run scaffolding: a chip is just a prefilled first message —
           it goes through handleSend like typed text, and the engine's own
           routing decides conversation vs fast lane (ADR-0028). */}
+      {/* Spec 8: signed in, the opener says what is left; signed out, the
+          static "first 25 cuts are free" beat still belongs to sign-in. */}
+      {firstRun && uid && <CreditCountLine />}
       {firstRun && <StarterChips onPick={handleSend} disabled={pending} />}
 
       {/* The visible fast lane (TAT-48): one tap sends the canonical skip

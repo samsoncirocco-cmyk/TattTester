@@ -10,6 +10,7 @@ import {
     reserveGenerationCredit,
     type GenerationCreditReservation,
 } from '@/lib/generation-credits';
+import { CREDITS_EXHAUSTED_MESSAGE } from '@/lib/generation-credits-shared';
 import {
     designSessionErrorResponse,
     invalidRequestResponse,
@@ -122,7 +123,7 @@ export async function POST(
         ) {
             return NextResponse.json(
                 {
-                    error: 'You have used your free generations. Buy 25 more cuts to keep designing.',
+                    error: CREDITS_EXHAUSTED_MESSAGE,
                     code: 'GENERATION_CREDITS_EXHAUSTED',
                 },
                 { status: 402 }
