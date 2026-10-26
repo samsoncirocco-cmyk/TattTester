@@ -163,7 +163,9 @@ describe("BookClient — lost race stays honest (REA gap #2)", () => {
 
     expect(screen.getByRole("status").textContent).toMatch(/just taken by someone else/);
     expect(screen.getByRole("status").textContent).toMatch(/pick another time/i);
-    expect(refresh).toHaveBeenCalledTimes(1);
+    // Spec 6: the grid refetches from the availability endpoint, not a full page refresh.
+    expect(calls.some((c) => c.url.startsWith("/api/v1/artists/artist_1/availability"))).toBe(true);
+    expect(refresh).not.toHaveBeenCalled();
 
     // The form kept its answers: pick the other time and walk forward.
     pickSlot("17:00");
