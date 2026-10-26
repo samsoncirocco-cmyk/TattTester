@@ -58,7 +58,7 @@ function SignupPageInner() {
 
             <QuietHeadline>Join the cult</QuietHeadline>
             <p className="mt-5 text-[14px] text-quiet-dim font-body leading-[1.7]">
-              Free forever. Upgrade when you outgrow it.
+              25 free designs to start. A one-time credit pack after that — never a subscription.
             </p>
 
             <form
