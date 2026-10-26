@@ -5,7 +5,7 @@
 // earlier hold document in the same transaction it writes the new one, or a
 // reload would leave two active holds for one booking and the first would
 // keep blocking the slot after the customer has moved on.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type Doc = Record<string, unknown>;
 const docStore = new Map<string, Doc>();
@@ -38,6 +38,7 @@ const fakeDb = {
     doc: (id: string) => ({
       id,
       async get() {
+        if (id === "hold_boom") throw new Error("firestore down");
         const d = docStore.get(id);
         return { exists: d !== undefined, data: () => d };
       },
@@ -114,5 +115,20 @@ describe("placeHold — same-booking refresh", () => {
     expect(await releaseHoldById(id)).toBe(true);
     expect((await getHold(id))!.status).toBe("released");
     expect(await releaseHoldById("hold_missing")).toBe(false);
+  });
+});
+
+describe("log hygiene — ids never ride inside the format string", () => {
+  // CodeQL (js/tainted-format-string): `holdId` reaches releaseHoldById from
+  // the client-facing DELETE route, so it must be a structured argument.
+  afterEach(() => vi.restoreAllMocks());
+
+  it("release failure logs the holdId as a separate argument", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(await releaseHoldById("hold_boom")).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [format, ctx] = warn.mock.calls[0];
+    expect(String(format)).not.toContain("hold_boom");
+    expect(ctx).toEqual({ holdId: "hold_boom" });
   });
 });

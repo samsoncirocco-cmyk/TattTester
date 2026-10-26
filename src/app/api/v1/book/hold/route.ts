@@ -173,7 +173,7 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       // The hold itself is taken and will lapse on its own at its TTL, so
       // nothing is over-booked. Log loudly: the booking record is now behind.
-      console.error(`[hold] booking ${bookingId} not stamped with hold:`, err);
+      console.error('[hold] booking not stamped with hold:', { bookingId }, err);
     }
   }
 
@@ -295,7 +295,7 @@ export async function DELETE(req: NextRequest) {
         }
       }
     } catch (err) {
-      console.error(`[hold] booking ${hold.bookingId} not walked back after release:`, err);
+      console.error('[hold] booking not walked back after release:', { bookingId: hold.bookingId }, err);
     }
   }
 

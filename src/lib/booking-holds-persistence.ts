@@ -71,7 +71,8 @@ export async function listLiveHolds(
     );
   } catch (err) {
     console.warn(
-      `[holds] live-hold read failed for ${artistId}:`,
+      '[holds] live-hold read failed:',
+      { artistId },
       err instanceof Error ? err.message : err,
     );
     return [];
@@ -131,7 +132,8 @@ export async function placeHold(input: {
     });
   } catch (err) {
     console.error(
-      `[holds] placeHold failed for ${input.artistId}:`,
+      '[holds] placeHold failed:',
+      { artistId: input.artistId },
       err instanceof Error ? err.message : err,
     );
     return { ok: false, reason: "unavailable" };
@@ -162,7 +164,8 @@ export async function releaseHoldById(holdId: string): Promise<boolean> {
     return true;
   } catch (err) {
     console.warn(
-      `[holds] release failed for ${holdId}:`,
+      '[holds] release failed:',
+      { holdId },
       err instanceof Error ? err.message : err,
     );
     return false;
@@ -181,7 +184,8 @@ export async function convertHoldById(holdId: string): Promise<boolean> {
     return true;
   } catch (err) {
     console.warn(
-      `[holds] convert failed for ${holdId}:`,
+      '[holds] convert failed:',
+      { holdId },
       err instanceof Error ? err.message : err,
     );
     return false;
