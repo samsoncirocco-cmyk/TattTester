@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense } from 'react';
+import { Suspense, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import StudioShell from '@/components/studio/StudioShell';
 import SlashHeadline from '@/components/punk/SlashHeadline';
@@ -17,7 +17,16 @@ import { DesignConversation } from '@/features/design-session';
  */
 function DesignConversationEntry() {
   const searchParams = useSearchParams();
-  return <DesignConversation initialPrompt={searchParams?.get('prompt') ?? undefined} />;
+  // Spec 7: `?ds=` resumes a session and wins over `?prompt=` — a reload
+  // must pick up where it was, never send the prompt a second time. Read
+  // once: the conversation writes `ds` into the URL itself as it goes.
+  const [entry] = useState(() => {
+    const ds = searchParams?.get('ds')?.trim();
+    return ds
+      ? { initialSessionId: ds }
+      : { initialPrompt: searchParams?.get('prompt') ?? undefined };
+  });
+  return <DesignConversation {...entry} />;
 }
 
 /**

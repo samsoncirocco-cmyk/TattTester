@@ -16,6 +16,7 @@ import type { AspectRatio } from '../../generation';
 import type {
   ConversationMessage,
   ConversationStage,
+  SessionNotes,
   TurnLog,
 } from '../../designConversation/types';
 import type { IntakeRecord } from '../../intake/types';
@@ -52,6 +53,11 @@ export interface ConversationState {
    * after each turn and at confirm.
    */
   references?: StoredReference[];
+  /**
+   * The notepad as last sent to the browser (spec 7): already the engine's
+   * whitelisted projection, kept so a resumed chat shows the same notes.
+   */
+  notes?: SessionNotes;
 }
 
 /**
@@ -134,6 +140,12 @@ export interface StoredSession extends DesignSession {
    * back to undefined; never crosses toDesignSession (whitelist).
    */
   ownerUid?: string;
+  /**
+   * SHA-256 of the resume key handed to the browser that opened the
+   * conversation (spec 7). Lets that browser resume an unowned session from
+   * /design?ds=; never crosses toDesignSession.
+   */
+  resumeKeyHash?: string;
 }
 
 export interface SessionStore {

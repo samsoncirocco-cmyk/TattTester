@@ -38,6 +38,7 @@ import {
 } from '../../intake/internal/characterSubject';
 import type { ReferenceAnalysis } from '@/services/vision';
 import { resolveSessionStore } from './store';
+import { mintResumeKey } from './resume';
 import type { StoredSession } from './store';
 import {
   DesignSessionError,
@@ -131,15 +132,21 @@ export async function converse(request: ConverseRequest): Promise<ConverseRespon
   const store = resolveSessionStore();
 
   let session: StoredSession;
+  // Spec 7: a new session's resume key leaves the server exactly once, on
+  // the response that created it; only its hash is stored.
+  let resumeKey: string | undefined;
   if (request.sessionId === undefined) {
     session = newConversationSession();
+    const minted = mintResumeKey();
+    resumeKey = minted.key;
+    session.resumeKeyHash = minted.hash;
     if (request.message === undefined) {
       // The opening call: the bot leads with placement and meaning
       // (ADR-0019) — deterministic, free, and never a model turn.
       const reply = opener();
       session.conversation!.transcript = [{ role: 'bot', text: reply }];
       await store.save(session);
-      return { sessionId: session.id, reply, stage: 'chatting', turn: 0 };
+      return { sessionId: session.id, reply, stage: 'chatting', turn: 0, resumeKey };
     }
   } else {
     session = await loadSession(store, request.sessionId);
@@ -223,6 +230,7 @@ export async function converse(request: ConverseRequest): Promise<ConverseRespon
   // Per-session model pinning: pass back TurnLog.model as the next turn's
   // pinnedModel (the engine's provider chain tries it first).
   conversation.model = result.turnLog.model;
+  conversation.notes = notes;
   session.updatedAt = new Date().toISOString();
   await store.save(session);
 
@@ -235,6 +243,7 @@ export async function converse(request: ConverseRequest): Promise<ConverseRespon
     // the record — never the record itself, never TurnLogs or rationale.
     // Reference rows (TAT-50) are overlaid through the same whitelist file.
     notes,
+    ...(resumeKey ? { resumeKey } : {}),
   };
   // The gate's spoken state (#376) — field name, stalled flag, one line.
   // Never the TurnLog, never the score.

@@ -17,6 +17,13 @@ import {
 import { CREDITS_EXHAUSTED_CODE } from '@/lib/generation-credits-shared';
 import { creditSplitLabel, useCreditBalance } from '../services/creditBalance';
 import { BuyCreditsLink } from './CreditBalance';
+import type { SessionRendering } from '@/services/designSession/resumeContract';
+import {
+  LOST_RENDER_LINE,
+  RENDER_DID_NOT_LAND_LINE,
+  useSessionPoll,
+  type ResumeFetchResult,
+} from '../services/sessionResume';
 import { revealNarration } from '../services/revealNarration';
 import { ChatBubble } from './ChatBubble';
 import { ChatInput } from './ChatInput';
@@ -70,6 +77,14 @@ export const CRITIQUE_INVITE =
 
 export const CRITIQUE_PLACEHOLDER = 'tell me what’s wrong with it…';
 
+/** Where a session handed in from outside opens (spec 7 resume). */
+function initialStepFor(session: DesignSession, rendering?: SessionRendering): FlowStep {
+  if (session.phase === 'complete') return 'complete';
+  if (session.phase === 'picked') return 'refine';
+  if (rendering?.kind === 'round' && !rendering.stale) return 'rounding';
+  return 'reveal';
+}
+
 type FlowStep =
   | 'ask-placement'
   | 'ask-meaning'
@@ -103,9 +118,23 @@ type SessionAction =
  * already-revealed session in via `initialSession`, which starts this flow
  * at the reveal with the intake transcript owned by the conversation.
  */
-export function DesignSessionFlow({ initialSession }: { initialSession?: DesignSession } = {}) {
+export function DesignSessionFlow({
+  initialSession,
+  resumeRendering,
+}: {
+  initialSession?: DesignSession;
+  /** A render the server was still running when this session was resumed (spec 7). */
+  resumeRendering?: SessionRendering;
+} = {}) {
   const scriptedIntake = initialSession == null;
-  const [step, setStep] = useState<FlowStep>(scriptedIntake ? 'ask-placement' : 'reveal');
+  const [step, setStep] = useState<FlowStep>(
+    initialSession ? initialStepFor(initialSession, resumeRendering) : 'ask-placement'
+  );
+  // Spec 7: a resumed round that is still running is waited on by polling
+  // the session; a round whose claim went stale is offered again instead.
+  const [awaitingRound, setAwaitingRound] = useState(
+    resumeRendering?.kind === 'round' && !resumeRendering.stale
+  );
   const [placementAnswer, setPlacementAnswer] = useState('');
   const [meaningAnswer, setMeaningAnswer] = useState('');
   const [session, setSession] = useState<DesignSession | null>(initialSession ?? null);
@@ -118,7 +147,9 @@ export function DesignSessionFlow({ initialSession }: { initialSession?: DesignS
   const outOfCredits = balance.known && balance.total === 0;
   // The ADR-0048 downgrade notice for the latest charged round — spoken,
   // never swallowed; cleared by the next action.
-  const [roundNotice, setRoundNotice] = useState<string | null>(null);
+  const [roundNotice, setRoundNotice] = useState<string | null>(
+    resumeRendering?.kind === 'round' && resumeRendering.stale ? LOST_RENDER_LINE : null
+  );
   // The critique lane (ADR-0039): its own transcript below the reveal, so the
   // round taps and the typed criticism read as one conversation.
   const [critiqueLog, setCritiqueLog] = useState<ConversationMessage[]>([]);
@@ -135,6 +166,19 @@ export function DesignSessionFlow({ initialSession }: { initialSession?: DesignS
       : session.variations
     : [];
   const roundPickId = liveRound?.pickedId;
+
+  /** The resumed round settled: new cuts landed, or it failed or died. */
+  const settleRound = (result: ResumeFetchResult) => {
+    if (result.status !== 'found') return;
+    const rendering = result.resume?.rendering;
+    if (rendering && !rendering.stale) return;
+    const landed = (result.session.rounds?.length ?? 0) > (session?.rounds?.length ?? 0);
+    setAwaitingRound(false);
+    setSession(result.session);
+    setStep(initialStepFor(result.session));
+    if (!landed) setRoundNotice(rendering?.stale ? LOST_RENDER_LINE : RENDER_DID_NOT_LAND_LINE);
+  };
+  useSessionPoll(session?.id, awaitingRound, settleRound);
 
   const runAction = (action: SessionAction) => {
     setError(null);
