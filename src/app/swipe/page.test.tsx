@@ -54,6 +54,7 @@ vi.mock("./decisionsClient", () => ({
 
 type MatchStoreSlice = {
   matches: ArtistMatch[];
+  broadened?: ArtistMatch[];
   hasHydrated: boolean;
 };
 
@@ -255,5 +256,162 @@ describe("SwipePage decisions (spec 13)", () => {
     });
     render(<SwipePage />);
     await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/not saved yet/i));
+  });
+});
+
+describe("SwipePage card evidence (spec 14)", () => {
+  beforeEach(() => {
+    push.mockClear();
+    searchParams = new URLSearchParams();
+  });
+
+  it("leads with the hero work image when the payload has one", async () => {
+    storeState = {
+      matches: [{ ...sampleMatch, heroImage: "https://img.example/nova.jpg" }],
+      hasHydrated: true,
+    };
+    render(<SwipePage />);
+    const img = (await screen.findByAltText("Work by Ink Nova")) as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe("https://img.example/nova.jpg");
+    expect(screen.queryByText("IN")).toBeNull();
+  });
+
+  it("falls back to the monogram when there is no displayable image", async () => {
+    storeState = { matches: [{ ...sampleMatch, heroImage: null }], hasHydrated: true };
+    render(<SwipePage />);
+    expect(await screen.findByText("IN")).toBeTruthy();
+    expect(screen.queryByAltText(/work by/i)).toBeNull();
+  });
+
+  it("swaps to the monogram when the image fails to load", async () => {
+    storeState = {
+      matches: [{ ...sampleMatch, heroImage: "https://img.example/gone.jpg" }],
+      hasHydrated: true,
+    };
+    render(<SwipePage />);
+    fireEvent.error(await screen.findByAltText("Work by Ink Nova"));
+    expect(screen.getByText("IN")).toBeTruthy();
+    expect(screen.queryByAltText(/work by/i)).toBeNull();
+  });
+
+  it("links to the artist profile in a new tab and shows city only (no distance)", async () => {
+    storeState = { matches: [sampleMatch], hasHydrated: true };
+    render(<SwipePage />);
+    const link = await screen.findByRole("link", { name: /view profile/i });
+    expect(link.getAttribute("href")).toBe("/artists/ink-nova--a1");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener");
+    expect(screen.getByText("LA")).toBeTruthy();
+    expect(screen.queryByText(/mi away/i)).toBeNull();
+    expect(screen.getByText("← pass · → pin · ↑ profile · Z undo")).toBeTruthy();
+  });
+
+  it("answers the keyboard shortcuts: ← pass, → pin, ↑ profile", async () => {
+    storeState = { matches: [sampleMatch, secondMatch], hasHydrated: true };
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    render(<SwipePage />);
+    await screen.findByText("Needle Ray");
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    expect(open).toHaveBeenCalledWith("/artists/needle-ray--a2", "_blank", "noopener");
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(record).toHaveBeenCalledWith("a2", "pin", null);
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(record).toHaveBeenCalledWith("a1", "pass", null);
+    expect(await screen.findByText("Deck complete")).toBeTruthy();
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("SwipePage undo (spec 14)", () => {
+  beforeEach(() => {
+    push.mockClear();
+    searchParams = new URLSearchParams();
+    storeState = { matches: [sampleMatch, secondMatch], hasHydrated: true };
+  });
+
+  it("brings the last card back, unpins it and removes the server decision", async () => {
+    render(<SwipePage />);
+    const pins = await screen.findAllByRole("button", { name: /^pin$/i });
+    fireEvent.click(pins[pins.length - 1]);
+    expect(screen.queryByText("Needle Ray")).toBeNull();
+    expect(screen.getByText("1")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /^undo$/i }));
+    expect(screen.getByText("Needle Ray")).toBeTruthy();
+    expect(remove).toHaveBeenCalledWith("a2");
+    expect(screen.getByText("0")).toBeTruthy();
+    // One step only.
+    expect((screen.getByRole("button", { name: /^undo$/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("returns to the last card from the Deck complete screen, not the interstitial", async () => {
+    render(<SwipePage />);
+    const passes = await screen.findAllByRole("button", { name: /^pass$/i });
+    fireEvent.click(passes[passes.length - 1]);
+    fireEvent.click(screen.getByRole("button", { name: /^pass$/i }));
+    expect(screen.getByText("Deck complete")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "z" });
+    expect(screen.getByText("Ink Nova")).toBeTruthy();
+    expect(screen.queryByText("Deck complete")).toBeNull();
+    expect(remove).toHaveBeenCalledWith("a1");
+  });
+});
+
+const nearMatch: ArtistMatch = {
+  artistId: "b1",
+  artistName: "Near Miss",
+  matchScore: 40,
+  tags: [],
+  styles: ["fine line"],
+  deck: "broadened",
+};
+
+describe("SwipePage second deck (spec 14)", () => {
+  beforeEach(() => {
+    push.mockClear();
+    searchParams = new URLSearchParams();
+  });
+
+  it("offers the broadened deck after the main deck and renders it with the reason line", async () => {
+    storeState = { matches: [sampleMatch], broadened: [nearMatch], hasHydrated: true };
+    render(<SwipePage />);
+    fireEvent.click(await screen.findByRole("button", { name: /^pin$/i }));
+    expect(screen.getByText("Deck complete")).toBeTruthy();
+    expect(screen.getByText(/1 more artist near your filters/i)).toBeTruthy();
+    expect(screen.queryByText("Near Miss")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /see close matches/i }));
+    expect(screen.getByText("Near Miss")).toBeTruthy();
+    expect(screen.getByText(/Close to what/)).toBeTruthy();
+    expect(screen.getByText(/fewer than a handful of exact matches/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /^pin$/i }));
+    expect(record).toHaveBeenCalledWith("b1", "pin", null);
+    expect(screen.getByText("2 pinned")).toBeTruthy();
+    expect(screen.getAllByRole("link", { name: /book/i })).toHaveLength(2);
+  });
+
+  it("goes straight to the alternatives when the primary deck is empty", async () => {
+    storeState = { matches: [], broadened: [nearMatch], hasHydrated: true };
+    render(<SwipePage />);
+    expect(await screen.findByText("Near Miss")).toBeTruthy();
+    expect(screen.getByText(/fewer than a handful of exact matches/i)).toBeTruthy();
+    expect(screen.queryByText(/No deck/i)).toBeNull();
+  });
+
+  it("hydrates decisions across both decks and de-dupes by id", async () => {
+    storeState = {
+      matches: [sampleMatch],
+      broadened: [nearMatch, { ...sampleMatch, deck: "broadened" }],
+      hasHydrated: true,
+    };
+    fetchDecisions.mockResolvedValue([{ artistId: "b1", decision: "pin", dsId: null, updatedAt: 1 }]);
+    render(<SwipePage />);
+    fireEvent.click(await screen.findByRole("button", { name: /^pass$/i }));
+    expect(screen.getByText("Deck complete")).toBeTruthy();
+    // b1 was already pinned on the server: nothing left in the second deck.
+    expect(screen.queryByText(/see close matches/i)).toBeNull();
+    expect(screen.getByText("1 pinned")).toBeTruthy();
   });
 });

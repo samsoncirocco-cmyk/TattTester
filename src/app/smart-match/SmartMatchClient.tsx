@@ -10,7 +10,7 @@ import {
   canonicalStylesFromOntologyTags,
   parseStylesParam,
 } from "@/lib/design-style-signal";
-import { useMatchStore } from "@/store/useMatchStore";
+import { useMatchStore, type ArtistMatch } from "@/store/useMatchStore";
 import { deriveReasonChips } from "@/features/match-pulse/services/matchReasonChips";
 import type { DesignSession } from "@/services/designSession/types";
 import { useStylePreferences } from "@/lib/tattStorage";
@@ -38,6 +38,52 @@ import { useStylePreferences } from "@/lib/tattStorage";
  */
 
 type Status = "idle" | "searching" | "error";
+
+type MatchPayload = {
+  id: string; name: string; score: number; styles?: string[];
+  location?: string; city?: string; instagram?: string;
+  bio?: string; reasoning?: string;
+  rating?: number; reviewCount?: number; portfolio?: string[];
+  heroImage?: string | null;
+};
+
+/**
+ * One mapper for both decks (spec 14): a broadened artist carries exactly the
+ * fields a primary one does, including the gated heroImage, so /swipe renders
+ * them with the same card.
+ */
+function toArtistMatch(
+  m: MatchPayload,
+  asked: { styles: string[]; location: string },
+  deck: "primary" | "broadened",
+): ArtistMatch {
+  return {
+    artistId: String(m.id),
+    artistName: m.name,
+    matchScore: m.score,
+    tags: m.styles || [],
+    styles: m.styles || [],
+    location: m.location,
+    instagramUrl: m.instagram,
+    bio: m.bio,
+    reasoning: m.reasoning,
+    heroImage: m.heroImage ?? null,
+    deck,
+    // Derived here — the only place that still knows what the user
+    // actually asked for — so /swipe can say WHY, not just how much.
+    reasonChips: deriveReasonChips(
+      {
+        styles: m.styles,
+        city: m.city,
+        location: m.location,
+        rating: m.rating,
+        reviewCount: m.reviewCount,
+        portfolio: m.portfolio,
+      },
+      asked
+    ),
+  };
+}
 
 function StylePill({
   label,
@@ -69,6 +115,7 @@ export default function SmartMatchClient() {
   const explicitStyles = searchParams.get("styles");
   const hasExplicitStyles = searchParams.has("styles");
   const setMatches = useMatchStore((s) => s.setMatches);
+  const setBroadened = useMatchStore((s) => s.setBroadened);
   const {
     stylePreferences,
     hydrated: preferencesHydrated,
@@ -131,43 +178,25 @@ export default function SmartMatchClient() {
           return;
         }
 
-        const matches = (data.matches || []).map((m: {
-          id: string; name: string; score: number; styles?: string[];
-          location?: string; city?: string; instagram?: string;
-          bio?: string; reasoning?: string;
-          rating?: number; reviewCount?: number; portfolio?: string[];
-        }) => ({
-          artistId: String(m.id),
-          artistName: m.name,
-          matchScore: m.score,
-          tags: m.styles || [],
-          styles: m.styles || [],
-          location: m.location,
-          instagramUrl: m.instagram,
-          bio: m.bio,
-          reasoning: m.reasoning,
-          // Derived here — the only place that still knows what the user
-          // actually asked for — so /swipe can say WHY, not just how much.
-          reasonChips: deriveReasonChips(
-            {
-              styles: m.styles,
-              city: m.city,
-              location: m.location,
-              rating: m.rating,
-              reviewCount: m.reviewCount,
-              portfolio: m.portfolio,
-            },
-            { styles: opts.styles, location }
-          ),
-        }));
+        const asked = { styles: opts.styles, location };
+        const matches: ArtistMatch[] = (data.matches || []).map((m: MatchPayload) =>
+          toArtistMatch(m, asked, "primary")
+        );
+        // The server's near-matches when the primary set is thin. Kept as a
+        // second deck, never folded into the first; de-duped by id here too.
+        const primaryIds = new Set(matches.map((m) => m.artistId));
+        const broadened: ArtistMatch[] = (data.broadened || [])
+          .map((m: MatchPayload) => toArtistMatch(m, asked, "broadened"))
+          .filter((m: ArtistMatch) => !primaryIds.has(m.artistId));
 
-        if (matches.length === 0) {
+        if (matches.length === 0 && broadened.length === 0) {
           setStatus("error");
           setErrorMsg("No artists match that combination yet — try fewer styles or a broader location.");
           return;
         }
 
         setMatches(matches);
+        setBroadened(broadened, typeof data.broadened_reason === "string" ? data.broadened_reason : null);
         router.push(
           designSessionId ? `/swipe?ds=${encodeURIComponent(designSessionId)}` : "/swipe"
         );
@@ -177,7 +206,7 @@ export default function SmartMatchClient() {
         setErrorMsg(err instanceof Error ? err.message : "Search failed — try again.");
       }
     },
-    [setMatches, router, designSessionId]
+    [setMatches, setBroadened, router, designSessionId]
   );
 
   const handleSubmit = useCallback(
