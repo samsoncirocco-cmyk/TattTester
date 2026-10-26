@@ -37,6 +37,7 @@ import OpenAI from 'openai';
 import { verifyApiAuth } from '@/lib/api-auth';
 import { rateLimit, rateLimitResponse } from '@/lib/rate-limit';
 import { checkBudget, recordSpend } from '@/lib/budget-tracker';
+import { observeRenderedImage } from '@/lib/observeRender';
 import { getAnatomicalAspectRatio } from '@/services/generation/internal/routing';
 import { ONTOLOGY_TAG_IDS } from '@/lib/style-vocabulary';
 
@@ -324,6 +325,19 @@ export async function POST(request: NextRequest) {
     const style        = await styleAgent(brief);
     const finalPrompt  = await promptAgent(brief, composition, style, references);
     const image        = await generateImage(finalPrompt, brief, references);
+    // This lane buys a Flux render and its own prompt pins a clean backdrop
+    // ("background always black or transparent — never busy"). The other paid
+    // lanes measure that through observeRenderedImage; this one did not
+    // (#396). Measure-and-log only — the bytes are already billed, so a
+    // verdict must never fail the request. warnOnFail is true because this
+    // prompt, unlike /api/v1/generate's caller-supplied one, asserts the
+    // ADR-0023 presentation. Replicate returns a hosted URL, so the guard
+    // records that it could not see the pixels rather than pretending it did.
+    await observeRenderedImage(image.url, {
+      eventType: 'council_generate.render_guard',
+      fields: { model: image.model, provider: 'replicate' },
+      warnOnFail: true,
+    });
     const critique     = await criticAgent(brief, image.url);
 
     // Record estimated pipeline spend after a successful run.
