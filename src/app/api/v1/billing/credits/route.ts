@@ -1,9 +1,12 @@
-/** Start a one-time Checkout session for the $10 / 25-generation credit pack. */
+/**
+ * GET: the signed-in customer's remaining cuts, for display on /design.
+ * POST: start a one-time Checkout session for the $10 / 25-generation credit pack.
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyApiAuth } from '@/lib/api-auth';
 import { verifyFirebaseToken } from '@/lib/auth-dal';
 import { stripe, stripeConfigured, STRIPE_NOT_CONFIGURED } from '@/lib/stripe';
-import { CREDIT_PACK_GENERATIONS } from '@/lib/generation-credits';
+import { CREDIT_PACK_GENERATIONS, getGenerationCreditBalance } from '@/lib/generation-credits';
 
 export const runtime = 'nodejs';
 
@@ -13,6 +16,31 @@ function getBaseUrl(req: NextRequest): string {
   const origin = req.headers.get('origin');
   if (origin) return origin.replace(/\/$/, '');
   return 'http://localhost:3000';
+}
+
+/**
+ * Read-only balance. Same gate as POST; the uid comes from the verified token,
+ * never the request, and nothing is written.
+ */
+export async function GET(req: NextRequest) {
+  const authError = await verifyApiAuth(req);
+  if (authError) return authError;
+
+  const user = await verifyFirebaseToken(req);
+  if (!user) {
+    return NextResponse.json({ error: 'Authentication required', code: 'AUTH_REQUIRED' }, { status: 401 });
+  }
+
+  try {
+    const balance = await getGenerationCreditBalance(user.uid);
+    return NextResponse.json(balance, { headers: { 'Cache-Control': 'private, no-store' } });
+  } catch (error) {
+    console.error('[Billing] credit balance read failed:', error instanceof Error ? error.message : error);
+    return NextResponse.json(
+      { error: 'Could not read your balance.', code: 'CREDITS_UNAVAILABLE' },
+      { status: 503 }
+    );
+  }
 }
 
 export async function POST(req: NextRequest) {

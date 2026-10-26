@@ -12,7 +12,11 @@ import {
   submitRoundPick,
   runRefineRound,
   submitRefinement,
+  DesignSessionRequestError,
 } from '../services/designSessionApi';
+import { CREDITS_EXHAUSTED_CODE } from '@/lib/generation-credits-shared';
+import { creditSplitLabel, useCreditBalance } from '../services/creditBalance';
+import { BuyCreditsLink } from './CreditBalance';
 import { revealNarration } from '../services/revealNarration';
 import { ChatBubble } from './ChatBubble';
 import { ChatInput } from './ChatInput';
@@ -33,6 +37,11 @@ export const ROUND_PROMPT = 'Two cuts. Tap the one that’s closer.';
 
 /** The charged-round button (ADR-0049 acceptance copy). */
 export const REFINE_BUTTON_LABEL = 'Refine — 1 credit';
+
+/** "Refine — 1 credit · 18 left" once the balance is known (spec 8). */
+export function refineButtonLabel(balance: { known: boolean; total: number }): string {
+  return balance.known ? `${REFINE_BUTTON_LABEL} · ${balance.total} left` : REFINE_BUTTON_LABEL;
+}
 
 /**
  * The way OUT of the loop: locks the round pick as the session's pick (the
@@ -101,7 +110,12 @@ export function DesignSessionFlow({ initialSession }: { initialSession?: DesignS
   const [meaningAnswer, setMeaningAnswer] = useState('');
   const [session, setSession] = useState<DesignSession | null>(initialSession ?? null);
   const [error, setError] = useState<string | null>(null);
+  // The failed call's route code, so an empty meter gets the buy link
+  // rather than a Retry that can only fail again (spec 8).
+  const [errorCode, setErrorCode] = useState<string | null>(null);
   const [lastAction, setLastAction] = useState<SessionAction | null>(null);
+  const balance = useCreditBalance();
+  const outOfCredits = balance.known && balance.total === 0;
   // The ADR-0048 downgrade notice for the latest charged round — spoken,
   // never swallowed; cleared by the next action.
   const [roundNotice, setRoundNotice] = useState<string | null>(null);
@@ -109,6 +123,8 @@ export function DesignSessionFlow({ initialSession }: { initialSession?: DesignS
   // round taps and the typed criticism read as one conversation.
   const [critiqueLog, setCritiqueLog] = useState<ConversationMessage[]>([]);
   const [critiquePending, setCritiquePending] = useState(false);
+  // The critique lane hit an empty meter: its spoken line gets the link.
+  const [critiqueBuyLink, setCritiqueBuyLink] = useState(false);
 
   // The live round (ADR-0049): the only one whose pick can still change.
   const liveRound = session?.rounds?.[session.rounds.length - 1];
@@ -122,6 +138,7 @@ export function DesignSessionFlow({ initialSession }: { initialSession?: DesignS
 
   const runAction = (action: SessionAction) => {
     setError(null);
+    setErrorCode(null);
     setLastAction(action);
     setRoundNotice(null);
 
@@ -167,6 +184,7 @@ export function DesignSessionFlow({ initialSession }: { initialSession?: DesignS
         setStep(nextStep);
       })
       .catch((err: unknown) => {
+        setErrorCode(err instanceof DesignSessionRequestError ? err.code : null);
         setError(err instanceof Error ? err.message : 'Something snapped — try again.');
       });
   };
@@ -230,6 +248,7 @@ export function DesignSessionFlow({ initialSession }: { initialSession?: DesignS
       .then((result) => {
         setSession(result.session);
         setCritiqueLog((prev) => [...prev, { role: 'bot', text: result.reply }]);
+        setCritiqueBuyLink(result.buyCredits === true);
       })
       .catch((err: unknown) => {
         setCritiqueLog((prev) => [
@@ -317,13 +336,20 @@ export function DesignSessionFlow({ initialSession }: { initialSession?: DesignS
                 )}
               </ChatBubble>
               <div className="flex gap-3">
-                <button
-                  type="button"
-                  onClick={handleRefineRound}
-                  className="press font-body text-[10px] uppercase tracking-[0.2em] text-black bg-pink hover:bg-white px-3 py-2"
-                >
-                  {REFINE_BUTTON_LABEL}
-                </button>
+                {/* An empty meter swaps Refine for the buy link instead of
+                    letting the tap fail (spec 8). */}
+                {outOfCredits ? (
+                  <BuyCreditsLink />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleRefineRound}
+                    title={balance.known ? creditSplitLabel(balance.free, balance.paid) : undefined}
+                    className="press font-body text-[10px] uppercase tracking-[0.2em] text-black bg-pink hover:bg-white px-3 py-2"
+                  >
+                    {refineButtonLabel(balance)}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleLockIn}
@@ -363,6 +389,7 @@ export function DesignSessionFlow({ initialSession }: { initialSession?: DesignS
               {message.text}
             </ChatBubble>
           ))}
+          {critiqueBuyLink && !critiquePending && <BuyCreditsLink />}
           {critiqueCuts.length > 0 && (
             <RevealGrid
               variations={critiqueCuts}
@@ -394,7 +421,13 @@ export function DesignSessionFlow({ initialSession }: { initialSession?: DesignS
         </>
       )}
 
-      {error && (
+      {error && errorCode === CREDITS_EXHAUSTED_CODE && (
+        <div className="space-y-3">
+          <ChatBubble role="bot">{error}</ChatBubble>
+          <BuyCreditsLink />
+        </div>
+      )}
+      {error && errorCode !== CREDITS_EXHAUSTED_CODE && (
         <div className="space-y-3">
           <ChatBubble role="bot">{error}</ChatBubble>
           <button

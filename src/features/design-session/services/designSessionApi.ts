@@ -12,6 +12,13 @@ import type {
   CritiqueRequest,
   CritiqueResult,
 } from '@/services/designSession/types';
+import { CREDITS_EXHAUSTED_CODE } from '@/lib/generation-credits-shared';
+import {
+  applyCreditsFromResponse,
+  markCreditsExhausted,
+  refreshCreditBalance,
+  type CreditReservationPayload,
+} from './creditBalance';
 import type {
   ConverseRequest,
   ConverseResponse,
@@ -109,6 +116,32 @@ async function postMaybeAuthed(path: string, body: unknown): Promise<Response> {
   });
 }
 
+/**
+ * Turn a failed response into a DesignSessionRequestError. A non-JSON or
+ * legacy body yields no hint — treat as non-retryable rather than guessing,
+ * since a blind retry can cost paid renders. An exhausted meter also tells
+ * the balance store, so Refine turns into the buy link (spec 8).
+ */
+function requestErrorFrom(res: Response, data: unknown): DesignSessionRequestError {
+  const payload = (data ?? {}) as {
+    error?: string;
+    code?: string;
+    retryable?: boolean;
+    retryAfterMs?: number;
+  };
+  const code = payload.code ?? 'DESIGN_SESSION_FAILED';
+  if (code === CREDITS_EXHAUSTED_CODE) markCreditsExhausted();
+  return new DesignSessionRequestError(
+    payload.error ?? `Design session request failed (${res.status})`,
+    {
+      code,
+      status: res.status,
+      retryable: payload.retryable === true,
+      retryAfterMs: payload.retryAfterMs,
+    }
+  );
+}
+
 async function postJson(path: string, body: unknown): Promise<DesignSession> {
   const res = await postAuthed(path, body);
 
@@ -119,29 +152,15 @@ async function postJson(path: string, body: unknown): Promise<DesignSession> {
     // Non-JSON body (e.g. a 500 HTML page) — fall through to status error.
   }
 
-  if (!res.ok) {
-    const payload = (data ?? {}) as {
-      error?: string;
-      code?: string;
-      retryable?: boolean;
-      retryAfterMs?: number;
-    };
-    // A non-JSON or legacy body yields no hint — treat as non-retryable
-    // rather than guessing, since a blind retry can cost paid renders.
-    throw new DesignSessionRequestError(
-      payload.error ?? `Design session request failed (${res.status})`,
-      {
-        code: payload.code ?? 'DESIGN_SESSION_FAILED',
-        status: res.status,
-        retryable: payload.retryable === true,
-        retryAfterMs: payload.retryAfterMs,
-      }
-    );
-  }
+  if (!res.ok) throw requestErrorFrom(res, data);
 
   // Tolerate both a bare DesignSession body and a { session } envelope.
-  const record = data as ({ session?: DesignSession } & DesignSession) | null;
+  const record = data as
+    | ({ session?: DesignSession; credits?: CreditReservationPayload; creditReleased?: boolean } & DesignSession)
+    | null;
   if (!record) throw new Error('Design session response was empty');
+  // Charged routes carry the post-debit balance (spec 8): keep it.
+  applyCreditsFromResponse(record.credits, record.creditReleased === true);
   return record.session ?? record;
 }
 
@@ -182,6 +201,8 @@ export interface RefineRoundResponse {
   session: DesignSession;
   downgraded: boolean;
   creditReleased: boolean;
+  /** Post-debit balance the route returned (spec 8), when it sent one. */
+  credits?: CreditReservationPayload;
 }
 
 /**
@@ -201,34 +222,22 @@ export async function runRefineRound(sessionId: string): Promise<RefineRoundResp
     // Non-JSON body — fall through to the status error below.
   }
 
-  if (!res.ok) {
-    const payload = (data ?? {}) as {
-      error?: string;
-      code?: string;
-      retryable?: boolean;
-      retryAfterMs?: number;
-    };
-    throw new DesignSessionRequestError(
-      payload.error ?? `Design session request failed (${res.status})`,
-      {
-        code: payload.code ?? 'DESIGN_SESSION_FAILED',
-        status: res.status,
-        retryable: payload.retryable === true,
-        retryAfterMs: payload.retryAfterMs,
-      }
-    );
-  }
+  if (!res.ok) throw requestErrorFrom(res, data);
 
   const record = data as {
     session?: DesignSession;
     round?: { downgraded?: boolean };
     creditReleased?: boolean;
+    credits?: CreditReservationPayload;
   } | null;
   if (!record?.session) throw new Error('Design session response was empty');
+  const creditReleased = record.creditReleased === true;
+  applyCreditsFromResponse(record.credits, creditReleased);
   return {
     session: record.session,
     downgraded: record.round?.downgraded === true,
-    creditReleased: record.creditReleased === true,
+    creditReleased,
+    ...(record.credits ? { credits: record.credits } : {}),
   };
 }
 
@@ -251,26 +260,16 @@ export async function submitCritique(
     // Non-JSON body — fall through to the status error below.
   }
 
-  if (!res.ok) {
-    const payload = (data ?? {}) as {
-      error?: string;
-      code?: string;
-      retryable?: boolean;
-      retryAfterMs?: number;
-    };
-    throw new DesignSessionRequestError(
-      payload.error ?? `Design session request failed (${res.status})`,
-      {
-        code: payload.code ?? 'DESIGN_SESSION_FAILED',
-        status: res.status,
-        retryable: payload.retryable === true,
-        retryAfterMs: payload.retryAfterMs,
-      }
-    );
-  }
+  if (!res.ok) throw requestErrorFrom(res, data);
 
   if (!data) throw new Error('Design session response was empty');
-  return data as CritiqueResult;
+  const result = data as CritiqueResult;
+  // The critique lane's credit is reserved inside the service, so the route
+  // returns no balance: an empty meter arrives as a flag, and a fresh round
+  // means one credit moved — re-read rather than guess.
+  if (result.buyCredits) markCreditsExhausted();
+  else if (result.round) void refreshCreditBalance();
+  return result;
 }
 
 /**

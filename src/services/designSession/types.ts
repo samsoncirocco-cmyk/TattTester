@@ -299,4 +299,9 @@ export interface CritiqueResult {
   exhausted: boolean;
   /** True when a paid render actually ran. */
   generated: boolean;
+  /**
+   * The generation-credit meter is empty: the reply is the exhausted line and
+   * the web lane shows the buy link under it (spec 8). Absent otherwise.
+   */
+  buyCredits?: boolean;
 }

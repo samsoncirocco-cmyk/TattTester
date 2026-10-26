@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
 
-const { verifyApiAuthMock, verifyFirebaseTokenMock, createCheckoutSessionMock } = vi.hoisted(() => ({
+const { verifyApiAuthMock, verifyFirebaseTokenMock, createCheckoutSessionMock, getBalanceMock } = vi.hoisted(() => ({
+  getBalanceMock: vi.fn(),
   verifyApiAuthMock: vi.fn(),
   verifyFirebaseTokenMock: vi.fn(),
   createCheckoutSessionMock: vi.fn(),
@@ -9,14 +10,17 @@ const { verifyApiAuthMock, verifyFirebaseTokenMock, createCheckoutSessionMock } 
 
 vi.mock('@/lib/api-auth', () => ({ verifyApiAuth: verifyApiAuthMock }));
 vi.mock('@/lib/auth-dal', () => ({ verifyFirebaseToken: verifyFirebaseTokenMock }));
-vi.mock('@/lib/generation-credits', () => ({ CREDIT_PACK_GENERATIONS: 25 }));
+vi.mock('@/lib/generation-credits', () => ({
+  CREDIT_PACK_GENERATIONS: 25,
+  getGenerationCreditBalance: getBalanceMock,
+}));
 vi.mock('@/lib/stripe', () => ({
   stripe: { checkout: { sessions: { create: createCheckoutSessionMock } } },
   stripeConfigured: true,
   STRIPE_NOT_CONFIGURED: { error: 'Stripe not configured.' },
 }));
 
-import { POST } from './route';
+import { GET, POST } from './route';
 
 function makeRequest() {
   return new NextRequest('https://tatttester.com/api/v1/billing/credits', {
@@ -94,5 +98,55 @@ describe('POST /api/v1/billing/credits', () => {
 
     expect(response.status).toBe(401);
     expect(verifyFirebaseTokenMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/v1/billing/credits', () => {
+  function makeGet() {
+    return new NextRequest('https://tatttester.com/api/v1/billing/credits?uid=victim_uid', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer test-token' },
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    verifyApiAuthMock.mockResolvedValue(null);
+    verifyFirebaseTokenMock.mockResolvedValue({ uid: 'uid_customer', email: 'customer@example.com' });
+    getBalanceMock.mockResolvedValue({ freeRemaining: 12, paidRemaining: 6 });
+  });
+
+  it('returns the verified caller\'s balance, never a query-string uid', async () => {
+    const response = await GET(makeGet());
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ freeRemaining: 12, paidRemaining: 6 });
+    expect(getBalanceMock).toHaveBeenCalledWith('uid_customer');
+    expect(response.headers.get('Cache-Control')).toContain('no-store');
+  });
+
+  it('starts no checkout and touches nothing else', async () => {
+    await GET(makeGet());
+    expect(createCheckoutSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('requires auth', async () => {
+    verifyApiAuthMock.mockResolvedValue(NextResponse.json({ error: 'nope' }, { status: 401 }));
+    const response = await GET(makeGet());
+    expect(response.status).toBe(401);
+    expect(getBalanceMock).not.toHaveBeenCalled();
+  });
+
+  it('requires a real Firebase identity', async () => {
+    verifyFirebaseTokenMock.mockResolvedValue(null);
+    const response = await GET(makeGet());
+    expect(response.status).toBe(401);
+    expect(getBalanceMock).not.toHaveBeenCalled();
+  });
+
+  it('answers 503 rather than a made-up number when the ledger is unreadable', async () => {
+    getBalanceMock.mockRejectedValue(new Error('firestore down'));
+    const response = await GET(makeGet());
+    expect(response.status).toBe(503);
   });
 });

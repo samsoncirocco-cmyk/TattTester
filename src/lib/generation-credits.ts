@@ -8,9 +8,13 @@
 import { randomUUID } from 'crypto';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { ensureAdminApp } from './firebase-admin';
+import {
+  CREDITS_EXHAUSTED_MESSAGE,
+  CREDIT_PACK_GENERATIONS,
+  LIFETIME_FREE_GENERATIONS,
+} from './generation-credits-shared';
 
-export const LIFETIME_FREE_GENERATIONS = 25;
-export const CREDIT_PACK_GENERATIONS = 25;
+export { CREDIT_PACK_GENERATIONS, LIFETIME_FREE_GENERATIONS };
 
 const COLLECTION = 'generation_credits';
 
@@ -27,7 +31,7 @@ export class GenerationCreditsExhaustedError extends Error {
   readonly code = 'GENERATION_CREDITS_EXHAUSTED';
 
   constructor() {
-    super('You have used your free generations. Buy 25 more cuts to keep designing.');
+    super(CREDITS_EXHAUSTED_MESSAGE);
     this.name = 'GenerationCreditsExhaustedError';
   }
 }
@@ -43,6 +47,28 @@ function nonNegativeNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? Math.floor(value)
     : fallback;
+}
+
+export type GenerationCreditBalance = {
+  freeRemaining: number;
+  paidRemaining: number;
+};
+
+/**
+ * Plain read of what the account has left, for display only. No transaction:
+ * a stale number is corrected by the next charged response, and nothing is
+ * ever debited or granted on the strength of this read. A missing document
+ * means the account has never been charged, which is the same default
+ * reserveGenerationCredit applies on its first debit.
+ */
+export async function getGenerationCreditBalance(uid: string): Promise<GenerationCreditBalance> {
+  const db = requireFirestore();
+  const snap = await db.collection(COLLECTION).doc(uid).get();
+  const data = (snap.data() as Record<string, unknown> | undefined) ?? {};
+  return {
+    freeRemaining: nonNegativeNumber(data.freeRemaining, LIFETIME_FREE_GENERATIONS),
+    paidRemaining: nonNegativeNumber(data.paidRemaining, 0),
+  };
 }
 
 /** Atomically take one generation from free cuts first, then paid credits. */

@@ -1194,7 +1194,7 @@ describe('the two-cut rounds (ADR-0049)', () => {
       const outcome = await handleInbound({ phone: PHONE, body: 'REFINE' });
 
       expect(outcome.kind).toBe('reply');
-      if (outcome.kind === 'reply') expect(outcome.text).toContain('free generations');
+      if (outcome.kind === 'reply') expect(outcome.text).toContain('free cuts');
       expect(refineRound).not.toHaveBeenCalled();
     });
 

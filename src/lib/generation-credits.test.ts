@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { ensureAdminAppMock, runTransactionMock, txGetMock, txSetMock } = vi.hoisted(() => ({
+const { ensureAdminAppMock, runTransactionMock, txGetMock, txSetMock, docGetMock } = vi.hoisted(() => ({
+  docGetMock: vi.fn(),
   ensureAdminAppMock: vi.fn(),
   runTransactionMock: vi.fn(),
   txGetMock: vi.fn(),
@@ -10,7 +11,9 @@ const { ensureAdminAppMock, runTransactionMock, txGetMock, txSetMock } = vi.hois
 vi.mock('./firebase-admin', () => ({ ensureAdminApp: ensureAdminAppMock }));
 vi.mock('firebase-admin/firestore', () => ({
   getFirestore: () => ({
-    collection: (name: string) => ({ doc: (id: string) => ({ path: `${name}/${id}` }) }),
+    collection: (name: string) => ({
+      doc: (id: string) => ({ path: `${name}/${id}`, get: () => docGetMock(`${name}/${id}`) }),
+    }),
     runTransaction: runTransactionMock,
   }),
   FieldValue: {
@@ -23,6 +26,7 @@ import {
   CREDIT_PACK_GENERATIONS,
   GenerationCreditsExhaustedError,
   LIFETIME_FREE_GENERATIONS,
+  getGenerationCreditBalance,
   grantPurchasedGenerationCredits,
   releaseGenerationCredit,
   reserveGenerationCredit,
@@ -152,5 +156,33 @@ describe('generation credits', () => {
     });
 
     expect(txSetMock).not.toHaveBeenCalled();
+  });
+
+  describe('getGenerationCreditBalance', () => {
+    it('reads an untouched account as the full lifetime free allowance', async () => {
+      docGetMock.mockResolvedValue(snapshot(null));
+      await expect(getGenerationCreditBalance('uid_new')).resolves.toEqual({
+        freeRemaining: LIFETIME_FREE_GENERATIONS,
+        paidRemaining: 0,
+      });
+      expect(docGetMock).toHaveBeenCalledWith('generation_credits/uid_new');
+    });
+
+    it.each([
+      ['free only', { freeRemaining: 12, paidRemaining: 0 }, { freeRemaining: 12, paidRemaining: 0 }],
+      ['paid only', { freeRemaining: 0, paidRemaining: 7 }, { freeRemaining: 0, paidRemaining: 7 }],
+      ['mixed', { freeRemaining: 3, paidRemaining: 25 }, { freeRemaining: 3, paidRemaining: 25 }],
+      ['corrupt values', { freeRemaining: -4, paidRemaining: 'x' }, { freeRemaining: 25, paidRemaining: 0 }],
+    ])('returns %s balances', async (_label, doc, expected) => {
+      docGetMock.mockResolvedValue(snapshot(doc));
+      await expect(getGenerationCreditBalance('uid_1')).resolves.toEqual(expected);
+    });
+
+    it('never opens a transaction or writes', async () => {
+      docGetMock.mockResolvedValue(snapshot({ freeRemaining: 1, paidRemaining: 0 }));
+      await getGenerationCreditBalance('uid_1');
+      expect(runTransactionMock).not.toHaveBeenCalled();
+      expect(txSetMock).not.toHaveBeenCalled();
+    });
   });
 });

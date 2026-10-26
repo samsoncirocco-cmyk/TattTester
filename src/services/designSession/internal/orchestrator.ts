@@ -1403,10 +1403,15 @@ export async function critique(
   /** Record the turn and persist without spending anything. */
   const settle = async (
     reply: string,
-    extra: { targetId?: string; cutId?: string; pendingCritique?: string[] } = {}
+    extra: {
+      targetId?: string;
+      cutId?: string;
+      pendingCritique?: string[];
+      buyCredits?: boolean;
+    } = {}
   ) => {
     const now = new Date().toISOString();
-    const { pendingCritique, ...turnFields } = extra;
+    const { pendingCritique, buyCredits, ...turnFields } = extra;
     session.critiqueTurns = [
       ...(session.critiqueTurns ?? []),
       { message, reply, ...turnFields, at: now },
@@ -1432,6 +1437,7 @@ export async function critique(
       fixesRemaining: remaining,
       exhausted: remaining <= 0,
       generated: false as boolean,
+      ...(buyCredits ? { buyCredits: true } : {}),
     };
   };
 
@@ -1508,8 +1514,9 @@ export async function critique(
           shaped.name === 'GenerationCreditsExhaustedError'
         ) {
           // The primitive's meter line IS the honest copy — the same
-          // sentence the SMS round lane sends for the same refusal.
-          return settle((error as Error).message);
+          // sentence the SMS round lane sends for the same refusal. The web
+          // lane renders the buy link from the flag, never a URL in copy.
+          return settle((error as Error).message, { buyCredits: true });
         }
         throw error;
       }
