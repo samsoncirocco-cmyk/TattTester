@@ -20,6 +20,10 @@ vi.mock("@/features/match-pulse/services/neo4jService", () => ({
   executeServerCypherQueryOrThrow: mockedQuery,
 }));
 
+// The profile now reads cached Firestore hints (next opening, artist extras);
+// with only a project id configured that would try a real network call.
+vi.mock("@/lib/firebase-admin", () => ({ ensureAdminApp: () => false }));
+
 import ArtistProfilePage from "./page";
 
 function graphRow(overrides: Record<string, unknown> = {}) {

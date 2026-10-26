@@ -28,6 +28,12 @@ type CommonProps = {
   showFavorite?: boolean;   // defaults to false; /artists passes true
   favoriteSize?: number;    // forwards to FavoriteButton
   favoritePosition?: "top-right" | "top-left";
+  /**
+   * Pre-formatted day of the artist's next opening ("Nov 3"), from the cached
+   * hint (src/lib/next-opening). Absent = say nothing: a missing value may only
+   * mean we have not computed one, never that the artist is unavailable.
+   */
+  nextOpening?: string;
 };
 
 type CompactProps = CommonProps & {
@@ -67,6 +73,7 @@ export default function ArtistCard(props: Props) {
     showFavorite = false,
     favoriteSize,
     favoritePosition = "top-right",
+    nextOpening,
   } = props;
 
   const { favorites, hydrated } = useFavorites();
@@ -170,6 +177,14 @@ export default function ArtistCard(props: Props) {
           <div className="text-[10px] uppercase tracking-[0.2em] text-white/50 font-body mt-1">
             {city}
           </div>
+          {nextOpening && (
+            <div
+              data-testid="next-opening"
+              className="text-[10px] uppercase tracking-[0.2em] text-pink font-body mt-1"
+            >
+              Next opening {nextOpening}
+            </div>
+          )}
 
           {/* style chips — match variant only */}
           {isMatch(props) && props.styles && (

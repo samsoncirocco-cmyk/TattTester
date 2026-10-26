@@ -6,6 +6,8 @@ import { ArtistSubscribeButton, BuyGenerationCreditsButton } from "@/components/
 // Stripe config (never imported into client components). Rendering the fee
 // from PLATFORM_FEE_BPS keeps this page honest if the rate ever changes.
 import { PLATFORM_FEE_BPS } from "@/lib/stripe";
+import { depositLadderLabel } from "@/lib/booking";
+import { feeModelMoneyCopy } from "@/lib/money-copy";
 
 const FEE_PERCENT = PLATFORM_FEE_BPS / 100; // 1000 bps → 10
 
@@ -31,7 +33,8 @@ const STEPS = [
     step: "03",
     name: "Book",
     price: `Deposit + ${FEE_PERCENT}%`,
-    body: `When you book, you pay the artist's deposit plus a ${FEE_PERCENT}% booking fee. Your deposit goes to the artist.`,
+    // The fee model in one sentence (spec 4 §4.4, ADR-0007 percentage).
+    body: feeModelMoneyCopy(FEE_PERCENT),
   },
 ];
 
@@ -82,7 +85,7 @@ export default function PricingPage() {
               Buy 25 designs for $10
             </BuyGenerationCreditsButton>
             <p className="text-[13px] text-quiet-dim font-body">
-              Booking deposits are tiered by tattoo size.
+              Booking deposits are tiered by tattoo size: {depositLadderLabel()}.
             </p>
           </div>
 

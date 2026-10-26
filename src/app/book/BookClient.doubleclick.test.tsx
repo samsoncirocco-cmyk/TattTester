@@ -111,7 +111,7 @@ describe("BookClient — in-flight guard and idempotency key (spec 5)", () => {
       />,
     );
     walkToReview();
-    const cta = screen.getByRole("button", { name: "Hold time & continue" });
+    const cta = screen.getByRole("button", { name: "Pay $75 deposit to hold" });
     // Same tick: React has not re-rendered the disabled state between these.
     fireEvent.click(cta);
     fireEvent.click(cta);
@@ -158,10 +158,10 @@ describe("BookClient — in-flight guard and idempotency key (spec 5)", () => {
       />,
     );
     walkToReview();
-    fireEvent.click(screen.getByRole("button", { name: "Hold time & continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pay $75 deposit to hold" }));
     await screen.findByText("Still working on that one. Give it a moment.");
     // Still on review, not bounced to the time step with a "Taken" slot.
     expect(screen.queryByText("Taken")).toBeNull();
-    expect(screen.getByRole("button", { name: "Hold time & continue" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Pay $75 deposit to hold" })).toBeTruthy();
   });
 });

@@ -210,6 +210,59 @@ export function zonedDateTimeToEpochMs(
   return NaN;
 }
 
+/**
+ * The calendar date ("YYYY-MM-DD") it is right now in an IANA zone — the
+ * artist's today, not UTC's (spec 4). Falls back to the UTC date for an
+ * unknown zone rather than throwing on a page render.
+ */
+export function toZonedISODate(nowMs: number, timeZone: string): string {
+  try {
+    const parts = Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      })
+        .formatToParts(new Date(nowMs))
+        .filter((p) => p.type !== "literal")
+        .map((p) => [p.type, p.value]),
+    ) as Record<string, string>;
+    return `${parts.year}-${parts.month}-${parts.day}`;
+  } catch {
+    return toISODate(new Date(nowMs));
+  }
+}
+
+/**
+ * A wall-clock date+time in a zone as an ISO-8601 instant WITH that zone's
+ * offset — "2026-08-06T14:00:00-07:00" — so a slot names one real moment
+ * whatever clock the reader is on. Null for a time that does not exist there
+ * (inside a spring-forward gap) or a bad zone.
+ */
+export function zonedISOString(
+  dateStr: string,
+  timeStr: string,
+  timeZone: string,
+): string | null {
+  let epochMs: number;
+  try {
+    epochMs = zonedDateTimeToEpochMs(dateStr, timeStr, timeZone);
+  } catch {
+    return null;
+  }
+  if (!Number.isFinite(epochMs)) return null;
+  const [Y, M, D] = dateStr.split("-").map(Number);
+  const minutes = parseTimeToMinutes(timeStr);
+  const wallAsUtc = Date.UTC(Y, M - 1, D, Math.floor(minutes / 60), minutes % 60);
+  const offsetMin = Math.round((wallAsUtc - epochMs) / 60_000);
+  const sign = offsetMin >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMin);
+  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+  const mm = String(abs % 60).padStart(2, "0");
+  return `${dateStr}T${timeStr}:00${sign}${hh}:${mm}`;
+}
+
 /** Add whole days to a "YYYY-MM-DD" string. */
 export function addDaysToISODate(dateStr: string, days: number): string {
   const d = new Date(dateStr + "T00:00:00Z");

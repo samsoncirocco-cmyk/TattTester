@@ -106,6 +106,29 @@ export function depositDollarsForSize(size: string | undefined): number {
   return depositCentsForSize(size) / 100;
 }
 
+/** Display order of the size ladder, smallest first. */
+export const DEPOSIT_LADDER_ORDER: readonly TattooSize[] = ["small", "medium", "large", "sleeve"];
+
+/**
+ * The whole deposit ladder in cents, smallest first (spec 4) — one source so
+ * the profile CTA, the /book header and the pricing page always agree.
+ */
+export function depositLadder(): Array<{ size: TattooSize; cents: number }> {
+  return DEPOSIT_LADDER_ORDER.map((size) => ({ size, cents: DEPOSIT_CENTS_BY_SIZE[size] }));
+}
+
+/** The smallest deposit, in cents ("deposit from $75"). */
+export function minimumDepositCents(): number {
+  return Math.min(...DEPOSIT_LADDER_ORDER.map((s) => DEPOSIT_CENTS_BY_SIZE[s]));
+}
+
+/** "$75 small · $150 medium · $300 large · $500 sleeve" — display only. */
+export function depositLadderLabel(): string {
+  return depositLadder()
+    .map(({ size, cents }) => `$${(cents / 100).toLocaleString("en-US")} ${size}`)
+    .join(" · ");
+}
+
 // ─── Requested slots ───────────────────────────────────────────────────
 
 /**

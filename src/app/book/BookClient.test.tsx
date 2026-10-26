@@ -148,7 +148,7 @@ describe("BookClient — lost race stays honest (REA gap #2)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     fillDetails();
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
-    fireEvent.click(screen.getByRole("button", { name: "Hold time & continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pay $75 deposit to hold" }));
 
     // Back on the time step, STILL the reservation product.
     await waitFor(() => expect(screen.getByText("Pick your time")).toBeTruthy());
@@ -190,7 +190,7 @@ describe("BookClient — lost race stays honest (REA gap #2)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     fillDetails();
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
-    fireEvent.click(screen.getByRole("button", { name: "Hold time & continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pay $75 deposit to hold" }));
 
     const action = await screen.findByRole("button", { name: "Pick another time" });
     expect(screen.getByText(/held time ran out before checkout opened/)).toBeTruthy();
@@ -223,7 +223,7 @@ describe("BookClient — resumable, releasable hold (REA gap #1)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     fillDetails();
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
-    fireEvent.click(screen.getByRole("button", { name: "Hold time & continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pay $75 deposit to hold" }));
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Request sent" })).toBeTruthy());
     const url = new URL(window.location.href);
@@ -253,7 +253,7 @@ describe("BookClient — resumable, releasable hold (REA gap #1)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     fillDetails();
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
-    fireEvent.click(screen.getByRole("button", { name: "Hold time & continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pay $75 deposit to hold" }));
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Request sent" })).toBeTruthy());
 
@@ -335,7 +335,7 @@ describe("BookClient — resumable, releasable hold (REA gap #1)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     fillDetails();
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
-    fireEvent.click(screen.getByRole("button", { name: "Hold time & continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pay $75 deposit to hold" }));
 
     await screen.findByText("That hold is not for this booking.");
     await waitFor(() =>
@@ -362,7 +362,7 @@ describe("BookClient — reply-time promise (REA gap #3)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     fillDetails();
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
-    fireEvent.click(screen.getByRole("button", { name: "Send request & continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pay $75 deposit to request" }));
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Request sent" })).toBeTruthy());
     expect(screen.getByText(/Nadia Ink replies within 48 hours/)).toBeTruthy();

@@ -104,8 +104,14 @@ export default async function BookPage({
             date: s.date,
             startTime: s.startTime,
             endTime: s.endTime,
+            durationMinutes: s.durationMinutes,
+            // Real instants with the artist's offset (spec 4), so the client
+            // can name the zone and convert to the customer's own clock.
+            startsAt: s.startsAt,
+            endsAt: s.endsAt,
           })),
           ...(resolved.timezone ? { timezone: resolved.timezone } : {}),
+          ...(resolved.nextOpening ? { nextOpeningAt: resolved.nextOpening.at } : {}),
         };
       }
     } catch (error) {
