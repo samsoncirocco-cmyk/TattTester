@@ -134,6 +134,11 @@ export interface StoredSession extends DesignSession {
    * back to undefined; never crosses toDesignSession (whitelist).
    */
   ownerUid?: string;
+  /**
+   * The visitor chose "start over" (#394). The session stays in the store
+   * — charged work is not deleted — but reload must not pick it back up.
+   */
+  resumeDismissed?: boolean;
 }
 
 export interface SessionStore {
@@ -173,6 +178,27 @@ export interface SessionStore {
    * index — no composite index to provision before the cron can run.
    */
   listRecentlyUpdated(sinceIso: string, limit: number): Promise<StoredSession[]>;
+  /**
+   * The latest resumable session id stamped for this account (#394).
+   * A pointer doc, not a collection scan — a where+orderBy on ownerUid
+   * and updatedAt would need a composite index nobody has provisioned
+   * (same constraint as listRecentlyUpdated).
+   */
+  getOwnerPointer(uid: string): Promise<string | null>;
+}
+
+const OWNER_COLLECTION = 'design_session_owners';
+
+/**
+ * Reload should restore a session the visitor has not finished and has
+ * not explicitly abandoned. Complete and warm-handoff sessions are done.
+ */
+export function isResumableSession(session: StoredSession): boolean {
+  if (session.resumeDismissed) return false;
+  if (session.phase === 'complete') return false;
+  if (session.conversation?.stage === 'handoff') return false;
+  if (session.phase === 'intake' && !session.conversation) return false;
+  return true;
 }
 
 /**
@@ -254,10 +280,30 @@ export function toDesignSession(session: StoredSession): DesignSession {
 // the proposal answered "Session not found" — the reveal was unreachable in
 // demo mode and in creds-less dev.
 const GLOBAL_KEY = '__tattDesignSessions';
+const OWNER_GLOBAL_KEY = '__tattDesignSessionOwners';
 const globalStore = globalThis as typeof globalThis & {
   [GLOBAL_KEY]?: Map<string, StoredSession>;
+  [OWNER_GLOBAL_KEY]?: Map<string, { sessionId: string; updatedAt: string }>;
 };
 const sessions: Map<string, StoredSession> = (globalStore[GLOBAL_KEY] ??= new Map());
+const ownerPointers: Map<string, { sessionId: string; updatedAt: string }> = (globalStore[
+  OWNER_GLOBAL_KEY
+] ??= new Map());
+
+function syncMemoryOwnerPointer(session: StoredSession): void {
+  if (!session.ownerUid) return;
+  const current = ownerPointers.get(session.ownerUid);
+  if (!isResumableSession(session)) {
+    if (current?.sessionId === session.id) ownerPointers.delete(session.ownerUid);
+    return;
+  }
+  if (!current || current.updatedAt <= session.updatedAt) {
+    ownerPointers.set(session.ownerUid, {
+      sessionId: session.id,
+      updatedAt: session.updatedAt,
+    });
+  }
+}
 
 export const memorySessionStore: SessionStore = {
   async get(id) {
@@ -265,7 +311,9 @@ export const memorySessionStore: SessionStore = {
     return session ? structuredClone(session) : null;
   },
   async save(session) {
-    sessions.set(session.id, structuredClone(session));
+    const stored = structuredClone(session);
+    sessions.set(session.id, stored);
+    syncMemoryOwnerPointer(stored);
   },
   // Atomic by construction: the whole read-check-write runs synchronously
   // on the one JS thread, so no await can interleave a second claimant.
@@ -292,6 +340,7 @@ export const memorySessionStore: SessionStore = {
     if (session.ownerUid) return 'mismatch';
     if (!stamp) return 'unbound';
     session.ownerUid = uid;
+    syncMemoryOwnerPointer(session);
     return 'stamped';
   },
   async listRecentlyUpdated(sinceIso, limit) {
@@ -301,11 +350,15 @@ export const memorySessionStore: SessionStore = {
       .slice(0, Math.max(0, limit))
       .map((session) => structuredClone(session));
   },
+  async getOwnerPointer(uid) {
+    return ownerPointers.get(uid)?.sessionId ?? null;
+  },
 };
 
 /** Test hook: reset the in-memory store between cases. */
 export function clearMemorySessions(): void {
   sessions.clear();
+  ownerPointers.clear();
 }
 
 // ─── Firestore store ───────────────────────────────────────────────────
@@ -326,6 +379,7 @@ export const firestoreSessionStore: SessionStore = {
     // drops undefined values at every depth.
     const doc = JSON.parse(JSON.stringify(session)) as Record<string, unknown>;
     await getFirestore().collection(COLLECTION).doc(session.id).set(doc);
+    await syncFirestoreOwnerPointer(session);
   },
   // The one write that must NOT be last-write-wins: two concurrent charged
   // rounds serialize on this transaction, and the loser never renders.
@@ -369,7 +423,15 @@ export const firestoreSessionStore: SessionStore = {
       if (owner === uid) return 'match';
       if (owner) return 'mismatch';
       if (!stamp) return 'unbound';
+      const data = snap.data() as StoredSession;
       tx.update(ref, { ownerUid: uid });
+      const stamped = { ...data, ownerUid: uid };
+      if (isResumableSession(stamped)) {
+        tx.set(db.collection(OWNER_COLLECTION).doc(uid), {
+          sessionId: id,
+          updatedAt: data.updatedAt,
+        });
+      }
       return 'stamped';
     });
   },
@@ -383,7 +445,32 @@ export const firestoreSessionStore: SessionStore = {
       .get();
     return snap.docs.map((doc) => doc.data() as StoredSession);
   },
+  async getOwnerPointer(uid) {
+    const { getFirestore } = await import('firebase-admin/firestore');
+    const snap = await getFirestore().collection(OWNER_COLLECTION).doc(uid).get();
+    if (!snap.exists) return null;
+    const sessionId = (snap.data() as { sessionId?: unknown }).sessionId;
+    return typeof sessionId === 'string' && sessionId ? sessionId : null;
+  },
 };
+
+async function syncFirestoreOwnerPointer(session: StoredSession): Promise<void> {
+  if (!session.ownerUid) return;
+  const { getFirestore } = await import('firebase-admin/firestore');
+  const ref = getFirestore().collection(OWNER_COLLECTION).doc(session.ownerUid);
+  if (!isResumableSession(session)) {
+    const snap = await ref.get();
+    if (snap.exists && (snap.data() as { sessionId?: string }).sessionId === session.id) {
+      await ref.delete();
+    }
+    return;
+  }
+  const snap = await ref.get();
+  const current = snap.data() as { updatedAt?: string } | undefined;
+  if (!current?.updatedAt || current.updatedAt <= session.updatedAt) {
+    await ref.set({ sessionId: session.id, updatedAt: session.updatedAt });
+  }
+}
 
 // ─── Store selection ───────────────────────────────────────────────────
 

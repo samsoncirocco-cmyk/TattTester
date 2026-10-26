@@ -303,6 +303,18 @@ features:
     limitations:
       - Pricing copy has no focused page test at this snapshot.
 
+  design_session_resume:
+    status: implemented
+    evidence:
+      - src/app/api/v1/design-session/resume/route.ts
+      - src/services/designSession/internal/resume.ts
+      - src/services/designSession/__tests__/resume.test.ts
+      - src/app/api/v1/design-session/resume/route.test.ts
+      - src/features/design-session/__tests__/DesignConversation.test.tsx
+    limitations:
+      - Dismissing the latest owned session does not fall back to an older one. The pointer tracks one session.
+      - A signed-out chat on a second device cannot resume until the session is owned, which happens at the first charged action.
+
   first_run_funnel:
     status: implemented
     evidence:

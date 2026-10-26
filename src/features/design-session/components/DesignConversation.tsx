@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
+import { trackFunnel } from '@/lib/funnel';
 import type { DesignSession } from '@/services/designSession/types';
 import type {
   ConversationMessage,
@@ -21,7 +22,13 @@ import { ExampleStrip } from './ExampleStrip';
 import { StarterChips } from './StarterChips';
 import { ThinkingLine } from './ThinkingLine';
 import { DesignSessionFlow } from './DesignSessionFlow';
-import { SketchbotNotesCard, MobileNotesSheet } from './SketchbotNotes';
+import { SketchbotNotesCard, MobileNotesSheet, PLACEMENT_GAP_LINE } from './SketchbotNotes';
+import {
+  dismissDesignResume,
+  fetchDesignResume,
+  forgetRememberedDesignSession,
+  rememberDesignSession,
+} from '../services/resumeSession';
 
 // The one-liner shown when every conversation provider is down and we
 // degrade to the scripted two-question intake (ADR-0019). Soft — never an
@@ -97,23 +104,30 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
   // SketchBot's notepad (TAT-48): the latest whitelisted projection of the
   // brief — the ONLY record view the server sends, never raw telemetry.
   const [notes, setNotes] = useState<SessionNotes | undefined>();
+  // True once this screen rehydrated an existing session (#394).
+  const [resumed, setResumed] = useState(false);
   // Tap-to-fix prefill for the chat input; the nonce re-triggers the same
   // prefix on a second tap.
   const [prefill, setPrefill] = useState<{ text: string; nonce: number } | undefined>();
   const prefillCount = useRef(0);
   const openerRequested = useRef(false);
 
-  const runAction = (action: ConversationAction) => {
+  const runAction = (action: ConversationAction, opts?: { sessionId?: string }) => {
     setError(null);
     setSignInNeeded(false);
     setLastAction(action);
     setPending(true);
+    // Start over passes `{ sessionId: undefined }` so the opener does not
+    // ride the session that was just dismissed. State still holds that id
+    // until this render commits.
+    const boundSessionId = opts && 'sessionId' in opts ? opts.sessionId : sessionId;
 
     if (action.kind === 'confirm') {
       confirmProposal(sessionId!)
         .then((session) => {
           setRevealSession(session);
           setMode('reveal');
+          trackFunnel('design_generated');
         })
         .catch((err: unknown) => {
           if (err instanceof SignInRequiredError) {
@@ -127,10 +141,13 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
     }
 
     converse(
-      action.message === undefined ? { sessionId } : { sessionId, message: action.message }
+      action.message === undefined
+        ? { sessionId: boundSessionId }
+        : { sessionId: boundSessionId, message: action.message }
     )
       .then((response) => {
         setSessionId(response.sessionId);
+        rememberDesignSession(response.sessionId);
         setStage(response.stage);
         setPlayback(response.playback);
         setHandoffUrl(response.handoffUrl);
@@ -145,6 +162,7 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
           return confirmProposal(response.sessionId).then((session) => {
             setRevealSession(session);
             setMode('reveal');
+            trackFunnel('design_generated');
           });
         }
       })
@@ -168,21 +186,63 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
   // Opener on mount — the bot speaks first (ADR-0019). A deep-linked prompt
   // (/design?prompt=…) is the user speaking first instead: it goes out as
   // the first message with no opener round-trip, so a complete prompt takes
-  // the fast lane in a single turn (ADR-0028).
+  // the fast lane in a single turn (ADR-0028). A reload with no prompt
+  // resumes the unfinished session (#394) instead of starting a new one.
   useEffect(() => {
     if (openerRequested.current) return;
     openerRequested.current = true;
     const prompt = initialPrompt?.trim();
     if (prompt) {
       setMessages([{ role: 'user', text: prompt }]);
+      trackFunnel('intake_start');
       runAction({ kind: 'converse', message: prompt });
-    } else {
-      runAction({ kind: 'converse' });
+      return;
     }
+    void (async () => {
+      try {
+        const view = await fetchDesignResume();
+        if (view) {
+          rememberDesignSession(view.sessionId);
+          setSessionId(view.sessionId);
+          setMessages(view.transcript);
+          if (view.stage) setStage(view.stage);
+          if (view.playback) setPlayback(view.playback);
+          if (view.notes) setNotes(view.notes);
+          setResumed(true);
+          if (view.phase !== 'intake') {
+            setRevealSession(view.session);
+            setMode('reveal');
+          }
+          return;
+        }
+      } catch {
+        // A failed lookup is a fresh conversation, not an error screen.
+      }
+      runAction({ kind: 'converse' });
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only opener
   }, []);
 
+  const startOver = () => {
+    const id = sessionId;
+    forgetRememberedDesignSession();
+    if (id) void dismissDesignResume(id);
+    setResumed(false);
+    setMode('conversation');
+    setMessages([]);
+    setSessionId(undefined);
+    setStage('chatting');
+    setPlayback(undefined);
+    setHandoffUrl(undefined);
+    setRevealSession(null);
+    setNotes(undefined);
+    setError(null);
+    setSignInNeeded(false);
+    runAction({ kind: 'converse' }, { sessionId: undefined });
+  };
+
   const handleSend = (text: string) => {
+    if (!messages.some((message) => message.role === 'user')) trackFunnel('intake_start');
     setMessages((prev) => [...prev, { role: 'user', text }]);
     // At the proposal beat a typed "yes" is consent, not another turn —
     // routing it to /converse re-emits the same proposal (ADR-0020).
@@ -235,6 +295,7 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
           locked={opts.locked}
           onFix={handleFix}
           drawReady={opts.drawReady}
+          placementNeeded={placementNeeded}
           onDraw={() => runAction({ kind: 'confirm' })}
         />
       </aside>
@@ -243,16 +304,39 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
         locked={opts.locked}
         onFix={handleFix}
         drawReady={opts.drawReady}
+        placementNeeded={placementNeeded}
         onDraw={() => runAction({ kind: 'confirm' })}
       />
     </div>
   );
+
+  // Placement is the one field a stall can hide (#376). Shown once the
+  // visitor has spoken and the notepad still has no placement.
+  const placementNeeded = Boolean(
+    notes && !notes.placement && messages.some((message) => message.role === 'user')
+  );
+  const showResumeChrome = resumed || messages.some((message) => message.role === 'user');
 
   // Confirmed — the existing reveal → pick → refine → handoff flow takes
   // over, with the conversation transcript kept above it.
   if (mode === 'reveal' && revealSession) {
     return withNotepad(
       <>
+        {showResumeChrome && (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            {resumed && (
+              <p className="font-body text-[12px] text-white/60">Picking up where you left off.</p>
+            )}
+            <button
+              type="button"
+              onClick={startOver}
+              disabled={pending}
+              className="press font-body text-[10px] uppercase tracking-[0.2em] text-white/60 hover:text-pink disabled:opacity-40"
+            >
+              Start over
+            </button>
+          </div>
+        )}
         {transcript}
         <DesignSessionFlow initialSession={revealSession} />
       </>,
@@ -276,7 +360,28 @@ export function DesignConversation({ initialPrompt }: { initialPrompt?: string }
 
   return withNotepad(
     <>
+      {showResumeChrome && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          {resumed && (
+            <p className="font-body text-[12px] text-white/60">Picking up where you left off.</p>
+          )}
+          <button
+            type="button"
+            onClick={startOver}
+            disabled={pending}
+            className="press ml-auto font-body text-[10px] uppercase tracking-[0.2em] text-white/60 hover:text-pink disabled:opacity-40"
+          >
+            Start over
+          </button>
+        </div>
+      )}
       {transcript}
+
+      {placementNeeded && (
+        <p role="status" className="font-body text-[12px] leading-[1.5] text-pink">
+          {PLACEMENT_GAP_LINE}
+        </p>
+      )}
 
       {/* Proposal beat (ADR-0020): the bot's reply bubble above already
           carries the playback, so only the consent CTA renders here. A

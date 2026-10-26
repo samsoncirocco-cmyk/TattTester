@@ -7,6 +7,7 @@ import type { DesignSession } from '@/services/designSession/types';
 import type { ConverseResponse, SessionNotes } from '@/services/designConversation/types';
 import { DesignConversation, SIGN_IN_LINE } from '../components/DesignConversation';
 import { getApiAuthHeaders, getOptionalApiAuthHeaders, SignInRequiredError } from '@/lib/client-api-auth';
+import { dismissDesignResume, fetchDesignResume } from '../services/resumeSession';
 
 // The in-voice reveal narration derived from the fixture's axisSelection —
 // the raw audit rationale (ADR-0012) never renders in the chat.
@@ -15,6 +16,13 @@ const REVEAL_NARRATION =
 
 // The fetch client attaches Firebase bearer auth (matching the API routes'
 // verifyApiAuth gate); stub it so tests need no signed-in user.
+vi.mock('../services/resumeSession', () => ({
+  fetchDesignResume: vi.fn(async () => null),
+  dismissDesignResume: vi.fn(async () => {}),
+  rememberDesignSession: vi.fn(),
+  forgetRememberedDesignSession: vi.fn(),
+}));
+
 vi.mock('@/lib/client-api-auth', () => ({
   getApiAuthHeaders: vi.fn(async () => ({ Authorization: 'Bearer test-token' })),
   getOptionalApiAuthHeaders: vi.fn(async () => ({ Authorization: 'Bearer test-token' })),
@@ -127,6 +135,8 @@ beforeEach(() => {
   // mockResolvedValue from a previous test would make those lie.
   vi.mocked(getApiAuthHeaders).mockClear().mockResolvedValue(BEARER);
   vi.mocked(getOptionalApiAuthHeaders).mockClear().mockResolvedValue(BEARER);
+  vi.mocked(fetchDesignResume).mockReset().mockResolvedValue(null);
+  vi.mocked(dismissDesignResume).mockReset().mockResolvedValue(undefined);
 });
 
 function sendReply(text: string) {
@@ -787,5 +797,54 @@ describe('DesignConversation — SketchBot notepad (TAT-48)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /sketchbot's notes — collapse/i }));
     expect(screen.getAllByText('Gon (Hunter x Hunter)')).toHaveLength(1);
+  });
+});
+
+describe('DesignConversation — reload resume (#394)', () => {
+  it('rehydrates the unfinished transcript and does not open a new session', async () => {
+    vi.mocked(fetchDesignResume).mockResolvedValueOnce({
+      sessionId: 'sess-resume',
+      phase: 'intake',
+      updatedAt: '2026-08-27T00:00:00.000Z',
+      transcript: [
+        { role: 'bot', text: 'Where does it go?' },
+        { role: 'user', text: 'left forearm, a koi' },
+        { role: 'bot', text: 'koi on the forearm — got it' },
+      ],
+      stage: 'chatting',
+      notes: { cast: [], ipHeadsUp: false, sufficient: false, placement: 'left forearm' },
+      session: { ...revealedSession, id: 'sess-resume', phase: 'intake', variations: [] },
+    });
+
+    render(<DesignConversation />);
+
+    expect(await screen.findByText('left forearm, a koi')).toBeTruthy();
+    expect(screen.getByText('Picking up where you left off.')).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('start over dismisses the resumed session and asks for a fresh opener', async () => {
+    vi.mocked(fetchDesignResume).mockResolvedValueOnce({
+      sessionId: 'sess-resume',
+      phase: 'revealed',
+      updatedAt: '2026-08-27T00:00:00.000Z',
+      transcript: [{ role: 'user', text: 'a koi on my forearm' }],
+      stage: 'proposal',
+      session: revealedSession,
+    });
+    fetchMock.mockResolvedValueOnce(jsonResponse(converseResponse({ sessionId: 'sess-new' })));
+
+    render(<DesignConversation />);
+    expect(await screen.findByText('a koi on my forearm')).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /start over/i }));
+    });
+
+    expect(dismissDesignResume).toHaveBeenCalledWith('sess-resume');
+    expect(await screen.findByText(OPENER)).toBeTruthy();
+    expect(screen.queryByText('a koi on my forearm')).toBeNull();
+    const [, init] = fetchMock.mock.calls.at(-1) as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({});
   });
 });

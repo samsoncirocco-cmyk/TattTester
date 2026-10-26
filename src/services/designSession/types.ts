@@ -5,6 +5,11 @@
 
 import type { IntakeRecord, AxisSelection } from '../intake/types';
 import type { DesignState } from './internal/designState';
+import type {
+  ConversationMessage,
+  ConversationStage,
+  SessionNotes,
+} from '../designConversation/types';
 
 /**
  * A session's lifecycle. Transitions are one-way (ADR-0013 hard stop):
@@ -299,4 +304,19 @@ export interface CritiqueResult {
   exhausted: boolean;
   /** True when a paid render actually ran. */
   generated: boolean;
+}
+
+/**
+ * What /design may rehydrate after a reload (#394). The visitor's own
+ * transcript and the public session. TurnLogs never travel with this.
+ */
+export interface DesignSessionResume {
+  sessionId: string;
+  phase: SessionPhase;
+  updatedAt: string;
+  transcript: ConversationMessage[];
+  stage?: ConversationStage;
+  playback?: string;
+  notes?: SessionNotes;
+  session: DesignSession;
 }
