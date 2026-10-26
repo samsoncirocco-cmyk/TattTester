@@ -121,6 +121,8 @@ export const API_ROUTE_SECURITY: Record<string, RouteSecurityEntry> = {
   'v1/estimate': { class: 'firebase-auth' },
   'v1/generate': { class: 'firebase-auth' },
   'v1/layers/decompose': { class: 'firebase-auth' },
+  'v1/match/decision': { class: 'firebase-auth' },
+  'v1/match/decisions': { class: 'firebase-auth' },
   'v1/match/semantic': { class: 'firebase-auth' },
   'v1/match/update': { class: 'firebase-auth' },
   'v1/stencil/export': { class: 'firebase-auth' },

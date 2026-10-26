@@ -8,6 +8,7 @@ import { Redis } from '@upstash/redis';
 
 export type LimitType =
   | 'semantic-match'
+  | 'match-decision'
   | 'council'
   | 'generation'
   | 'estimate'
@@ -29,6 +30,9 @@ interface RateLimitResult {
 
 const LIMIT_CONFIG: Record<LimitType, { requests: number; window: string }> = {
   'semantic-match': { requests: 100, window: '1 h' },
+  // Swipe pins/passes, keyed on the verified uid. A fast swiper is about one
+  // decision a second; this is a flood guard, not a UX knob.
+  'match-decision': { requests: 120, window: '1 m' },
   council:          { requests: 20,  window: '1 h' },
   generation:       { requests: 10,  window: '1 m' },
   estimate:         { requests: 30,  window: '1 m' },
