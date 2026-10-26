@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -8,7 +8,8 @@ import StudioShell from "@/components/studio/StudioShell";
 import SlashHeadline from "@/components/punk/SlashHeadline";
 import { useMatchStore } from "@/store/useMatchStore";
 import { artistSlug } from "@/lib/artist-slug";
-import { trackSwipe } from "@/utils/matching";
+import { decisionsClient } from "./decisionsClient";
+import { SignInRequiredError } from "@/lib/client-api-auth";
 
 // react-tinder-card touches the DOM directly on mount — load client-only.
 const TinderCard = dynamic(() => import("react-tinder-card"), { ssr: false });
@@ -22,6 +23,12 @@ const TinderCard = dynamic(() => import("react-tinder-card"), { ssr: false });
  * A design-session handoff arrives as /swipe?ds=<sessionId>; the "ds"
  * param threads onward into the pinned artists' Book CTAs
  * (/book?artistId=…&ds=…) so the booking can carry designSessionId.
+ *
+ * Decisions (spec 13): every pin and pass is stored per verified uid through
+ * /api/v1/match/decision, optimistically — the card leaves at once. On mount
+ * the caller's decisions are fetched and the deck resumes past them, so a
+ * reload or another device does not bring swiped cards back. Signed-out
+ * visitors get the sign-in prompt, same as /smart-match.
  */
 
 type SwipeCard = {
@@ -72,17 +79,77 @@ export default function SwipeClient() {
   // when cards arrives, and "done" just compares sizes.
   const [swipedIds, setSwipedIds] = useState<Set<string>>(new Set());
   const [liked, setLiked] = useState<SwipeCard[]>([]);
+  // Passes hydrated from the server for cards in this deck. Kept apart from
+  // swipedIds so "Show artists I passed" can put exactly those back.
+  const [hydratedPassIds, setHydratedPassIds] = useState<Set<string>>(new Set());
+  type DecisionsState = "loading" | "ready" | "signin";
+  const [decisionsState, setDecisionsState] = useState<DecisionsState>("loading");
+  const [unsaved, setUnsaved] = useState(false);
+
+  // Resume past decided cards. Runs once the deck is known; a non-auth
+  // failure (network, 5xx) falls through to an undecided deck rather than
+  // blocking the page — the customer can still swipe, and writes still queue.
+  const deckKey = cards.map((c) => c.id).join("|");
+  useEffect(() => {
+    if (!hasHydrated || cards.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const decisions = await decisionsClient.fetchDecisions(designSessionId);
+        if (cancelled) return;
+        const byId = new Map(decisions.map((d) => [d.artistId, d.decision]));
+        const decided = new Set<string>();
+        const passes = new Set<string>();
+        const pins: SwipeCard[] = [];
+        for (const card of cards) {
+          const d = byId.get(card.id);
+          if (!d) continue;
+          decided.add(card.id);
+          if (d === "pin") pins.push(card);
+          else passes.add(card.id);
+        }
+        setSwipedIds((prev) => new Set([...decided, ...prev]));
+        setLiked((prev) => [...pins, ...prev.filter((c) => !decided.has(c.id))]);
+        setHydratedPassIds(passes);
+        setDecisionsState("ready");
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof SignInRequiredError) {
+          setDecisionsState("signin");
+          return;
+        }
+        console.warn("[Swipe] Could not load decisions:", err);
+        setDecisionsState("ready");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // deckKey stands in for `cards` so a same-content deck does not refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasHydrated, deckKey, designSessionId]);
+
+  useEffect(() => decisionsClient.subscribe((s) => setUnsaved(s.unsaved)), []);
 
   const swiped = (direction: string, card: SwipeCard) => {
     if (direction === "right") setLiked((prev) => [...prev, card]);
-    trackSwipe(card.id, direction);
+    decisionsClient.record(card.id, direction === "right" ? "pin" : "pass", designSessionId);
     setSwipedIds((prev) => new Set(prev).add(card.id));
+  };
+
+  const showPassed = () => {
+    setSwipedIds((prev) => {
+      const next = new Set(prev);
+      hydratedPassIds.forEach((id) => next.delete(id));
+      return next;
+    });
+    setHydratedPassIds(new Set());
   };
 
   // Persist rehydration is async: matches starts as [] even when a deck
   // exists in localStorage. Wait before deciding the empty state so a
   // reload / direct nav to /swipe does not flash "No deck yet."
-  if (!hasHydrated) {
+  if (!hasHydrated || (cards.length > 0 && decisionsState === "loading")) {
     return (
       <StudioShell>
         <div className="px-6 md:px-12 py-16 md:py-20 flex flex-col items-center">
@@ -95,6 +162,29 @@ export default function SwipeClient() {
             aria-busy="true"
             aria-label="Loading swipe deck"
           />
+        </div>
+      </StudioShell>
+    );
+  }
+
+  if (decisionsState === "signin") {
+    return (
+      <StudioShell>
+        <div className="px-6 md:px-12 py-24 text-center">
+          <div className="max-w-md mx-auto border-2 hairline p-10">
+            <div className="font-display text-[24px] tracking-wide text-white/60">
+              Sign in to&nbsp;<span className="text-pink">swipe</span>
+            </div>
+            <p className="mt-3 text-[12px] uppercase tracking-[0.2em] text-white/40 font-body leading-[1.8]">
+              Your pins and passes are saved to your account, so they are there on any device.
+            </p>
+            <Link
+              href="/login"
+              className="mt-6 inline-flex items-center min-h-[44px] text-[10px] uppercase tracking-[0.2em] text-white/80 hover:text-black hover:bg-pink border-2 hairline px-4 py-3 press font-body"
+            >
+              Sign in&nbsp;<span className="ml-2">▸</span>
+            </Link>
+          </div>
         </div>
       </StudioShell>
     );
@@ -149,6 +239,20 @@ export default function SwipeClient() {
           <p className="mt-3 text-[14px] text-white/60 font-body">
             Swipe right to pin, left to pass. Ranked live from the graph.
           </p>
+          {unsaved && (
+            <p role="status" className="mt-2 text-[11px] uppercase tracking-[0.18em] text-pink/80 font-body">
+              Not saved yet — we&apos;ll keep trying.
+            </p>
+          )}
+          {hydratedPassIds.size > 0 && (
+            <button
+              type="button"
+              onClick={showPassed}
+              className="mt-3 text-[10px] uppercase tracking-[0.2em] text-white/50 hover:text-pink underline underline-offset-4 font-body"
+            >
+              Show artists I passed.
+            </button>
+          )}
         </div>
 
         {!done ? (

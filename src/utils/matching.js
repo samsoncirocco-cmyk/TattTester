@@ -281,58 +281,7 @@ export function calculateMatches(preferences, artists) {
     .slice(0, 20);
 }
 
-/**
- * Track swipe action
- * @param {string} artistId - Artist ID
- * @param {string} direction - 'left' or 'right'
- * @param {string} userId - User ID (hardcoded for MVP)
- */
-export function trackSwipe(artistId, direction, userId = 'user-123') {
-  // MVP: Store swipes in localStorage
-  const swipes = JSON.parse(localStorage.getItem('tattester_swipes') || '{}');
-
-  if (!swipes[userId]) {
-    swipes[userId] = {
-      likes: [],
-      passes: []
-    };
-  }
-
-  if (direction === 'right') {
-    swipes[userId].likes.push({
-      artistId,
-      timestamp: new Date().toISOString()
-    });
-  } else if (direction === 'left') {
-    swipes[userId].passes.push({
-      artistId,
-      timestamp: new Date().toISOString()
-    });
-  }
-
-  localStorage.setItem('tattester_swipes', JSON.stringify(swipes));
-
-  return swipes[userId];
-}
-
-/**
- * Get user's liked artists
- * @param {string} userId - User ID (hardcoded for MVP)
- * @returns {Array} Array of liked artist IDs
- */
-export function getLikedArtists(userId = 'user-123') {
-  const swipes = JSON.parse(localStorage.getItem('tattester_swipes') || '{}');
-  return swipes[userId]?.likes || [];
-}
-
-/**
- * Clear all swipe history
- * @param {string} userId - User ID (hardcoded for MVP)
- */
-export function clearSwipeHistory(userId = 'user-123') {
-  const swipes = JSON.parse(localStorage.getItem('tattester_swipes') || '{}');
-  if (swipes[userId]) {
-    delete swipes[userId];
-    localStorage.setItem('tattester_swipes', JSON.stringify(swipes));
-  }
-}
+// Swipe decisions used to live here, in localStorage under a hardcoded
+// 'user-123' (trackSwipe / getLikedArtists / clearSwipeHistory). They are
+// now stored per verified uid through /api/v1/match/decision — see
+// src/app/swipe/decisionsClient.ts, which also removes the legacy key.
