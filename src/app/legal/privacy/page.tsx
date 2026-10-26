@@ -59,7 +59,7 @@ export default function PrivacyPage() {
         <div className="max-w-3xl mx-auto">
           <QuietHeadline>Privacy policy</QuietHeadline>
           <p className="mt-6 text-[12px] text-quiet-dim font-body tabular-nums">
-            Last updated: 30 July 2026. We&rsquo;ll announce material changes on this page.
+            Last updated: 26 October 2026. We&rsquo;ll announce material changes on this page.
           </p>
 
           {/* Section 4 makes commitments about other people's data. The
@@ -115,6 +115,13 @@ export default function PrivacyPage() {
                 <strong className="text-quiet">Booking details.</strong> When you book an
                 artist: your name and email, the artist, date and time, placement, size and
                 budget.
+              </li>
+              <li>
+                <strong className="text-quiet">Funnel steps.</strong> When you land, start
+                a design conversation, get a design back, or open booking, we log that
+                step and the page path. We do not attach your account, your prompt, or
+                your email to that log, and we do not send it to a third-party analytics
+                vendor.
               </li>
             </ul>
             <p>

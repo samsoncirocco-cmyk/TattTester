@@ -28,13 +28,21 @@ export const metadata: Metadata = {
   title: "Image2Ink — Turn any image into your first tattoo",
   description:
     "Drop in any image — a photo, a sketch, your dog, an album cover. " +
-    "Image2Ink turns it into tattoo designs in real styles, you swipe until " +
-    "one stops you, and we match you with a real artist who actually inks " +
-    "like that. Image2Ink is the design engine inside TattTester.",
+    "Image2Ink turns it into tattoo directions in real styles, you swipe until " +
+    "one stops you, and we match that direction to artist profiles whose public " +
+    "work fits. Image2Ink is the design engine inside TattTester.",
   alternates: {
     // The door's single page is canonical on its own domain; everything
     // else on that host 301s to tatttester.com (src/proxy.ts).
     canonical: "https://image2ink.com/",
+  },
+  openGraph: {
+    title: "Image2Ink — Turn any image into your first tattoo",
+    description:
+      "Image2Ink turns an image into tattoo directions, then matches them to artist profiles. It is the design engine inside TattTester.",
+    url: "https://image2ink.com/",
+    siteName: "TattTester",
+    images: [{ url: "https://tatttester.com/images/hero-og.jpg", width: 1024, height: 1024, alt: "Tattoo in progress at the studio" }],
   },
 };
 
@@ -52,12 +60,12 @@ const STEPS = [
   {
     n: "03",
     title: "Swipe",
-    body: "Flick through the designs like you already know how. Skip fast, save the ones that stop your thumb. Every swipe teaches it what you're into.",
+    body: "Flick through the designs like you already know how. Skip fast, save the ones that stop your thumb.",
   },
   {
     n: "04",
     title: "Meet your artist",
-    body: "Pick a design and we match you with tattoo artists whose real portfolio work fits it. Your artist takes the design, refines the stencil, and makes it ink-ready. Then you book.",
+    body: "Pick a design and we match it to artist profiles whose public portfolio work fits. Your artist takes the direction, refines it, and makes it ink-ready. Then you book.",
   },
 ];
 

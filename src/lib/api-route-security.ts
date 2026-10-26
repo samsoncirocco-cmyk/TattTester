@@ -85,6 +85,11 @@ export const API_ROUTE_SECURITY: Record<string, RouteSecurityEntry> = {
   'v1/design-session/[id]/round/pick': { class: 'firebase-auth' },
   'v1/design-session/[id]/round/reroll': { class: 'firebase-auth' },
   'v1/design-session/converse': { class: 'firebase-auth' },
+  'v1/funnel': {
+    class: 'public',
+    reason:
+      'Anonymous first-run funnel beacons: an allowlisted event name and a page path. No account id, no prompt text, and no forward to a third-party analytics vendor.',
+  },
   'v1/designs/share': { class: 'firebase-auth' },
   'v1/designs/share/[shareId]': {
     class: 'public',

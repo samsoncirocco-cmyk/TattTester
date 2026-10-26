@@ -23,8 +23,8 @@ const SECTIONS = [
     n: "03",
     word: "Refine",
     body: [
-      "Lock the composition. Adjust the linework. Mask a region and regenerate just that part. Iterate until the design is yours.",
-      "Export as a stencil or send to an artist for final touches.",
+      "Pick the cut that's closer. One refinement round locks the direction you want to take to an artist.",
+      "The result is a brief and a visual, not a finished tattoo. Your artist owns the final linework.",
     ],
   },
   {

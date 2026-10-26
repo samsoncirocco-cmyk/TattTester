@@ -18,13 +18,18 @@ export default function AuthBrandPanel({ quote, attribution, quiet = false }: Pr
     <div
       className={`relative hidden lg:block overflow-hidden border-r ${quiet ? "hairline-quiet-soft" : "border-r-2 hairline"}`}
     >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src="/images/hero.png"
-        alt=""
-        aria-hidden
-        className={`absolute inset-0 w-full h-full object-cover ${quiet ? "opacity-30" : "opacity-50"}`}
-      />
+      <picture>
+        <source srcSet="/images/hero.webp" type="image/webp" />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/images/hero-og.jpg"
+          alt=""
+          aria-hidden
+          width={1024}
+          height={1024}
+          className={`absolute inset-0 w-full h-full object-cover ${quiet ? "opacity-30" : "opacity-50"}`}
+        />
+      </picture>
       {!quiet && <div className="halftone absolute inset-0" />}
       <div className="absolute inset-0 bg-[linear-gradient(0deg,#0a0a0a_10%,transparent_55%)]" />
       <div className="relative z-[2] h-full flex flex-col justify-end p-12">

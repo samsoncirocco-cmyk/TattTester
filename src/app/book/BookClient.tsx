@@ -25,7 +25,8 @@
  * renders a time we cannot hold.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { trackFunnel } from "@/lib/funnel";
 import StudioShell from "@/components/studio/StudioShell";
 import QuietHeadline from "@/components/quiet/QuietHeadline";
 import QuietCTA from "@/components/quiet/QuietCTA";
@@ -163,6 +164,10 @@ export default function BookClient({
 }) {
   const { addBooking } = useBookings();
   const { designs } = useDesigns();
+
+  useEffect(() => {
+    trackFunnel("booking_start");
+  }, []);
 
   const [step, setStep] = useState<0 | 1 | 2>(0);
   const [phase, setPhase] = useState<Phase>("form");

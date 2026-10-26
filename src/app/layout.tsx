@@ -27,6 +27,7 @@ import DemoModeBanner from "@/components/DemoModeBanner";
 import { AuthProvider } from "@/components/AuthProvider";
 import SignInPromptGate from "@/components/auth/SignInPromptGate";
 import { ToastProvider } from "@/contexts/ToastContext";
+import { CANONICAL_ORIGIN, OG_IMAGE, SITE_DESCRIPTION, SITE_NAME, SITE_TITLE } from "@/lib/site";
 
 export const metadata: Metadata = {
   // tatttester.com is the one canonical host (docs/brand/two-door-brand-guide.md,
@@ -34,12 +35,25 @@ export const metadata: Metadata = {
   // domain served it. The './' canonical resolves to each page's own path
   // against metadataBase; the Image2Ink landing overrides it with its own
   // absolute canonical (src/app/image2ink/page.tsx).
-  metadataBase: new URL(
-    `https://${process.env.CANONICAL_HOST ?? "tatttester.com"}`
-  ),
+  metadataBase: new URL(CANONICAL_ORIGIN),
   alternates: { canonical: "./" },
-  title: "TattTester — Think it. Ink it.",
-  description: "AI-powered tattoo design and artist discovery — AR visualization coming soon.",
+  title: SITE_TITLE,
+  description: SITE_DESCRIPTION,
+  applicationName: SITE_NAME,
+  openGraph: {
+    type: "website",
+    siteName: SITE_NAME,
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    images: [OG_IMAGE],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    images: [OG_IMAGE.url],
+  },
+  robots: { index: true, follow: true },
 };
 
 export default function RootLayout({

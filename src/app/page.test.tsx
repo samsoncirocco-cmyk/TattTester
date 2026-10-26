@@ -101,6 +101,21 @@ describe('Home — text SketchBot mention (TAT-49)', () => {
   });
 });
 
+describe('Home — honest first-run copy', () => {
+  it('does not claim a vetted roster or a customer count', async () => {
+    vi.stubEnv('NEXT_PUBLIC_SKETCHBOT_SMS_NUMBER', '');
+    render(await Home());
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/vetted/i);
+    expect(text).not.toMatch(/\b\d{2,}\+?\s+(artists|customers|reviews)\b/i);
+    expect(text).not.toMatch(/in seconds/i);
+    expect(text).toContain('One more round if you want it tighter');
+    expect(text).toContain('Claimed and unclaimed are labeled');
+    expect(text).toContain('No card to start the conversation');
+    expect(text).toContain('The tattoo itself stays theirs');
+  });
+});
+
 describe('Home — featured grid photos match the profile', () => {
   // The regression: the homepage rendered <ArtistCard> without `image`, so
   // every featured artist showed a monogram tile while their own profile and

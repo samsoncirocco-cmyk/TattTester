@@ -24,6 +24,9 @@ describe("site chrome does not advertise the Studio", () => {
   it("keeps the Studio out of the main nav, and keeps the library door in", () => {
     render(<StudioShell>{null}</StudioShell>);
 
+    expect(screen.getByRole("link", { name: /skip to content/i }).getAttribute("href")).toBe(
+      "#content"
+    );
     expect(screen.queryByRole("link", { name: /^studio$/i })).toBeNull();
     expect(
       screen.getAllByRole("link", { name: /my designs/i }).length,

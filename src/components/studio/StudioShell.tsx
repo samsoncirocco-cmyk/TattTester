@@ -77,6 +77,12 @@ export default function StudioShell({
     <div
       className={`${quiet ? "" : "halftone grain "}min-h-screen text-white font-body flex flex-col relative bg-black`}
     >
+      <a
+        href="#content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:bg-pink focus:px-4 focus:py-3 focus:text-black"
+      >
+        Skip to content
+      </a>
       <header className={`relative z-20 border-b-2 ${hl} bg-black`}>
         <div className="flex items-stretch justify-between">
           <div className="flex items-center px-5 sm:px-8 py-4 gap-6">
@@ -85,7 +91,7 @@ export default function StudioShell({
                 className={`font-display text-white text-3xl leading-none tracking-[0.01em] ${quiet ? "" : "glitch"}`}
               />
             </Link>
-            <nav className="hidden md:flex items-center gap-5">
+            <nav aria-label="Primary" className="hidden md:flex items-center gap-5">
               {NAV.map((n) => {
                 const active = activeHref(pathname) === n.href;
                 return (
@@ -234,9 +240,11 @@ export default function StudioShell({
             </div>
 
             <button
+              type="button"
               onClick={() => setMobileOpen((v) => !v)}
               aria-label="Menu"
               aria-expanded={mobileOpen}
+              aria-controls="mobile-nav"
               className={`md:hidden w-12 flex items-center justify-center border-l hairline-white text-white/70 ${hov} press`}
             >
               <span className="material-symbols-outlined">
@@ -247,7 +255,7 @@ export default function StudioShell({
         </div>
 
         {mobileOpen && (
-          <div className={`md:hidden border-t ${hl} bg-black`}>
+          <nav id="mobile-nav" aria-label="Primary" className={`md:hidden border-t ${hl} bg-black`}>
             {NAV.map((n) => {
               const count =
                 n.href === "/designs" && designsHydrated
@@ -347,7 +355,7 @@ export default function StudioShell({
                 </Link>
               </>
             )}
-          </div>
+          </nav>
         )}
       </header>
 
@@ -359,7 +367,9 @@ export default function StudioShell({
         )}
 
         <div className="flex-1 min-w-0 overflow-y-auto bg-black flex flex-col">
-          <main className="flex-1 min-w-0">{children}</main>
+          <main id="content" tabIndex={-1} className="flex-1 min-w-0 outline-none">
+            {children}
+          </main>
           {footer && <PunkFooter quiet={quiet} />}
         </div>
 
