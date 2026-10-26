@@ -19,10 +19,22 @@ export interface ArtistMatch {
      *  search time (src/features/match-pulse/services/matchReasonChips). */
     reasonChips?: string[];
     breakdown?: Record<string, number>;
+    /** Gated hero work image from the match payload (spec 14); null/absent
+     *  means the card shows its monogram. */
+    heroImage?: string | null;
+    /** Miles from the customer's place — never populated until the engine
+     *  can measure distance (spec 14 tier 2); the card omits the line. */
+    distanceMiles?: number;
+    /** Which deck this match belongs to. */
+    deck?: 'primary' | 'broadened';
 }
 
 interface MatchState {
     matches: ArtistMatch[];
+    /** The server's near-matches when the primary set is thin (spec 14):
+     *  a second, clearly separate deck — never merged into `matches`. */
+    broadened: ArtistMatch[];
+    broadenedReason: string | null;
     currentMatchId: string | null;
     isLoading: boolean;
     error: string | null;
@@ -31,6 +43,7 @@ interface MatchState {
     hasHydrated: boolean;
 
     setMatches: (matches: ArtistMatch[]) => void;
+    setBroadened: (broadened: ArtistMatch[], reason: string | null) => void;
     selectMatch: (id: string | null) => void;
     setLoading: (loading: boolean) => void;
     setError: (error: string | null) => void;
@@ -43,6 +56,8 @@ export const useMatchStore = create<MatchState>()(
     persist(
         (set) => ({
             matches: [],
+            broadened: [],
+            broadenedReason: null,
             currentMatchId: null,
             isLoading: false,
             error: null,
@@ -56,6 +71,11 @@ export const useMatchStore = create<MatchState>()(
                 error: null
             }),
 
+            setBroadened: (broadened, reason) => set({
+                broadened,
+                broadenedReason: broadened.length > 0 ? reason : null,
+            }),
+
             selectMatch: (id) => set({ currentMatchId: id }),
 
             setLoading: (loading) => set({ isLoading: loading }),
@@ -64,6 +84,8 @@ export const useMatchStore = create<MatchState>()(
 
             clearMatches: () => set({
                 matches: [],
+                broadened: [],
+                broadenedReason: null,
                 currentMatchId: null,
                 lastUpdated: null,
                 error: null
@@ -83,9 +105,25 @@ export const useMatchStore = create<MatchState>()(
             // Skip persisting loading/hydration flags — they are runtime-only.
             partialize: (state) => ({
                 matches: state.matches,
+                broadened: state.broadened,
+                broadenedReason: state.broadenedReason,
                 currentMatchId: state.currentMatchId,
                 lastUpdated: state.lastUpdated
             }),
+            // v1 (spec 14): the second deck joined the persisted slice. A deck
+            // saved before it loads with no alternatives rather than failing.
+            version: 1,
+            migrate: (persisted, version) => {
+                const state = (persisted ?? {}) as Partial<MatchState>;
+                if (version < 1) {
+                    return {
+                        ...state,
+                        broadened: [],
+                        broadenedReason: null,
+                    } as MatchState;
+                }
+                return state as MatchState;
+            },
             onRehydrateStorage: () => (state, error) => {
                 // Always flip the flag when rehydration settles (success or
                 // empty/missing storage). Without this, consumers that treat

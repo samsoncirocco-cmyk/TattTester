@@ -8,7 +8,9 @@
  *
  * Handles both money flows:
  *  - Marketplace/payments: checkout.session.completed,
- *    checkout.session.async_payment_succeeded, payment_intent.succeeded
+ *    checkout.session.async_payment_succeeded, checkout.session.expired
+ *    (releases the slot hold behind an abandoned reservation),
+ *    payment_intent.succeeded
  *  - Connect account status: account.updated (caches charges_enabled on the artist)
  *  - SaaS billing: customer.subscription.*, invoice.paid/payment_failed
  *
@@ -268,6 +270,62 @@ async function resolveHoldForPaidBooking(
 }
 
 /**
+ * Free the slot behind a Checkout Session that expired unpaid.
+ *
+ * The session's `expires_at` is pinned to the hold, so by the time Stripe
+ * sends this the hold has usually lapsed on its own clock. Releasing it anyway
+ * tidies the store and walks the booking record back to `pending`, so
+ * /bookings stops telling the client their time is held. Never touches a
+ * converted hold — a paid session does not expire, but a replayed or
+ * out-of-order event must not put a sold slot back on sale.
+ */
+async function releaseHoldForExpiredSession(
+  holdId: string | undefined,
+  bookingId: string | undefined
+): Promise<void> {
+  if (!holdId) return;
+  try {
+    const { getHold, releaseHoldById } = await import('@/lib/booking-holds-persistence');
+    const hold = await getHold(holdId);
+    if (!hold) {
+      console.warn('[Stripe] expired session references a hold that does not exist', {
+        bookingId,
+        holdId,
+      });
+      return;
+    }
+    if (hold.status !== 'active') return;
+
+    const released = await releaseHoldById(holdId);
+    console.log('[Stripe] checkout expired — hold released', { bookingId, holdId, released });
+
+    const targetBooking = bookingId ?? hold.bookingId;
+    if (!targetBooking || !ensureAdminApp()) return;
+    const { getFirestore, FieldValue } = await import('firebase-admin/firestore');
+    const ref = getFirestore().collection('booking_requests').doc(targetBooking);
+    const snap = await ref.get();
+    if (!snap.exists) return;
+    const doc = snap.data() as Record<string, unknown>;
+    // Only walk back a record that still points at THIS hold: the client may
+    // have re-held and be mid-checkout on a newer one.
+    if (doc.status === 'held' && doc.holdId === holdId && canTransition('held', 'pending')) {
+      await ref.set(
+        {
+          status: 'pending',
+          holdId: FieldValue.delete(),
+          holdExpiresAt: FieldValue.delete(),
+          heldSlot: FieldValue.delete(),
+          holdReleasedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+    }
+  } catch (err) {
+    console.error('[Stripe] expired-session hold release failed (best-effort):', err);
+  }
+}
+
+/**
  * Grant a paid consumer credit-pack Checkout Session.
  *
  * checkout.session.completed can arrive while payment_status is still unpaid for
@@ -397,6 +455,20 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
       // failure never breaks relay creation or the 200 response above. A lost
       // reconciliation is real money, so failures are logged loudly.
       await reconcileBookingDeposit(session, event);
+      break;
+    }
+
+    case 'checkout.session.expired': {
+      // The client never paid: the session hit its expires_at (pinned to the
+      // hold) or Stripe closed it. Put the time back on sale now.
+      const session = event.data.object as Stripe.Checkout.Session;
+      const metadata = session.metadata || {};
+      console.log('[Stripe] checkout expired', {
+        id: session.id,
+        bookingId: metadata.bookingId,
+        holdId: metadata.holdId,
+      });
+      await releaseHoldForExpiredSession(metadata.holdId, metadata.bookingId);
       break;
     }
 

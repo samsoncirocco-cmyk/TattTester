@@ -18,6 +18,11 @@
  *                                                amendment)
  *   confidence >= threshold AND placement
  *     + meaning present                       → 'proposal' (judgment)
+ *   same field blocked STALLED_FIELD_TURNS
+ *     turns running                           → 'chatting' (ask for that
+ *                                                field outright; a short
+ *                                                answer settles it — #376,
+ *                                                internal/gate.ts)
  *   otherwise                                 → 'chatting'
  *
  * Every turn produces a TurnLog (day-one requirement, ADR-0022), returned in
@@ -77,7 +82,18 @@ import {
   isAestheticAnswer,
 } from './intent';
 import { loadStyleTagIndex, resolveStyleTags, type StyleTagIndex } from './ontology';
-import { scoreRecord, CONFIDENCE_THRESHOLD } from './confidence';
+import { scoreRecord, CONFIDENCE_THRESHOLD, isSpecificPlacement } from './confidence';
+import {
+  blockingFieldFor,
+  consecutiveBlockedTurns,
+  gateStateFor,
+  stalledFieldAsk,
+  isStalledAskFor,
+  shortAnswerOf,
+  isHandBack,
+  DEFAULT_PLACEMENT,
+  STALLED_FIELD_TURNS,
+} from './gate';
 import { buildSessionNotes } from './notes';
 import { converseWithProviders, type RawTurnPayload } from './providers';
 import { isDemoMode, runDemoTurn } from './demoScript';
@@ -102,6 +118,13 @@ export interface RunTurnRequest {
    * are traceable to a session (never any transcript content).
    */
   sessionId?: string;
+  /**
+   * Every previous turn's TurnLog for this session, oldest first (the
+   * caller persists them, ADR-0022). The stall rule (#376) counts how many
+   * turns in a row the same field has blocked the proposal off these.
+   * Omitted = first turn, nothing blocked yet.
+   */
+  previousTurnLogs?: readonly TurnLog[];
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -840,6 +863,46 @@ function proposalBeatReply(
  * The turn
  * ────────────────────────────────────────────────────────────────────────── */
 
+/**
+ * Settle a stalled field from the reply to its direct ask (#376). Mutates
+ * `record`. Placement: a short answer replaces anything the model left
+ * vague; a hand-back on the committed-default re-ask takes the default.
+ * Meaning: the short answer fills an empty meaning. Style: the answer is
+ * resolved against the ontology and only lands when it matches a tag.
+ */
+function settleStalledAnswer(
+  record: Partial<IntakeRecord>,
+  messages: ConversationMessage[],
+  ontology: StyleTagIndex
+): void {
+  const previousBot = lastBotMessage(messages);
+  const userText =
+    [...messages].reverse().find((message) => message.role === 'user')?.text ?? '';
+  const answer = shortAnswerOf(userText);
+
+  if (isStalledAskFor('placement', previousBot)) {
+    const extracted = (record.placement ?? '').trim();
+    if (isHandBack(userText) || (isAffirmation(userText) && !extracted)) {
+      record.placement = DEFAULT_PLACEMENT;
+    } else if (answer && !isSpecificPlacement(extracted)) {
+      record.placement = answer.toLowerCase();
+    }
+    return;
+  }
+  if (isStalledAskFor('meaning', previousBot)) {
+    if (answer && !(record.meaning ?? '').trim() && !isHandBack(userText)) {
+      record.meaning = answer;
+    }
+    return;
+  }
+  if (isStalledAskFor('styleTags', previousBot)) {
+    if (answer && (record.styleTags ?? []).length === 0) {
+      const tags = resolveStyleTags(ontology, [answer]);
+      if (tags.length) record.styleTags = tags;
+    }
+  }
+}
+
 function logTurn(turnLog: TurnLog, stage: ConversationStage): void {
   logger.info({
     event_type: 'design_conversation.turn',
@@ -1005,9 +1068,33 @@ export async function runConversationTurn(
     resolveColorToColor(record, ontology);
   }
 
+  // Settle a stalled field from a short answer (#376). The previous bot
+  // message was the deterministic direct ask for `field`; a short,
+  // declarative reply is the answer in the customer's own words (ADR-0010),
+  // whether or not the model's extraction caught it. A hand-back on the
+  // placement re-ask takes the committed default.
+  settleStalledAnswer(record, request.messages, ontology);
+
   let { confidence, missingFields, hasRequiredFields } = scoreRecord(record);
   const hasPlacement = Boolean((record.placement ?? '').trim());
   const hasNamedCharacters = Boolean((record.subject ?? '').trim());
+
+  // The proposal gate's state going into this turn (#376): which field
+  // blocks, and for how many turns running. Decided before the cadence so
+  // the stall branch below can fire; recomputed after it for the TurnLog.
+  const blockingBefore = blockingFieldFor(
+    { confidence, missingFields, hasRequiredFields },
+    CONFIDENCE_THRESHOLD,
+    record
+  );
+  const blockedTurns =
+    blockingBefore === undefined
+      ? 0
+      : consecutiveBlockedTurns(blockingBefore, request.previousTurnLogs ?? []);
+  const stalledField =
+    blockingBefore !== undefined && blockedTurns >= STALLED_FIELD_TURNS
+      ? blockingBefore
+      : undefined;
 
   // Cadence — deterministic code, not model judgment (ADR-0021).
   let stage: ConversationStage;
@@ -1105,6 +1192,13 @@ export async function runConversationTurn(
       record,
       request.messages
     );
+  } else if (stalledField !== undefined) {
+    // The stall rule (#376): the same field has blocked the proposal for
+    // STALLED_FIELD_TURNS turns in a row — the model is chatting past it.
+    // Ask for it outright, in voice; the next short answer settles it.
+    stage = 'chatting';
+    firedRule = 'stalled-field-ask';
+    reply = stalledFieldAsk(stalledField, blockedTurns, record);
   } else if (
     // The evocation follow-up (TAT-51): the meaning points at a person,
     // creator, or franchise, nothing drawable is on the record, and the
@@ -1196,12 +1290,32 @@ export async function runConversationTurn(
     reply = candidate;
   }
 
+  // What still blocks, on the record as the branches left it — a colour
+  // call above may have resolved the style slot. Only a chatting turn is
+  // gated; a proposal or handoff has nothing blocking by definition.
+  const blockingField =
+    stage === 'chatting'
+      ? blockingFieldFor(
+          scoreRecord(record),
+          CONFIDENCE_THRESHOLD,
+          record
+        )
+      : undefined;
+  const gate =
+    blockingField === undefined
+      ? undefined
+      : gateStateFor(
+          blockingField,
+          consecutiveBlockedTurns(blockingField, request.previousTurnLogs ?? [])
+        );
+
   const turnLog: TurnLog = {
     turn: request.userTurn,
     confidence,
     missingFields,
     firedRule,
     model,
+    ...(blockingField !== undefined ? { blockingField } : {}),
   };
   logTurn(turnLog, stage);
 
@@ -1211,6 +1325,7 @@ export async function runConversationTurn(
     ...(playback !== undefined ? { playback } : {}),
     record,
     turnLog,
+    ...(gate !== undefined ? { gate } : {}),
     // The notepad projection (TAT-48) — built AFTER every branch above, so
     // it reflects the record the branches may have resolved (palette calls,
     // axis spreads). The only record view that ever reaches the browser.

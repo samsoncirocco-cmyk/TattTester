@@ -74,6 +74,13 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Swipe decisions (spec 13) — a customer's pins and passes, keyed by
+    // uid. Personal taste data: never readable by other clients, never
+    // written except through /api/v1/match/decision (Admin SDK).
+    match /match_decisions/{decisionId} {
+      allow read, write: if false;
+    }
+
     // Deny all other paths
     match /{document=**} {
       allow read, write: if false;

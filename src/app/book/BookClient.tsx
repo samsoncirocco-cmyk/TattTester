@@ -25,7 +25,8 @@
  * renders a time we cannot hold.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import StudioShell from "@/components/studio/StudioShell";
 import QuietHeadline from "@/components/quiet/QuietHeadline";
 import QuietCTA from "@/components/quiet/QuietCTA";
@@ -33,6 +34,7 @@ import ReceiptCard from "@/components/quiet/ReceiptCard";
 import { useBookings, useDesigns, type TattDesign } from "@/lib/tattStorage";
 import { getApiAuthHeaders } from "@/lib/client-api-auth";
 import { bookingReviewMoneyCopy } from "@/lib/money-copy";
+import { requestReplyPromise } from "@/lib/request-reply-window";
 import {
   BookingPathExplainer,
   CheckoutEstimate,
@@ -63,6 +65,19 @@ export type BookOffer = {
   detail: string;
   slots: OfferedSlot[];
   timezone?: string;
+};
+
+/**
+ * What a reload or a return from Stripe hands back to this page (REA gap #1).
+ * The booking id is the load-bearing part: re-using it makes a second hold on
+ * the same slot a refresh of the customer's own hold instead of a collision
+ * with it. `cancelledHoldId` is set only by Stripe's cancel_url and names the
+ * hold to release before anything else happens.
+ */
+export type BookResume = {
+  bookingId: string;
+  slot: OfferedSlot | null;
+  cancelledHoldId: string | null;
 };
 
 export type BookArtist = {
@@ -148,6 +163,7 @@ export default function BookClient({
   offer,
   feePercent,
   holdDays,
+  resume = null,
 }: {
   artist: BookArtist | null;
   requestedArtistId: string;
@@ -160,9 +176,25 @@ export default function BookClient({
   feePercent: number;
   /** Held-deposit refund window (from DEPOSIT_HOLD_DAYS, server-read). */
   holdDays: number;
+  /** Booking state carried in the URL from an earlier visit, if any. */
+  resume?: BookResume | null;
 }) {
   const { addBooking } = useBookings();
   const { designs } = useDesigns();
+  const router = useRouter();
+
+  // Was the slot the customer came back with still on offer? If our own hold
+  // hid it the server already excluded it for us (page.tsx), so "not offered"
+  // here means somebody else has it now.
+  const resumedSlotOffered = Boolean(
+    resume?.slot &&
+      offer.slots.some(
+        (s) =>
+          s.date === resume.slot!.date &&
+          s.startTime === resume.slot!.startTime &&
+          s.endTime === resume.slot!.endTime,
+      ),
+  );
 
   const [step, setStep] = useState<0 | 1 | 2>(0);
   const [phase, setPhase] = useState<Phase>("form");
@@ -173,7 +205,40 @@ export default function BookClient({
   const [timePref, setTimePref] = useState<(typeof TIME_PREFS)[number]>("Flexible");
 
   // Step 01, reservation model — one concrete slot, which we will hold.
-  const [selectedSlot, setSelectedSlot] = useState<OfferedSlot | null>(null);
+  const [selectedSlot, setSelectedSlot] = useState<OfferedSlot | null>(
+    resumedSlotOffered ? resume!.slot : null,
+  );
+  /**
+   * Times this customer tried to hold and lost — the honest lost-race state
+   * (REA gap #2). They stay on the grid, disabled and marked "Taken", instead
+   * of vanishing or silently demoting the whole page to request mode.
+   */
+  const [takenSlots, setTakenSlots] = useState<OfferedSlot[]>(
+    resume?.slot && offer.mode === "reservation" && !resumedSlotOffered
+      ? [resume.slot]
+      : [],
+  );
+  /**
+   * The sentence that explains a lost slot or a resumed visit, shown on the
+   * time step. Unlike `reservationLost` it does NOT drop the page to request
+   * mode: the artist still has a live calendar, just not that time.
+   */
+  const [slotNotice, setSlotNotice] = useState<string | null>(() => {
+    if (!resume) return null;
+    if (resume.cancelledHoldId) {
+      return "You left checkout, so we released your hold. Pick your time again to continue — your booking reference is kept.";
+    }
+    if (resume.slot && offer.mode === "reservation" && !resumedSlotOffered) {
+      return "Your earlier time is no longer available. Your booking reference is kept — pick another time.";
+    }
+    return "Picking up where you left off. Your booking reference is kept; re-enter your details to continue.";
+  });
+  /** Set when checkout refused with HOLD_LOST — gets its own action, not the generic error box. */
+  const [holdLost, setHoldLost] = useState<string | null>(null);
+  /** The hold this tab currently owns, released if the customer walks away. */
+  const holdIdRef = useRef<string | null>(null);
+  /** True once we hand the browser to Stripe — then the hold must NOT be released on pagehide. */
+  const redirectingRef = useRef(false);
   /**
    * Set when a reservation degrades mid-flow: the slot was taken between
    * loading the page and pressing book, or holds went unavailable. The UI drops
@@ -197,12 +262,93 @@ export default function BookClient({
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
 
-  // Result — set when the booking is captured but no payment happened
-  const [bookingId, setBookingId] = useState<string | null>(null);
+  // The captured booking. Set after POST /api/v1/book, or restored from the
+  // URL on a reload so a retry re-uses it instead of minting a second record.
+  const [bookingId, setBookingId] = useState<string | null>(resume?.bookingId ?? null);
   const [paymentsUnavailable, setPaymentsUnavailable] = useState(false);
 
   const days = useMemo(() => upcomingDays(28), []);
-  const slotsByDate = useMemo(() => groupSlotsByDate(offer.slots), [offer.slots]);
+  // Offered slots plus the ones this customer lost, so a lost time is shown
+  // as "Taken" rather than quietly missing.
+  const slotsByDate = useMemo(() => {
+    const extra = takenSlots.filter(
+      (t) => !offer.slots.some((s) => s.date === t.date && s.startTime === t.startTime),
+    );
+    const merged = [...offer.slots, ...extra].sort((a, b) =>
+      a.date === b.date ? a.startTime.localeCompare(b.startTime) : a.date.localeCompare(b.date),
+    );
+    return groupSlotsByDate(merged);
+  }, [offer.slots, takenSlots]);
+  const isTaken = (slot: OfferedSlot) =>
+    takenSlots.some((t) => t.date === slot.date && t.startTime === slot.startTime);
+
+  /** Keep the URL in step with the booking so a reload lands back here. */
+  const syncUrl = (patch: Record<string, string | null>) => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v == null) url.searchParams.delete(k);
+      else url.searchParams.set(k, v);
+    }
+    window.history.replaceState(window.history.state, "", url.toString());
+  };
+
+  /** Free a hold this tab owns. Best-effort; the TTL is the backstop. */
+  const releaseHold = async (holdId: string | null, keepalive = false) => {
+    if (!holdId) return;
+    if (holdIdRef.current === holdId) holdIdRef.current = null;
+    try {
+      const authHeaders = await getApiAuthHeaders();
+      await fetch(`/api/v1/book/hold?holdId=${encodeURIComponent(holdId)}`, {
+        method: "DELETE",
+        headers: authHeaders,
+        keepalive,
+      });
+    } catch {
+      // The hold lapses on its own; nothing else to do from here.
+    }
+  };
+
+  // Returning from Stripe's cancel page: release the hold named in the URL
+  // first, then scrub the cancel markers so a second reload is a plain resume.
+  useEffect(() => {
+    if (!resume?.cancelledHoldId) return;
+    void releaseHold(resume.cancelledHoldId);
+    syncUrl({ cancelled: null, holdId: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Closing the tab mid-review with a live hold: let the slot go now rather
+  // than at the TTL. Skipped once we are handing off to Stripe — that hold
+  // must survive the navigation.
+  useEffect(() => {
+    const onPageHide = () => {
+      if (redirectingRef.current || !holdIdRef.current) return;
+      void releaseHold(holdIdRef.current, true);
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, []);
+
+  /** Step indicator navigation. Leaving the review step abandons any live hold. */
+  const goToStep = (i: 0 | 1 | 2) => {
+    if (step === 2 && i < 2 && holdIdRef.current) {
+      void releaseHold(holdIdRef.current);
+    }
+    setStep(i);
+  };
+
+  /** A time this customer tried to hold is gone — say so and keep everything else. */
+  const markSlotTaken = (slot: OfferedSlot, notice: string) => {
+    setTakenSlots((prev) =>
+      prev.some((t) => t.date === slot.date && t.startTime === slot.startTime) ? prev : [...prev, slot],
+    );
+    setSelectedSlot(null);
+    setSlotNotice(notice);
+    syncUrl({ slot: null });
+    // Refetch the offer so the grid shows what is really free now.
+    router.refresh();
+  };
   const chosenDesign = designs.find((d) => d.id === designId);
   const deposit = depositDollarsForSize(size || undefined);
   const reviewLabels = bookingReviewLabels(reserving ? "reservation" : "request");
@@ -246,7 +392,11 @@ export default function BookClient({
     try {
       const authHeaders = await getApiAuthHeaders();
 
-      // 1. Capture the booking request — this is the real record.
+      // 1. Capture the booking request — this is the real record. A resumed
+      // visit already has one: re-using its id is what lets the hold below be
+      // a refresh of the customer's own hold rather than a collision with it.
+      let activeBookingId = bookingId;
+      if (!activeBookingId) {
       const bookRes = await fetch("/api/v1/book", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders },
@@ -277,7 +427,9 @@ export default function BookClient({
       if (!bookRes.ok || !bookData?.success) {
         throw new Error(bookData?.error || "Couldn't save your booking request.");
       }
-      setBookingId(bookData.bookingId);
+      activeBookingId = bookData.bookingId as string;
+      setBookingId(activeBookingId);
+      syncUrl({ bookingId: activeBookingId });
 
       // Mirror into local bookings so /bookings shows it immediately.
       // depositPaid stays false until Stripe actually confirms.
@@ -288,6 +440,7 @@ export default function BookClient({
         date: reserving && selectedSlot ? selectedSlot.date : selectedDates[0],
         depositPaid: false,
       });
+      }
 
       // 1b. Reservation path — hold the slot BEFORE paying for it. If the hold
       // fails there is nothing to pay for, so we stop and say why rather than
@@ -299,7 +452,7 @@ export default function BookClient({
           headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify({
             artistId: artist.id,
-            bookingId: bookData.bookingId,
+            bookingId: activeBookingId,
             ...selectedSlot,
           }),
         });
@@ -307,9 +460,11 @@ export default function BookClient({
 
         if (holdRes.status === 409) {
           // Somebody else took it between the page loading and this click.
-          setSelectedSlot(null);
-          setReservationLost(
-            "That time was taken while you were filling this in. Pick your dates and the artist will confirm.",
+          // Stay on the reservation product: the artist's calendar is still
+          // live, only this time is gone. Mark it, keep the form, ask again.
+          markSlotTaken(
+            selectedSlot,
+            "That time was just taken by someone else. Your details are kept — pick another time.",
           );
           setStep(0);
           setPhase("form");
@@ -328,6 +483,8 @@ export default function BookClient({
           return;
         }
         holdId = holdData.holdId;
+        holdIdRef.current = holdId ?? null;
+        syncUrl({ slot: `${selectedSlot.date}|${selectedSlot.startTime}|${selectedSlot.endTime}` });
       }
 
       // 2. Deposit via Stripe Checkout. If payments aren't configured
@@ -345,7 +502,7 @@ export default function BookClient({
           budget,
           clientName: name.trim(),
           clientEmail: email.trim(),
-          bookingId: bookData.bookingId,
+          bookingId: activeBookingId,
           // Present only on the reservation path. It ties this payment to the
           // held slot and caps the Stripe session at the hold's expiry.
           holdId,
@@ -356,7 +513,24 @@ export default function BookClient({
       const payData = await payRes.json().catch(() => null);
 
       if (payRes.ok && typeof payData?.sessionUrl === "string") {
+        redirectingRef.current = true;
         window.location.href = payData.sessionUrl;
+        return;
+      }
+
+      // The hold lapsed or was lost before Stripe could open (REA gap #2).
+      // This is not a generic failure: the booking is fine, the time is not.
+      // Keep reservation mode and the filled form; offer another time.
+      if (payData?.code === "HOLD_LOST") {
+        holdIdRef.current = null;
+        if (selectedSlot) {
+          markSlotTaken(
+            selectedSlot,
+            "That time is no longer held. Your details are kept — pick another time.",
+          );
+        }
+        setHoldLost("Your held time ran out before checkout opened. Nothing was charged.");
+        setPhase("form");
         return;
       }
 
@@ -367,9 +541,14 @@ export default function BookClient({
         payData?.code === "ARTIST_INTRO_REQUIRED" &&
         typeof payData?.introUrl === "string"
       ) {
+        redirectingRef.current = true;
         window.location.href = payData.introUrl;
         return;
       }
+
+      // Checkout refused and nothing will be paid for this hold. The route
+      // releases it on every path it knows; this is the idempotent backstop.
+      void releaseHold(holdIdRef.current);
 
       // Graph/bookability 503 and other hard checkout failures must not share
       // the "Payments aren't configured yet" captured copy — the booking may
@@ -387,6 +566,8 @@ export default function BookClient({
       setPaymentsUnavailable(true);
       setPhase("captured");
     } catch (err) {
+      // A hold without a checkout behind it reserves nothing anyone can pay for.
+      void releaseHold(holdIdRef.current);
       setError(err instanceof Error ? err.message : "Something broke. Try again.");
       setPhase("form");
     }
@@ -457,7 +638,8 @@ export default function BookClient({
                 Your request is with {artist.name}.
               </p>
               <p className="mt-5 text-[13px] text-quiet-dim font-body leading-[1.9] max-w-xl">
-                They&apos;ll confirm a time from your requested dates.
+                {/* The reply-time promise (REA gap #3): a stated window, not silence. */}
+                {requestReplyPromise(artist.name, artist.claimed)}
                 {paymentsUnavailable && (
                   <>
                     <br />
@@ -543,7 +725,7 @@ export default function BookClient({
                 <button
                   key={s.n}
                   type="button"
-                  onClick={() => { if (i <= step) setStep(i as 0 | 1 | 2); }}
+                  onClick={() => { if (i <= step) goToStep(i as 0 | 1 | 2); }}
                   disabled={i > step}
                   className={`relative flex-1 px-6 py-5 border-b sm:border-b-0 sm:border-r hairline-quiet-soft last:border-r-0 last:border-b-0 flex items-center gap-4 press text-left ${
                     active ? "bg-white/[0.04]" : done ? "hover:bg-white/5" : ""
@@ -604,6 +786,15 @@ export default function BookClient({
                   {reservationLost}
                 </p>
               )}
+              {/* A lost or resumed time says so without changing the product. */}
+              {slotNotice && !reservationLost && (
+                <p
+                  role="status"
+                  className="mt-5 text-[13px] text-pink font-body leading-[1.8] max-w-xl"
+                >
+                  {slotNotice}
+                </p>
+              )}
 
               {reserving ? (
                 <div className="mt-8 space-y-8">
@@ -617,18 +808,26 @@ export default function BookClient({
                           const sel =
                             selectedSlot?.date === slot.date &&
                             selectedSlot?.startTime === slot.startTime;
+                          const taken = isTaken(slot);
                           return (
                             <button
                               key={`${slot.date}-${slot.startTime}`}
                               type="button"
+                              disabled={taken}
+                              aria-disabled={taken || undefined}
                               onClick={() => setSelectedSlot(sel ? null : slot)}
                               className={`text-[13px] border hairline-quiet-soft px-5 py-3.5 press font-body tabular-nums ${
-                                sel
-                                  ? "bg-quiet text-black border-quiet"
-                                  : "text-quiet hover:text-black hover:bg-quiet"
+                                taken
+                                  ? "text-white/25 line-through cursor-not-allowed"
+                                  : sel
+                                    ? "bg-quiet text-black border-quiet"
+                                    : "text-quiet hover:text-black hover:bg-quiet"
                               }`}
                             >
                               {slot.startTime}
+                              {taken && (
+                                <span className="ml-2 no-underline text-[11px]">Taken</span>
+                              )}
                             </button>
                           );
                         })}
@@ -955,6 +1154,29 @@ export default function BookClient({
                   </p>
                 </ReceiptCard>
               </div>
+            </div>
+          )}
+
+          {holdLost && (
+            <div className="mt-8 border border-pink/60 p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+              <p className="text-[13px] text-pink font-body leading-[1.7]">
+                {holdLost}
+                {step !== 0 && " Your details are kept."}
+              </p>
+              {step !== 0 && (
+                <div className="sm:ml-auto">
+                  <QuietCTA
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setHoldLost(null);
+                      goToStep(0);
+                    }}
+                  >
+                    Pick another time
+                  </QuietCTA>
+                </div>
+              )}
             </div>
           )}
 

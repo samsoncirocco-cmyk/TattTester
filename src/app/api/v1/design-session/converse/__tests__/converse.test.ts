@@ -129,6 +129,28 @@ describe('POST /api/v1/design-session/converse route adapter', () => {
     expect(recordConversationTurnSpendMock).toHaveBeenCalledTimes(1);
   });
 
+  it('passes the gate state through the envelope so a stalled session is visible (#376)', async () => {
+    const gate = {
+      blocking: 'placement' as const,
+      stalled: true,
+      line: 'I still need a placement before I can draw.',
+    };
+    converseMock.mockResolvedValueOnce(
+      converseResponse({ reply: 'where on your body do you want this?', turn: 3, gate })
+    );
+
+    const res = await POST(makeRequest(URL, { sessionId: 'sess-1', message: 'she loved her garden' }));
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.stage).toBe('chatting');
+    expect(json.gate).toEqual(gate);
+    // The route adds nothing of its own: no TurnLog, no score, no rule.
+    expect(json).not.toHaveProperty('missingFields');
+    expect(json).not.toHaveProperty('confidence');
+    expect(json).not.toHaveProperty('firedRule');
+  });
+
   it('trims and forwards a continuing turn, surfacing proposal playback', async () => {
     converseMock.mockResolvedValueOnce(
       converseResponse({ stage: 'proposal', playback: 'a sparrow on your forearm', turn: 6 })
