@@ -16,6 +16,7 @@
 import { inferProvider } from './internal/routing';
 import {
   modelSupportsReferenceImages,
+  modelSupportsSeed,
   modelSupportsSourceImage,
 } from './internal/replicate';
 
@@ -35,4 +36,14 @@ export function pinnedImageInputs(modelId: string): PinnedImageInputs {
     referenceImages: modelSupportsReferenceImages(modelId),
     sourceImage: modelSupportsSourceImage(modelId),
   };
+}
+
+/**
+ * Whether a seed sent to `modelId` is honored (spec 12): Flux and Krea on
+ * Replicate. The Vertex pin and nano-banana-2 (Gemini) take none, so the
+ * design session neither sends nor stores one for them.
+ */
+export function modelTakesSeed(modelId: string): boolean {
+  if (inferProvider(modelId) === 'vertex-ai') return false;
+  return modelSupportsSeed(modelId);
 }

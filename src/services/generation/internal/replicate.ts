@@ -39,6 +39,12 @@ interface ReplicateModel {
    * reference for a fresh composition.
    */
   supportsReferenceImages: boolean;
+  /**
+   * Accepts a `seed` input (spec 12). The Flux family and Krea do;
+   * nano-banana-2 (Gemini) has no seed, so it is never sent one and never
+   * reports one — a seed it ignored would be a false reproducibility claim.
+   */
+  supportsSeed: boolean;
   /** Ratios this model's input schema actually accepts (verified against its OpenAPI schema). */
   aspectRatios: ReadonlySet<string>;
   /** Requested ratio → nearest schema-legal ratio, for the gaps in aspectRatios. */
@@ -68,6 +74,7 @@ export const REPLICATE_MODELS: Record<string, ReplicateModel> = {
     supportsNumOutputs: true,
     supportsSourceImage: true,
     supportsReferenceImages: false,
+    supportsSeed: true,
     aspectRatios: FLUX_ASPECT_RATIOS,
     aspectRemap: {},
     params: {
@@ -84,6 +91,7 @@ export const REPLICATE_MODELS: Record<string, ReplicateModel> = {
     supportsNumOutputs: true,
     supportsSourceImage: false,
     supportsReferenceImages: false,
+    supportsSeed: true,
     aspectRatios: FLUX_ASPECT_RATIOS,
     aspectRemap: {},
     params: {
@@ -107,6 +115,7 @@ export const REPLICATE_MODELS: Record<string, ReplicateModel> = {
     // would silently repurpose a stencil derivation into a reference remix.
     supportsSourceImage: false,
     supportsReferenceImages: true,
+    supportsSeed: false,
     aspectRatios: NANO_BANANA_ASPECT_RATIOS,
     aspectRemap: {},
     // output_format defaults to jpg on this model — pin png to match the
@@ -121,6 +130,7 @@ export const REPLICATE_MODELS: Record<string, ReplicateModel> = {
     supportsNumOutputs: false,
     supportsSourceImage: false,
     supportsReferenceImages: false,
+    supportsSeed: true,
     aspectRatios: KREA_ASPECT_RATIOS,
     // Krea's schema has no 3:4 — 4:5 is the nearest portrait ratio it takes.
     aspectRemap: { '3:4': '4:5' },
@@ -162,6 +172,11 @@ export function modelSupportsSourceImage(modelId?: string): boolean {
  */
 export function modelSupportsReferenceImages(modelId?: string): boolean {
   return resolveModel(modelId).supportsReferenceImages;
+}
+
+/** Whether a model id takes a `seed` input (spec 12). */
+export function modelSupportsSeed(modelId?: string): boolean {
+  return resolveModel(modelId).supportsSeed;
 }
 
 /** Schema cap on nano-banana-2's image_input; also our session cap is 6. */
@@ -319,16 +334,28 @@ async function generateWithReplicate(request: GenerationRequest): Promise<Genera
     input.image_input = referenceImages.slice(0, MAX_REFERENCE_IMAGES);
   }
 
-  if (request.seed !== undefined && request.seed !== '') {
+  let sentSeed: number | undefined;
+  if (model.supportsSeed && request.seed !== undefined && request.seed !== '') {
     const seed = Number(request.seed);
-    if (Number.isFinite(seed)) input.seed = seed;
+    if (Number.isFinite(seed)) {
+      input.seed = seed;
+      sentSeed = seed;
+    }
   }
 
   // Single-output models (Krea) fan out: N parallel predictions merged in
   // order, so callers asking for 4 images get 4 regardless of model.
   const fanOut = model.supportsNumOutputs ? 1 : numImages;
   const runs = await Promise.all(
-    Array.from({ length: fanOut }, () => runPrediction(model, input, token))
+    // A seeded fan-out steps the seed per prediction: N copies of one seed
+    // would be N copies of one picture.
+    Array.from({ length: fanOut }, (_, i) =>
+      runPrediction(
+        model,
+        sentSeed !== undefined && i > 0 ? { ...input, seed: (sentSeed + i) % 2 ** 31 } : input,
+        token
+      )
+    )
   );
 
   return {
@@ -341,7 +368,8 @@ async function generateWithReplicate(request: GenerationRequest): Promise<Genera
       // Total create calls (throttle retries + fan-out included) — the
       // telemetry to watch when reading 429 frequency.
       attempts: runs.reduce((sum, run) => sum + run.createAttempts, 0),
-      seed: request.seed,
+      // Only the seed actually sent: a lane without one reports none.
+      ...(sentSeed !== undefined ? { seed: sentSeed } : {}),
       fallbackUsed: false
     }
   };

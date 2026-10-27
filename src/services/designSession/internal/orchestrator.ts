@@ -17,7 +17,7 @@ import { enhanceStructured, enhanceRound } from '../../council';
 import type { RoundSpread, StructuredEnhanceResult } from '../../council';
 import { generate, routeGeneration } from '../../generation';
 import type { AspectRatio, GenerationRequest } from '../../generation';
-import { pinnedImageInputs } from '../../generation/capabilities';
+import { modelTakesSeed, pinnedImageInputs } from '../../generation/capabilities';
 import { resolveFixAllowance } from '@/lib/studio-fix-allowance';
 import type {
   Variation,
@@ -47,6 +47,7 @@ import { referenceImagePaths } from './references';
 import { deleteReferencePhotos, signedReferenceUrls } from './referencePhotos';
 import { recordImageSpend } from './spend';
 import { landPreviewCut, type PreviewTarget } from './preview';
+import { seedFor } from './seed';
 import {
   allCuts,
   cutLabel,
@@ -366,7 +367,14 @@ async function renderDurably(
   // Stable storage paths, NOT the request's signed URLs — the identity
   // must survive a re-mint or a retry never recovers its staged render.
   referencePaths?: string[]
-): Promise<string> {
+): Promise<RenderedCut> {
+  // Spec 12: a derived seed, only for a pin that honors one. The text guard
+  // steps it per re-roll inside generate(), and the provider reports back
+  // the seed of the attempt that was kept.
+  const seeded: GenerationRequest =
+    request.modelId && modelTakesSeed(request.modelId)
+      ? { ...request, seed: seedFor(session.id, tag) }
+      : request;
   const outcome = await durableRender(
     {
       sessionId: session.id,
@@ -377,7 +385,7 @@ async function renderDurably(
       ...(referencePaths?.length ? { referenceImagePaths: referencePaths } : {}),
     },
     async () => {
-      const result = await generate(request);
+      const result = await generate(seeded);
       // The pixel guard, at the acceptance point — inside the closure so a
       // reused staged image is not re-measured: it was guarded when it was
       // bought. Measures and logs, never rejects; see @/lib/observeRender.
@@ -390,17 +398,17 @@ async function renderDurably(
       // returns metadata, so the fallback is for malformed results only —
       // undercounting a re-roll is a cheaper failure than a failed reveal.
       onPurchase(1 + (result.metadata?.textGuardRerolls ?? 0));
-      return {
-        image: result.images[0],
-        // A downgrade is a property of the IMAGE, not of this attempt: the
-        // staging fingerprint keys on the REQUESTED modelId, so the fact
-        // that a fallback model actually served it must travel in the staged
-        // object's own metadata or a retry that reuses the object loses it —
-        // undisclosed and unrefunded, the exact ADR-0048 failure.
-        ...(result.metadata?.fallbackUsed
-          ? { metadata: { downgradeReason: result.metadata.fallbackReason || 'PRIMARY_FAILED' } }
-          : {}),
-      };
+      // A downgrade is a property of the IMAGE, not of this attempt: the
+      // staging fingerprint keys on the REQUESTED modelId, so the fact
+      // that a fallback model actually served it must travel in the staged
+      // object's own metadata or a retry that reuses the object loses it —
+      // undisclosed and unrefunded, the exact ADR-0048 failure. The serving
+      // lane and seed (spec 12) are facts of the image for the same reason.
+      const metadata = renderProvenanceMetadata(seeded, result.metadata);
+      if (result.metadata?.fallbackUsed) {
+        metadata.downgradeReason = result.metadata.fallbackReason || 'PRIMARY_FAILED';
+      }
+      return { image: result.images[0], metadata };
     }
   );
   // Fired from the durable outcome, not the render call, so a staged image
@@ -411,7 +419,60 @@ async function renderDurably(
     onDowngrade?.(outcome.metadata.downgradeReason);
   }
 
-  return outcome.imageUrl;
+  return { imageUrl: outcome.imageUrl, ...provenanceFrom(outcome.metadata, request.modelId) };
+}
+
+/** What renderDurably hands back: the durable URL and how it was drawn. */
+interface RenderedCut {
+  imageUrl: string;
+  lane?: string;
+  seed?: number;
+}
+
+/**
+ * The lane and seed to stage with an image. The seed is what the provider
+ * reports it used; when that differs from the seed sent, the report wins and
+ * the difference is logged (spec 12, 5.4). A lane that honors no seed stores
+ * none.
+ */
+function renderProvenanceMetadata(
+  request: GenerationRequest,
+  reported: { model?: string; seed?: number | string } | undefined
+): Record<string, string> {
+  const lane = reported?.model || request.modelId || '';
+  const metadata: Record<string, string> = lane ? { lane } : {};
+  const used = reported?.seed;
+  // Only when a seed was sent: a lane that ignores seeds may still echo an
+  // undefined one, and the Replicate provider reports a seed only for a lane
+  // that took it (a nano-banana fallback reports none).
+  if (request.seed !== undefined && used !== undefined && used !== '') {
+    metadata.seed = String(used);
+    if (String(request.seed) !== String(used)) {
+      logger.info({
+        event_type: 'design_session.seed_changed',
+        sent_seed: request.seed,
+        used_seed: used,
+        lane,
+      });
+    }
+  }
+  return metadata;
+}
+
+/**
+ * Read lane and seed back from staged metadata. A staged object from before
+ * provenance existed falls back to the requested model and no seed.
+ */
+function provenanceFrom(
+  metadata: Record<string, string>,
+  requestedModel: string | undefined
+): { lane?: string; seed?: number } {
+  const lane = metadata.lane || requestedModel || undefined;
+  const seed = metadata.seed !== undefined ? Number(metadata.seed) : NaN;
+  return {
+    ...(lane ? { lane } : {}),
+    ...(Number.isInteger(seed) && seed >= 0 ? { seed } : {}),
+  };
 }
 
 /**
@@ -490,11 +551,11 @@ export async function startFromRecord(
         const id = `v${index + 1}`;
         // Demo mode: repo-local stock image instead of a paid render. It is
         // already a permanent same-origin asset, so nothing to capture.
-        let imageUrl: string;
+        let rendered: RenderedCut;
         if (demo) {
-          imageUrl = DEMO_MOCK_IMAGES[index % DEMO_MOCK_IMAGES.length];
+          rendered = { imageUrl: DEMO_MOCK_IMAGES[index % DEMO_MOCK_IMAGES.length] };
         } else {
-          imageUrl = await renderDurably(
+          rendered = await renderDurably(
             shell,
             id,
             pinnedRequest(route, prompt, structured.negativePrompt, {
@@ -511,7 +572,7 @@ export async function startFromRecord(
           axisPosition: structured.axisPosition as Record<string, string>,
           prompt,
           negativePrompt: structured.negativePrompt,
-          imageUrl,
+          ...rendered,
         };
         // Durable and post-guard by now: renderDurably returns only once the
         // copy is in our bucket and the text guard has had its re-roll.
@@ -1054,11 +1115,11 @@ async function renderRoundCuts(
         // Ids continue the session's running order, so a number spoken over
         // SMS keeps meaning the same cut the web shows in that position.
         const id = `v${baseIndex + index + 1}`;
-        let imageUrl: string;
+        let rendered: RenderedCut;
         if (demo) {
-          imageUrl = DEMO_MOCK_IMAGES[(baseIndex + index) % DEMO_MOCK_IMAGES.length];
+          rendered = { imageUrl: DEMO_MOCK_IMAGES[(baseIndex + index) % DEMO_MOCK_IMAGES.length] };
         } else {
-          imageUrl = await renderDurably(
+          rendered = await renderDurably(
             session,
             id,
             pinnedRequest(
@@ -1083,7 +1144,7 @@ async function renderRoundCuts(
           axisPosition: structured.axisPosition as Record<string, string>,
           prompt,
           negativePrompt: structured.negativePrompt,
-          imageUrl,
+          ...rendered,
         };
         // Preview entries ARE the final entries: nothing re-renders a cut
         // after this point, so a downgrade never replaces a landed cut.
@@ -1270,6 +1331,7 @@ export async function refine(sessionId: string, request: RefineRequest): Promise
 
   const adjustedPrompt = adjustPromptForAnswer(session, picked, request.answer);
   let imageUrl: string | undefined;
+  let provenance: Omit<RenderedCut, 'imageUrl'> = {};
   if (isDemoMode()) {
     // Demo regen: the stock image after the picked one, so the refinement
     // visibly changes the design without a paid render.
@@ -1282,7 +1344,7 @@ export async function refine(sessionId: string, request: RefineRequest): Promise
       // pin already guarantees a reference-capable model when any exist.
       const referencePaths = referenceImagePaths(session.conversation?.references ?? []);
       // ADR-0016: the regen reuses the exact model pinned at session start.
-      imageUrl = await renderDurably(
+      ({ imageUrl, ...provenance } = await renderDurably(
         session,
         `${picked.id}-refined`,
         pinnedRequest(
@@ -1296,7 +1358,7 @@ export async function refine(sessionId: string, request: RefineRequest): Promise
         (renders) => { imagesPurchased = renders; },
         undefined,
         referencePaths
-      );
+      ));
     } finally {
       await recordImageSpend(session.provider, imagesPurchased);
     }
@@ -1309,6 +1371,7 @@ export async function refine(sessionId: string, request: RefineRequest): Promise
     prompt: adjustedPrompt,
     negativePrompt: picked.negativePrompt,
     imageUrl,
+    ...provenance,
   };
   // The artist's half of the deliverable, derived from the image the
   // customer just approved rather than re-prompted from text — see
@@ -1845,6 +1908,7 @@ export async function critique(
   const take = nextTake(session, target);
 
   let imageUrl: string | undefined;
+  let provenance: Omit<RenderedCut, 'imageUrl'> = {};
   if (isDemoMode()) {
     // Demo re-cut: the stock image after the target's, so the fix visibly
     // changes the design without a paid render.
@@ -1859,7 +1923,7 @@ export async function critique(
     try {
       // The same photos that informed the reveal inform the re-cut.
       const referencePaths = referenceImagePaths(session.conversation?.references ?? []);
-      imageUrl = await renderDurably(
+      ({ imageUrl, ...provenance } = await renderDurably(
         session,
         cutId,
         pinnedRequest(
@@ -1875,7 +1939,7 @@ export async function critique(
         },
         undefined,
         referencePaths
-      );
+      ));
     } finally {
       // Billed at the moment of purchase, so a copy that fails after a paid
       // render still records the money; a reuse records nothing.
@@ -1889,6 +1953,7 @@ export async function critique(
     prompt: adjustedPrompt,
     negativePrompt: target.negativePrompt,
     imageUrl,
+    ...provenance,
     // The lineage root, so a take of a take still points at the cut the whole
     // line came from.
     revisionOf: target.revisionOf ?? target.id,

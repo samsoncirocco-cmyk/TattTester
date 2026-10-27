@@ -40,6 +40,17 @@ export interface Variation {
    * simply lack it and stay named exactly as they were.
    */
   revision?: number;
+  /**
+   * The model that ACTUALLY drew this cut (spec 12): the fallback lane's id
+   * after an ADR-0048 downgrade, never just the pin. Absent on cuts stored
+   * before provenance existed and on demo stock images.
+   */
+  lane?: string;
+  /**
+   * The seed the accepted render used, only on lanes that honor one (Flux,
+   * Krea). With the lane and the stored prompt it re-creates the cut.
+   */
+  seed?: number;
 }
 
 /**
