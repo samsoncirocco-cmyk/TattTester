@@ -157,6 +157,18 @@ features:
       - src/app/smart-match/SmartMatchClient.test.tsx
       - src/app/swipe/page.test.tsx
 
+  typesafe_match_rerank:
+    status: implemented
+    evidence:
+      - src/services/matching/typesafeRerank.ts
+      - src/services/matching/designSearch.ts
+      - src/services/matching/__tests__/typesafeRerank.test.ts
+      - src/features/match-pulse/services/__tests__/hybridMatchService.rerank.test.ts
+      - src/features/match-pulse/services/hybridMatchService.ts
+      - src/features/match-pulse/services/matchService.js
+    limitations:
+      - TYPESAFE_RERANK defaults off. When it is on, embedding and Neo4j shortlists are reordered by TypeSafe scores for style, placement, and subject. A missing key, a spent budget, a timeout, or an error keeps the original order.
+
   single_match_journey:
     status: implemented
     evidence:

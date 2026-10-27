@@ -33,6 +33,7 @@ export async function POST(req: NextRequest) {
             bodyPart,
             location,
             budget,
+            prompt,
             layerCount: 0,
             embeddingVector
         };

@@ -3,6 +3,8 @@
  *
  * Combines Neo4j graph traversal with vector similarity search
  * to enable semantic artist discovery beyond keyword matching.
+ * With TYPESAFE_RERANK on, the scored shortlist is reordered by fit to
+ * the brief after candidate generation. The flag defaults off.
  */
 
 import { searchSimilar } from '@/services/vectorDbService';
@@ -16,6 +18,7 @@ import {
 } from '@/utils/scoreAggregation';
 import { fetchWithAbort } from '@/services/fetchWithAbort';
 import { generateQueryEmbedding as generateVertexEmbedding } from '@/services/embeddingService';
+import { buildSemanticBrief, rerankArtistCandidates, rerankCacheKeyParts } from '@/services/matching/typesafeRerank';
 
 // Type Definitions
 export interface QueryPreferences {
@@ -336,8 +339,9 @@ export async function findMatchingArtists(
     // vector soft timeout so real graph queries are never killed mid-flight.
     const TIMEOUT_MS = 10000;
 
-    // Check cache first
-    const cacheKey = JSON.stringify({ query, preferences, maxResults });
+    // Check cache first. The rerank flag is part of the key so toggling it
+    // cannot serve a shortlist ordered by the other mode.
+    const cacheKey = JSON.stringify({ query, preferences, maxResults, typesafeRerank: rerankCacheKeyParts() });
     const cached = queryCache.get(cacheKey);
 
     if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
@@ -359,8 +363,8 @@ export async function findMatchingArtists(
         const { visualConcepts, keywords } = parseQuery(query);
 
         // Execute with timeout
-        const result = await Promise.race([
-            (async (): Promise<MatchResult> => {
+        const drafted = await Promise.race([
+            (async (): Promise<MatchResult & { ranked: MatchedArtist[] }> => {
                 const vectorStart = performance.now();
 
                 // Execute vector and graph queries in parallel
@@ -442,6 +446,7 @@ export async function findMatchingArtists(
 
                 return {
                     matches: topMatches,
+                    ranked: scoredArtists,
                     broadened,
                     broadenedReason,
                     totalCandidates: mergedResults.length,
@@ -465,6 +470,29 @@ export async function findMatchingArtists(
             })(),
             timeoutPromise
         ]);
+
+        // Rerank outside the search timeout. A slow TypeSafe call must not
+        // fail candidate generation; a failure here keeps the scored order.
+        const brief = buildSemanticBrief(query, preferences);
+        let ordered = drafted.ranked;
+        let broadened = drafted.broadened;
+        try {
+            ordered = await rerankArtistCandidates(brief, drafted.ranked);
+            broadened = await rerankArtistCandidates(brief, drafted.broadened);
+        } catch {
+            console.warn('[HybridMatch] Brief rerank failed closed');
+            ordered = drafted.ranked;
+            broadened = drafted.broadened;
+        }
+
+        const result: MatchResult = {
+            matches: ordered.slice(0, maxResults),
+            broadened,
+            broadenedReason: drafted.broadenedReason,
+            totalCandidates: drafted.totalCandidates,
+            queryInfo: drafted.queryInfo,
+            performance: drafted.performance,
+        };
 
         // Cache the result
         queryCache.set(cacheKey, {
