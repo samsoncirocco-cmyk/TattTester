@@ -167,7 +167,7 @@ describe('design session routing', () => {
     expect(response.notes?.sufficient).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(TYPESAFE_SYSTEMONE_URL);
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe(`Bearer ${KEY}`);
@@ -357,7 +357,7 @@ describe('SMS placement follow-up', () => {
     expect(plan.closingText).toBe(PLACEMENT_DONE_TEXT);
     expect(plan.widthFraction).toBe(widthFractionFor('way bigger'));
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const body = JSON.parse(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body));
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body));
     expect(body.state.channel).toBe('sms-placement');
     expect(body.state.designAlreadyGenerated).toBe(true);
     expect(body.questions.next_question.options).toBeUndefined();
