@@ -5,7 +5,14 @@ import type { Variation } from '@/services/designSession/types';
 import { cutIdentity } from '@/services/designSession/cutIdentity';
 import { CutLightbox } from './CutLightbox';
 
-export type RevealMode = 'pick' | 'not-you' | 'locked';
+/**
+ * `preview` (spec 9): a cut that landed while its sibling still renders —
+ * shown at full strength and openable, but not a pick target yet.
+ */
+export type RevealMode = 'pick' | 'not-you' | 'locked' | 'preview';
+
+/** The waiting tile beside a cut that already landed (spec 9). */
+export const PENDING_CUT_LINE = 'one more, almost dry…';
 
 /**
  * How wide or tall a measured cut is allowed to make the grid's frame.
@@ -67,11 +74,18 @@ export function RevealGrid({
   pickId,
   onSelect,
   indexOffset = 0,
+  pendingSlots = 0,
 }: {
   variations: Variation[];
   mode: RevealMode;
   pickId?: string;
   onSelect?: (variationId: string) => void;
+  /**
+   * Cuts of this round still rendering (spec 9): each holds a waiting tile
+   * beside the cuts that already landed, so a round reads as two from the
+   * first cut on.
+   */
+  pendingSlots?: number;
   /**
    * Where this grid's cuts start counting. The critique lane (ADR-0039)
    * renders its re-cuts in a second grid below the reveal — without an offset
@@ -130,7 +144,9 @@ export function RevealGrid({
         const { name, caption } = cutIdentity(variation, i);
         const isPick = variation.id === pickId;
         const notYouCandidate = mode === 'not-you' && !isPick;
-        const disabled = mode === 'locked' || (mode === 'not-you' && isPick);
+        const disabled =
+          mode === 'locked' || mode === 'preview' || (mode === 'not-you' && isPick);
+        const dimmed = disabled && !isPick && mode !== 'preview';
         const label = notYouCandidate
           ? `Design ${i + 1} feels most not me — ${name}`
           : `Pick design ${i + 1} — ${name}`;
@@ -161,7 +177,7 @@ export function RevealGrid({
                     : notYouCandidate
                       ? 'border-dashed hairline-white hover:border-pink'
                       : 'hairline-white hover:border-pink'
-                } ${disabled && !isPick ? 'opacity-40' : ''}`}
+                } ${dimmed ? 'opacity-40' : ''}`}
               >
                 {variation.imageUrl ? (
                   <div className="block w-full overflow-hidden bg-bone" style={frameStyle}>
@@ -229,6 +245,16 @@ export function RevealGrid({
           </div>
         );
       })}
+      {Array.from({ length: Math.max(0, pendingSlots) }, (_, slot) => (
+        <div key={`pending-${slot}`} data-testid="pending-cut">
+          <div
+            className="flex w-full items-center justify-center border-2 border-dashed hairline-white px-3 text-center font-body text-[11px] lowercase tracking-[0.14em] text-white/50"
+            style={frameStyle}
+          >
+            <span className="motion-safe:animate-pulse">{PENDING_CUT_LINE}</span>
+          </div>
+        </div>
+      ))}
       {expanded?.imageUrl && (
         <CutLightbox
           imageUrl={expanded.imageUrl}

@@ -53,12 +53,15 @@ export function renderingFromClaim(
   if (!claim) return undefined;
   const at = Date.parse(claim.at);
   const since = Number.isFinite(at) ? new Date(at).toISOString() : new Date(0).toISOString();
+  const stale = !Number.isFinite(at) || now - at >= ROUND_CLAIM_STALE_MS;
   return {
     // The first reveal claims the slot while the session is still in
     // intake; every later claim is a refine round or re-roll.
     kind: session.phase === 'intake' ? 'reveal' : 'round',
     since,
-    stale: !Number.isFinite(at) || now - at >= ROUND_CLAIM_STALE_MS,
+    stale,
+    // A dead render's cuts are not offered: the client re-runs instead.
+    ...(!stale && claim.preview?.length ? { preview: claim.preview } : {}),
   };
 }
 

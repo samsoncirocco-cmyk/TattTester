@@ -11,7 +11,7 @@
  *    as in src/app/api/v1/book/route.ts)
  */
 import { ensureAdminApp } from '@/lib/firebase-admin';
-import type { DesignSession } from '../types';
+import type { DesignSession, Variation } from '../types';
 import type { AspectRatio } from '../../generation';
 import type {
   ConversationMessage,
@@ -75,6 +75,14 @@ export interface RoundClaim {
   reservationId?: string;
   /** When the claim landed (ISO) — drives stale eviction. */
   at: string;
+  /**
+   * Cuts of this render that already landed durably, in landing order
+   * (spec 9). Lives ON the claim so it can never outlive it: the final
+   * whole-document save drops the claim and its preview together, and a
+   * failed render's releaseRound deletes both — a cut from a refunded round
+   * is never shown after the failure. Ids are the ids the final cuts get.
+   */
+  preview?: Variation[];
 }
 
 /**
@@ -161,6 +169,13 @@ export interface SessionStore {
   claimRound(id: string, claim: RoundClaim, staleMs: number): Promise<ClaimRoundResult>;
   /** Clear the slot when it still belongs to `claimId` (failure path). */
   releaseRound(id: string, claimId: string): Promise<void>;
+  /**
+   * Record one landed cut on the live claim's preview (spec 9). A no-op
+   * returning false when the claim is gone or belongs to another attempt —
+   * a stale writer can never append to a newer render — and idempotent per
+   * variation id. Field-level: never rewrites the rest of the document.
+   */
+  appendPreview(id: string, claimId: string, variation: Variation): Promise<boolean>;
   /**
    * Atomically resolve the session's owner against `uid` (#338 item 1).
    * With `stamp`, an unowned session becomes owned by `uid` in the same
@@ -295,6 +310,14 @@ export const memorySessionStore: SessionStore = {
     const session = sessions.get(id);
     if (session?.roundInFlight?.id === claimId) delete session.roundInFlight;
   },
+  async appendPreview(id, claimId, variation) {
+    const claim = sessions.get(id)?.roundInFlight;
+    if (!claim || claim.id !== claimId) return false;
+    const preview = claim.preview ?? [];
+    if (preview.some((cut) => cut.id === variation.id)) return true;
+    claim.preview = [...preview, structuredClone(variation)];
+    return true;
+  },
   // Atomic by construction, same as claimRound: synchronous on the one
   // JS thread, so two first-chargers can't interleave.
   async claimOwnership(id, uid, stamp) {
@@ -365,6 +388,25 @@ export const firestoreSessionStore: SessionStore = {
       if (!snap.exists) return;
       if ((snap.data() as StoredSession).roundInFlight?.id !== claimId) return;
       tx.update(ref, { roundInFlight: FieldValue.delete() });
+    });
+  },
+  // A transaction rather than arrayUnion: the claim-id check and the append
+  // must be one read-check-write, or a release landing between them would
+  // let a stale render resurrect a preview on a cleared slot.
+  async appendPreview(id, claimId, variation) {
+    const { getFirestore } = await import('firebase-admin/firestore');
+    const db = getFirestore();
+    const ref = db.collection(COLLECTION).doc(id);
+    return db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return false;
+      const claim = (snap.data() as StoredSession).roundInFlight;
+      if (!claim || claim.id !== claimId) return false;
+      const preview = claim.preview ?? [];
+      if (preview.some((cut) => cut.id === variation.id)) return true;
+      const clean = JSON.parse(JSON.stringify(variation)) as Variation;
+      tx.update(ref, { 'roundInFlight.preview': [...preview, clean] });
+      return true;
     });
   },
   // Transactional for the same reason claimRound is: two first-chargers

@@ -310,7 +310,9 @@ export async function confirmProposal(
   // promised retry can run.
   const claim = await claimRevealSlot(store, session.id, opts?.reservationId);
   try {
-    return await startFromRecord(completeIntakeRecord(record, userText), session);
+    return await startFromRecord(completeIntakeRecord(record, userText), session, {
+      claimId: claim.id,
+    });
   } catch (error) {
     await releaseRevealSlot(store, session.id, claim.id);
     throw error;
