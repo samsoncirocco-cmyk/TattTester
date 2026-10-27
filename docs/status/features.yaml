@@ -27,7 +27,10 @@ features:
       - src/services/designConversation/index.ts
       - src/services/designSession/index.ts
       - src/services/designConversation/__tests__/conversationEngine.test.ts
+      - src/services/designConversation/__tests__/typesafeTurn.test.ts
       - src/features/design-session/__tests__/DesignSessionFlow.test.tsx
+    limitations:
+      - TYPESAFE_INTAKE defaults off. When it is on, one TypeSafe call types placement, style dimensions, and axis ambiguity; low confidence leaves the field unresolved so the existing ask flow continues. Gemini still extracts subject and characters. A missing key, timeout, or error keeps the Gemini extraction.
 
   one_design_door:
     status: implemented

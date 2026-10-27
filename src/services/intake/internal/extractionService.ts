@@ -14,6 +14,11 @@
  * provider failure we degrade to a deterministic keyword extractor rather
  * than throwing — dev mode must work offline, and a heuristic extraction
  * is a real (if blunter) extraction, not mock data.
+ *
+ * TYPESAFE_INTAKE (default off) types placement, style dimensions, and
+ * axis ambiguity with one TypeSafe call after Gemini has filled the
+ * free-text fields. Flag off, a missing key, a timeout, or any TypeSafe
+ * error leaves this Gemini/heuristic result untouched.
  */
 
 import type { IntakeRecord, VariationAxis } from '../types';
@@ -33,6 +38,8 @@ import {
   groundedCharacterIdentities,
   mergeCharacterIdentities,
 } from './characterIdentity';
+import { normalizePlacement } from './placementCatalog';
+import { refineIntakeFields } from './typesafeExtraction';
 
 export interface IntakeAnswers {
   placementAnswer: string;
@@ -65,48 +72,7 @@ function isOpenRouterConfigured(): boolean {
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
-/* ──────────────────────────────────────────────────────────────────────────
- * Placement normalization
- * ────────────────────────────────────────────────────────────────────────── */
-
-// Multi-word parts first so "upper arm" wins over "arm"-ish partials.
-const PLACEMENT_PARTS = [
-  'behind the ear', 'shoulder blade', 'upper back', 'lower back',
-  'upper arm', 'rib cage', 'collarbone', 'forearm', 'shoulder', 'sternum',
-  'bicep', 'tricep', 'wrist', 'hand', 'finger', 'chest', 'spine', 'ribs',
-  'ribcage', 'hip', 'thigh', 'knee', 'calf', 'shin', 'ankle', 'foot',
-  'neck', 'back', 'ear', 'arm', 'leg',
-] as const;
-
-const PLACEMENT_CANONICAL: Record<string, string> = {
-  ribs: 'ribcage',
-  'rib cage': 'ribcage',
-};
-
-/**
- * Normalize a placement phrase to a canonical body part, preserving a
- * left/right qualifier when present. Placement is a hard generation
- * constraint (ADR-0009): unknown phrases pass through cleaned rather than
- * being guessed into a known part.
- */
-export function normalizePlacement(raw: string): string {
-  const text = (raw || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  const side = /\bleft\b/.test(text) ? 'left' : /\bright\b/.test(text) ? 'right' : null;
-
-  for (const part of PLACEMENT_PARTS) {
-    if (new RegExp(`\\b${part}\\b`).test(text)) {
-      const canonical = PLACEMENT_CANONICAL[part] ?? part;
-      return side ? `${side} ${canonical}` : canonical;
-    }
-  }
-
-  const cleaned = text
-    .replace(/[^a-z0-9\s'-]/g, ' ')
-    .replace(/\b(?:on|my|the|probably|maybe|i|think|thinking|somewhere|around)\b/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return cleaned || text;
-}
+export { normalizePlacement } from './placementCatalog';
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Ambiguity detection (ADR-0012)
@@ -374,23 +340,58 @@ export async function extractIntakeRecord(answers: IntakeAnswers): Promise<Intak
   const index = await loadOntology();
   const prompt = buildExtractionPrompt(answers, index);
 
+  let llm: LlmExtraction | null = null;
+
   if (isVertexConfigured()) {
     try {
-      const llm = await extractWithVertex(prompt);
-      if (llm) return mergeLlmExtraction(llm, answers, index);
+      llm = await extractWithVertex(prompt);
     } catch (error) {
       console.warn('[IntakeExtraction] Vertex AI failed, trying fallback:', error);
     }
   }
 
-  if (isOpenRouterConfigured()) {
+  if (!llm && isOpenRouterConfigured()) {
     try {
-      const llm = await extractWithOpenRouter(prompt);
-      if (llm) return mergeLlmExtraction(llm, answers, index);
+      llm = await extractWithOpenRouter(prompt);
     } catch (error) {
       console.warn('[IntakeExtraction] OpenRouter failed, falling back to heuristic:', error);
     }
   }
 
-  return heuristicExtract(answers, index);
+  const state = [
+    `Placement answer: ${answers.placementAnswer}`,
+    `Meaning answer: ${answers.meaningAnswer}`,
+  ].join('\n');
+  const typed = await refineIntakeFields({
+    state,
+    subject: typeof llm?.subject === 'string' ? llm.subject : undefined,
+  });
+
+  if (!llm && !typed) return heuristicExtract(answers, index);
+
+  if (!llm) {
+    const heuristic = heuristicExtract(answers, index);
+    llm = {
+      placement: heuristic.placement,
+      styleTags: heuristic.styleTags,
+      subject: heuristic.subject,
+      characterIdentities: heuristic.characterIdentities,
+      references: heuristic.references,
+      ambiguousAxes: heuristic.ambiguousAxes,
+    };
+  }
+
+  if (typed) {
+    // A withheld placement keeps the customer's own answer. This path is
+    // the two-question scripted intake — there is no later turn to ask.
+    // The conversation overlay clears the field instead so the ask fires.
+    llm = {
+      ...llm,
+      placement: typed.placement ?? answers.placementAnswer,
+      styleTags: typed.styleTags,
+      ambiguousAxes: typed.ambiguousAxes,
+    };
+  }
+
+  return mergeLlmExtraction(llm, answers, index);
 }

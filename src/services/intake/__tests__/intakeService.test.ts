@@ -43,6 +43,10 @@ const PROVIDER_ENV_KEYS = [
   'VERTEX_PROJECT_ID',
   'GEMINI_MODEL',
   'GCP_REGION',
+  'TYPESAFE_API_KEY',
+  'TYPESAFE_INTAKE',
+  'TYPESAFE_MODEL',
+  'TYPESAFE_TIMEOUT_MS',
 ];
 
 let savedEnv: Record<string, string | undefined>;

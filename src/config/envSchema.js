@@ -338,6 +338,26 @@ export const ENV_SECTIONS = [
         name: 'GEMINI_MODEL', type: 'string', required: false, default: 'gemini-2.5-flash',
         purpose: 'Model overrides (defaults live in code).',
       },
+      {
+        name: 'TYPESAFE_API_KEY', type: 'string', required: false, commentedOut: true,
+        example: 'ts_your_key_here',
+        purpose: 'TypeSafe System One key (server only). Never log it.\nhttps://docs.typesafe.ai/introduction',
+      },
+      {
+        name: 'TYPESAFE_INTAKE', type: 'bool', required: false, default: 'false',
+        example: 'false',
+        purpose: 'When true, one TypeSafe call types intake placement, style dimensions, and axis ambiguity. Off, missing key, timeout, or error keeps Gemini extraction. Subject and characters stay on Gemini.',
+      },
+      {
+        name: 'TYPESAFE_MODEL', type: 'string', required: false, default: 'jev-latest',
+        example: 'jev-latest',
+        purpose: 'System One model alias for intake extraction. jev-latest tracks the current stable Jev.',
+      },
+      {
+        name: 'TYPESAFE_TIMEOUT_MS', type: 'int', required: false, default: '8000',
+        example: '8000',
+        purpose: 'Abort a TypeSafe intake call after this many milliseconds and keep Gemini extraction.',
+      },
       { name: 'CONVERSATION_MODEL', type: 'string', required: false, purpose: '' },
       {
         name: 'INTAKE_EXTRACTION_MODEL', type: 'string', required: false,

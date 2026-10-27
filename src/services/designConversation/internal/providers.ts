@@ -16,6 +16,7 @@
 import { logger } from '@/lib/logger';
 import { getGcpAccessToken } from '@/lib/google-auth-edge';
 import { buildVertexEndpoint } from '@/lib/vertex-endpoint';
+import { refineIntakeFields } from '@/services/intake';
 import type { ConversationMessage } from '../types';
 
 /**
@@ -276,6 +277,32 @@ async function callOpenRouter(
   return text ? parseJsonFromText(text) : null;
 }
 
+/**
+ * Type placement, style dimensions, and axis ambiguity when TYPESAFE_INTAKE
+ * is on. Subject, characters, meaning, and the reply stay on the Gemini
+ * payload. A low-confidence placement is cleared so the engine's existing
+ * ask (placement gate, stalled-field question) fires; low-confidence style
+ * tags are dropped the same way. Flag off, or any TypeSafe failure, leaves
+ * the payload exactly as Gemini parsed it.
+ */
+async function overlayTypesafeIntake(
+  payload: RawTurnPayload,
+  messages: ConversationMessage[]
+): Promise<void> {
+  const subject = typeof payload.record?.subject === 'string' ? payload.record.subject : '';
+  const typed = await refineIntakeFields({
+    state: messages.map((message) => `${message.role}: ${message.text}`).join('\n'),
+    subject,
+  });
+  if (!typed) return;
+
+  const record = payload.record ?? {};
+  payload.record = record;
+  record.placement = typed.placement ?? '';
+  record.styleTags = typed.styleTags;
+  record.ambiguousAxes = typed.ambiguousAxes;
+}
+
 /* ──────────────────────────────────────────────────────────────────────────
  * Chain
  * ────────────────────────────────────────────────────────────────────────── */
@@ -343,7 +370,16 @@ export async function converseWithProviders(opts: {
     } else {
       try {
         const payload = await provider.call(opts.systemPrompt, opts.messages);
-        if (payload) return { payload, model: provider.model };
+        if (payload) {
+          try {
+            await overlayTypesafeIntake(payload, opts.messages);
+          } catch {
+            // A surprise here must not discard a turn Gemini already parsed.
+            // The key and the brief stay out of the log.
+            console.warn('[IntakeExtraction] TypeSafe failed (error), using Gemini extraction');
+          }
+          return { payload, model: provider.model };
+        }
         attempt = {
           provider: provider.name,
           model: provider.model,

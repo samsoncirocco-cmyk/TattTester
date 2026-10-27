@@ -90,6 +90,7 @@ Single source of truth: `src/config/envSchema.js` (name, type, required/optional
 - `SHOW_UNCLAIMED_PORTFOLIOS` — controls public rendering of unclaimed portfolio images; never assume its production value.
 - `STRIPE_SECRET_KEY` — Stripe routes fail closed (503) when unset or placeholder.
 - `CRON_SECRET` — bearer secret guarding `/api/cron/expire-deposits`.
+- `TYPESAFE_INTAKE=false` — placement, style-dimension, and axis-ambiguity extraction stays on Gemini unless this is `true`. Missing `TYPESAFE_API_KEY`, timeout (`TYPESAFE_TIMEOUT_MS`, default 8000), or any TypeSafe error keeps that Gemini path. Subject and characters stay on Gemini either way. The key is never logged.
 
 ## Booking & Payments (gotcha summary)
 

@@ -2,13 +2,17 @@
 // Everything under internal/ is implementation detail — import only from here.
 //
 // Intake is the fixed two-question conversational opening of a design
-// session. The only operation callers need is "extract a structured record
-// from the two answers" — provider selection (Vertex Gemini → OpenRouter →
-// deterministic heuristic), ontology loading, alias resolution, and
-// ambiguity detection are all private. Style tags in the result are
-// guaranteed to be canonical ids from the closed style ontology; meaning is
-// the user's answer kept verbatim as prose for the artist brief.
+// session. Callers extract a structured record from the two answers —
+// provider selection (Vertex Gemini → OpenRouter → deterministic
+// heuristic), ontology loading, alias resolution, and ambiguity detection
+// stay private. `refineIntakeFields` is the TypeSafe overlay the design
+// conversation applies to Gemini's parsed turn: placement, style
+// dimensions, and axis ambiguity only. Style tags in the result are
+// canonical ids from the closed style ontology; meaning is the user's
+// answer kept verbatim as prose for the artist brief.
 import { extractIntakeRecord } from './internal/extractionService';
+export { refineIntakeFields } from './internal/typesafeExtraction';
+export type { TypedIntakeFields } from './internal/typesafeExtraction';
 export {
   charactersIn,
   characterLabelFor,
