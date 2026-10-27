@@ -229,6 +229,30 @@ describe('guess-first intake (spec 17)', () => {
     );
   });
 
+  it('the assumption read back by the model is not a placement the customer named', async () => {
+    process.env.DESIGN_INTAKE_GUESS_FIRST = 'true';
+    modelReturns({ ...VAGUE_PAYLOAD, record: { ...VAGUE_PAYLOAD.record, placement: DEFAULT_PLACEMENT } });
+    const guessLog: TurnLog = {
+      turn: 1,
+      confidence: 0.4,
+      missingFields: ['placement'],
+      firedRule: 'guess-first-proposal',
+      model: 'gemini-test',
+      assumedPlacement: DEFAULT_PLACEMENT,
+    };
+    const messages: ConversationMessage[] = [
+      ...firstTurn('something for my grandma, maybe flowers'),
+      { role: 'bot', text: `i'm assuming it goes on your ${DEFAULT_PLACEMENT}.` },
+      { role: 'user', text: 'make it bolder' },
+    ];
+    const result = await runTurn({ messages, userTurn: 2, previousTurnLogs: [guessLog] });
+
+    expect(result.turnLog.assumedPlacement).toBe(DEFAULT_PLACEMENT);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ event_type: GUESS_FIRST_EDITED_EVENT, placement_named: false })
+    );
+  });
+
   it('a placement named after the guess replaces the assumption', async () => {
     process.env.DESIGN_INTAKE_GUESS_FIRST = 'true';
     modelReturns({ ...VAGUE_PAYLOAD, record: { ...VAGUE_PAYLOAD.record, placement: 'ribs' } });
