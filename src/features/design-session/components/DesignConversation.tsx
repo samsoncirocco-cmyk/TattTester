@@ -21,7 +21,10 @@ import { CREDITS_EXHAUSTED_CODE } from '@/lib/generation-credits-shared';
 import { useAuthStore } from '@/store/useAuthStore';
 import { refreshCreditBalance } from '../services/creditBalance';
 import { BuyCreditsLink, CreditCountLine } from './CreditBalance';
-import { GeneratingBeat, REVEAL_BEAT_LINES } from './GeneratingBeat';
+import { REVEAL_BEAT_LINES } from './GeneratingBeat';
+import { RenderProgress } from './RenderProgress';
+import { previewFrom, usePreviewPoll } from '../services/renderPreview';
+import type { Variation } from '@/services/designSession/types';
 import type { SessionRendering } from '@/services/designSession/resumeContract';
 import {
   LOST_RENDER_LINE,
@@ -146,6 +149,11 @@ export function DesignConversation({
   const [resumeNotice, setResumeNotice] = useState<string | null>(null);
   const [awaitingReveal, setAwaitingReveal] = useState(false);
   const [resumeRendering, setResumeRendering] = useState<SessionRendering | undefined>();
+  // Spec 9: when the reveal's wait began (the confirm tap, or the claim's
+  // `since` after a reload) and the cuts that already landed while it runs.
+  const [revealStartedAt, setRevealStartedAt] = useState<number | null>(null);
+  const [resumePreview, setResumePreview] = useState<Variation[]>([]);
+  const livePreview = usePreviewPoll(sessionId, revealStartedAt !== null && !awaitingReveal);
   const uid = useAuthStore((s) => s.user?.uid);
 
   // Spec 8: a signed-in customer sees what they have left. One read when
@@ -163,6 +171,7 @@ export function DesignConversation({
     setPending(true);
 
     if (action.kind === 'confirm') {
+      setRevealStartedAt(Date.now());
       confirmProposal(sessionId!)
         .then((session) => {
           setRevealSession(session);
@@ -178,7 +187,10 @@ export function DesignConversation({
           );
           setError(err instanceof Error ? err.message : 'Something snapped — try again.');
         })
-        .finally(() => setPending(false));
+        .finally(() => {
+          setPending(false);
+          setRevealStartedAt(null);
+        });
       return;
     }
 
@@ -201,6 +213,7 @@ export function DesignConversation({
         // the promise keeps `pending` true until the renders land.
         if (response.stage === 'proposal' && response.turn === 1) {
           setLastAction({ kind: 'confirm' });
+          setRevealStartedAt(Date.now());
           return confirmProposal(response.sessionId).then((session) => {
             setRevealSession(session);
             setMode('reveal');
@@ -224,7 +237,10 @@ export function DesignConversation({
         );
         setError(err instanceof Error ? err.message : 'Something snapped — try again.');
       })
-      .finally(() => setPending(false));
+      .finally(() => {
+        setPending(false);
+        setRevealStartedAt(null);
+      });
   };
 
   /** A missing or foreign session: say so once, drop `ds`, open fresh. */
@@ -245,13 +261,18 @@ export function DesignConversation({
     const { session, resume } = result;
     if (session.phase !== 'intake') {
       setAwaitingReveal(false);
+      setRevealStartedAt(null);
       setRevealSession(session);
       setMode('reveal');
       return;
     }
     const rendering = resume?.rendering;
-    if (rendering && !rendering.stale) return;
+    if (rendering && !rendering.stale) {
+      setResumePreview(previewFrom(result));
+      return;
+    }
     setAwaitingReveal(false);
+    setRevealStartedAt(null);
     setLastAction({ kind: 'confirm' });
     setError(rendering?.stale ? LOST_RENDER_LINE : RENDER_DID_NOT_LAND_LINE);
   };
@@ -283,6 +304,8 @@ export function DesignConversation({
           return;
         }
         if (resume.rendering && !resume.rendering.stale) {
+          setRevealStartedAt(Date.parse(resume.rendering.since) || Date.now());
+          setResumePreview(previewFrom(result));
           setAwaitingReveal(true);
           return;
         }
@@ -471,12 +494,25 @@ export function DesignConversation({
         </Link>
       )}
 
-      {pending && <ThinkingLine label="Typing" />}
+      {/* Spec 9: a reveal in flight counts up and shows the first cut the
+          moment it lands; any other request is just the typing line. */}
+      {pending && revealStartedAt !== null && (
+        <RenderProgress
+          lines={REVEAL_BEAT_LINES}
+          startedAt={revealStartedAt}
+          preview={livePreview}
+        />
+      )}
+      {pending && revealStartedAt === null && <ThinkingLine label="Typing" />}
 
       {awaitingReveal && (
         <>
           <ChatBubble role="bot">{STILL_DRAWING_LINE}</ChatBubble>
-          <GeneratingBeat lines={REVEAL_BEAT_LINES} />
+          <RenderProgress
+            lines={REVEAL_BEAT_LINES}
+            startedAt={revealStartedAt ?? undefined}
+            preview={resumePreview}
+          />
         </>
       )}
 

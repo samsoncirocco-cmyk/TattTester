@@ -7,6 +7,7 @@ import type {
   ConversationStage,
   SessionNotes,
 } from '../designConversation/types';
+import type { Variation } from './types';
 
 /**
  * The header a signed-out browser sends to prove it created the session.
@@ -24,6 +25,12 @@ export interface SessionRendering {
   kind: 'reveal' | 'round';
   since: string;
   stale: boolean;
+  /**
+   * Cuts of this render that already landed (spec 9), in landing order,
+   * with the ids the final cuts will carry. Shown, never pickable: the
+   * pick is between two. Absent until a cut lands and on a stale claim.
+   */
+  preview?: Variation[];
 }
 
 /**

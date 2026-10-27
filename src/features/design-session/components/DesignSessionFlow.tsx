@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { DesignSession } from '@/services/designSession/types';
+import type { DesignSession, Variation } from '@/services/designSession/types';
 import { refineInviteLine } from '@/services/designSession/roundPlan';
 import { settledAxes } from '@/services/intake/settledAxes';
 import type { ConversationMessage } from '@/services/designConversation';
@@ -30,6 +30,8 @@ import { ChatInput } from './ChatInput';
 import { ThinkingLine } from './ThinkingLine';
 import { GeneratingBeat, REVEAL_BEAT_LINES, REFINE_BEAT_LINES } from './GeneratingBeat';
 import { RevealGrid, type RevealMode } from './RevealGrid';
+import { RenderProgress } from './RenderProgress';
+import { previewFrom, usePreviewPoll } from '../services/renderPreview';
 import { RefinementPrompt } from './RefinementPrompt';
 import { HandoffCard } from './HandoffCard';
 import { PlacementPreview } from './PlacementPreview';
@@ -135,6 +137,18 @@ export function DesignSessionFlow({
   const [awaitingRound, setAwaitingRound] = useState(
     resumeRendering?.kind === 'round' && !resumeRendering.stale
   );
+  // Spec 9: when the current wait began (a resumed round counts from its
+  // claim), and the round cuts that already landed while it renders.
+  const [waitStartedAt, setWaitStartedAt] = useState<number | undefined>(() =>
+    resumeRendering?.kind === 'round' && !resumeRendering.stale
+      ? Date.parse(resumeRendering.since) || undefined
+      : undefined
+  );
+  const [resumePreview, setResumePreview] = useState<Variation[]>(
+    resumeRendering?.kind === 'round' && !resumeRendering.stale
+      ? (resumeRendering.preview ?? [])
+      : []
+  );
   const [placementAnswer, setPlacementAnswer] = useState('');
   const [meaningAnswer, setMeaningAnswer] = useState('');
   const [session, setSession] = useState<DesignSession | null>(initialSession ?? null);
@@ -171,7 +185,10 @@ export function DesignSessionFlow({
   const settleRound = (result: ResumeFetchResult) => {
     if (result.status !== 'found') return;
     const rendering = result.resume?.rendering;
-    if (rendering && !rendering.stale) return;
+    if (rendering && !rendering.stale) {
+      setResumePreview(previewFrom(result));
+      return;
+    }
     const landed = (result.session.rounds?.length ?? 0) > (session?.rounds?.length ?? 0);
     setAwaitingRound(false);
     setSession(result.session);
@@ -179,12 +196,17 @@ export function DesignSessionFlow({
     if (!landed) setRoundNotice(rendering?.stale ? LOST_RENDER_LINE : RENDER_DID_NOT_LAND_LINE);
   };
   useSessionPoll(session?.id, awaitingRound, settleRound);
+  const liveRoundPreview = usePreviewPoll(
+    session?.id,
+    step === 'rounding' && !awaitingRound && !error
+  );
 
   const runAction = (action: SessionAction) => {
     setError(null);
     setErrorCode(null);
     setLastAction(action);
     setRoundNotice(null);
+    setWaitStartedAt(Date.now());
 
     let call: Promise<DesignSession>;
     let nextStep: FlowStep;
@@ -349,7 +371,12 @@ export function DesignSessionFlow({
           axisSelection.rationale is an internal audit log (ADR-0012) and
           must never render as a chat message. */}
       {(step === 'starting' || step === 'rounding') && !error && (
-        <GeneratingBeat lines={REVEAL_BEAT_LINES} />
+        <RenderProgress
+          lines={REVEAL_BEAT_LINES}
+          startedAt={waitStartedAt}
+          preview={awaitingRound ? resumePreview : liveRoundPreview}
+          indexOffset={session?.variations.length ?? 0}
+        />
       )}
       {showGrid && session && (
         <>
@@ -420,7 +447,9 @@ export function DesignSessionFlow({
           />
         </>
       )}
-      {step === 'refining' && !error && <GeneratingBeat lines={REFINE_BEAT_LINES} />}
+      {step === 'refining' && !error && (
+        <GeneratingBeat lines={REFINE_BEAT_LINES} startedAt={waitStartedAt} />
+      )}
 
       {/* The critique lane (ADR-0039): the chat survives the reveal, so plain
           criticism re-cuts the design instead of being discarded. Re-cuts

@@ -46,6 +46,7 @@ import { observeRenderedImage } from '@/lib/observeRender';
 import { referenceImagePaths } from './references';
 import { deleteReferencePhotos, signedReferenceUrls } from './referencePhotos';
 import { recordImageSpend } from './spend';
+import { landPreviewCut, type PreviewTarget } from './preview';
 import {
   allCuts,
   cutLabel,
@@ -426,7 +427,11 @@ async function renderDurably(
  */
 export async function startFromRecord(
   intake: IntakeRecord,
-  base?: StoredSession
+  base?: StoredSession,
+  // The reveal's claim (spec 9): each cut that lands is recorded on it so a
+  // polling client can show the first cut before the second finishes.
+  // Absent on the legacy scripted start, which claims no slot.
+  opts?: { claimId?: string }
 ): Promise<StoredSession> {
   const store = resolveSessionStore();
   const enhanced = await enhanceStructured(intake);
@@ -460,6 +465,8 @@ export async function startFromRecord(
   const demo = isDemoMode();
   const now = new Date().toISOString();
   const shell = base ?? { id: randomUUID(), createdAt: now };
+  const preview: PreviewTarget | undefined =
+    !demo && opts?.claimId ? { store, sessionId: shell.id, claimId: opts.claimId } : undefined;
 
   // Settled in a finally: a render that succeeded before a sibling threw was
   // still paid for. allSettled (rather than all) so every in-flight render is
@@ -499,13 +506,17 @@ export async function startFromRecord(
             referencePaths
           );
         }
-        return {
+        const variation: Variation = {
           id,
           axisPosition: structured.axisPosition as Record<string, string>,
           prompt,
           negativePrompt: structured.negativePrompt,
           imageUrl,
         };
+        // Durable and post-guard by now: renderDurably returns only once the
+        // copy is in our bucket and the text guard has had its re-roll.
+        await landPreviewCut(preview, variation);
+        return variation;
       })
     );
     const failure = results.find(result => result.status === 'rejected');
@@ -803,7 +814,7 @@ export async function refineRound(
 
   const claim = await claimRoundSlot(store, session.id, opts?.reservationId);
   try {
-    return await runClaimedRound(store, session, live, picked);
+    return await runClaimedRound(store, session, live, picked, claim.id);
   } catch (error) {
     await releaseRoundSlot(store, session.id, claim.id);
     throw error;
@@ -915,7 +926,8 @@ async function runClaimedRound(
   store: SessionStore,
   session: StoredSession,
   live: RefineRound,
-  picked: Variation
+  picked: Variation,
+  claimId: string
 ): Promise<RefineRoundOutcome> {
   // Every pole picked so far, in round order — the next round holds all of
   // them (ADR-0049). Read off each picked cut's own axisPosition, so a
@@ -943,7 +955,11 @@ async function runClaimedRound(
   ) as RoundSpread['axis'];
   const enhanced = await enhanceRound(session.intake, { roundNumber, axis, lockedPoles });
 
-  const { cuts, downgradeReason } = await renderRoundCuts(session, enhanced, picked);
+  const { cuts, downgradeReason } = await renderRoundCuts(session, enhanced, picked, undefined, {
+    store,
+    sessionId: session.id,
+    claimId,
+  });
 
   // Both cuts delivered: NOW the previous pick freezes (ADR-0049 — a pick
   // is changeable until the next round is charged, and a failed round above
@@ -987,9 +1003,12 @@ async function renderRoundCuts(
   // absent when nothing was ever picked.
   leadCut?: Variation,
   // Optional customer freetext threaded into both prompts (re-roll only).
-  hint?: string
+  hint?: string,
+  // The round's claim (spec 9): each landed cut is previewed on it.
+  previewTarget?: PreviewTarget
 ): Promise<{ cuts: Variation[]; downgradeReason?: string }> {
   const demo = isDemoMode();
+  const preview = demo ? undefined : previewTarget;
   const baseIndex = session.variations.length;
   // Settled in a finally, same as the reveal: a render that succeeded before
   // a sibling threw was still paid for.
@@ -1059,13 +1078,17 @@ async function renderRoundCuts(
             inputPaths
           );
         }
-        return {
+        const variation: Variation = {
           id,
           axisPosition: structured.axisPosition as Record<string, string>,
           prompt,
           negativePrompt: structured.negativePrompt,
           imageUrl,
         };
+        // Preview entries ARE the final entries: nothing re-renders a cut
+        // after this point, so a downgrade never replaces a landed cut.
+        await landPreviewCut(preview, variation);
+        return variation;
       })
     );
     const failure = results.find(result => result.status === 'rejected');
@@ -1140,7 +1163,7 @@ export async function rerollRound(
 
   const claim = await claimRoundSlot(store, session.id, opts?.reservationId);
   try {
-    return await runClaimedReroll(store, session, rejected, opts?.hint);
+    return await runClaimedReroll(store, session, rejected, claim.id, opts?.hint);
   } catch (error) {
     await releaseRoundSlot(store, session.id, claim.id);
     throw error;
@@ -1152,6 +1175,7 @@ async function runClaimedReroll(
   store: SessionStore,
   session: StoredSession,
   rejected: RefineRound,
+  claimId: string,
   hint?: string
 ): Promise<RefineRoundOutcome> {
   const rounds = session.rounds ?? [];
@@ -1181,7 +1205,11 @@ async function runClaimedReroll(
     ? session.variations.find(variation => variation.id === prior.pickedId)
     : undefined;
 
-  const { cuts, downgradeReason } = await renderRoundCuts(session, enhanced, leadCut, hint);
+  const { cuts, downgradeReason } = await renderRoundCuts(session, enhanced, leadCut, hint, {
+    store,
+    sessionId: session.id,
+    claimId,
+  });
 
   const now = new Date().toISOString();
   // The rejection unrecords any stray pick: no pick may stand on the
