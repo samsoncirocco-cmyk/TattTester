@@ -112,3 +112,27 @@ export function currentRound(rounds: RefineRound[] | undefined): RefineRound | u
 export function isLadderAxis(axis: string): axis is VariationAxis {
   return (ROUND_AXIS_LADDER as readonly string[]).includes(axis);
 }
+
+/**
+ * What moved between rounds (spec 10), said before the new pair:
+ * "kept: fine-line. now splitting: full-color vs blackwork." The kept part
+ * is the pole picked on the previous round's axis; with no pick there (the
+ * set was rejected and re-rolled) the line says it is a new set instead.
+ * Pure, so the web flow and any later channel speak the same sentence.
+ */
+export function roundChangeLine(opts: {
+  /** Whether the previous round had a pick this round builds on. */
+  picked: boolean;
+  /** That pick's pole on the previous round's axis, when it was a ladder axis. */
+  keptPole?: string;
+  /** The axis the new round spreads on. */
+  axis: string;
+}): string {
+  const now =
+    isLadderAxis(opts.axis)
+      ? `now splitting: ${roundAxisLabel(opts.axis)}.`
+      : `now: ${roundAxisLabel(opts.axis)}.`;
+  if (!opts.picked) return `changed: new set on the same direction. ${now}`;
+  if (!opts.keptPole) return `kept: your pick. ${now}`;
+  return `kept: ${ROUND_POLE_LABEL[opts.keptPole] ?? opts.keptPole}. ${now}`;
+}

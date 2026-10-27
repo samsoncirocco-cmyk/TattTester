@@ -83,6 +83,8 @@ import {
   UNTRANSLATED_LOOK_LINE,
   WHICH_CUT_LINE,
   fixLandedLine,
+  changedLine,
+  rerollChangedLine,
   fixesLeftLine,
   rerollLandedLine,
   wrongRenderLine,
@@ -1645,6 +1647,7 @@ export async function critique(
     const refunded = outcome.downgraded ? await release() : false;
     const charged = Boolean(reservation) && !refunded;
     const reply = [
+      rerollChangedLine(styleHint),
       rerollLandedLine(roundAxisLabel(outcome.round.axis), charged),
       ...(outcome.downgraded
         ? [refunded ? REROLL_DOWNGRADED_REFUNDED_NOTE : REROLL_DOWNGRADED_NOTE]
@@ -1974,8 +1977,12 @@ export async function critique(
   // for every re-cut, because `cutLabel` searched the reveal cuts only: the
   // one vocabulary this lane is supposed to share with the grid, unshared.
   const targetName = cutLabel(session, target);
+  // Spec 10: a landed fix says what changed first, in the customer's words.
+  // A wrong-render rebuild does not: "that" is their description of our
+  // mistake, which this turn deliberately kept out of the prompt.
+  const changed = intent.reading === 'regenerate' ? null : changedLine(critiqueTexts);
   const settled = await settle(
-    `${
+    `${changed ? `${changed} ` : ''}${
       intent.reading === 'regenerate'
         ? wrongRenderLine(targetName)
         : fixLandedLine(targetName)

@@ -11,7 +11,7 @@ import { parseBinaryChoices } from '../components/RefinementPrompt';
 // axisSelection.rationale is an internal audit log (ADR-0012) and must
 // never render in the chat.
 const REVEAL_NARRATION =
-  'I split these two on line weight — your pick tells me which way to lean.';
+  'For your inner forearm, I split these two on line weight — your pick tells me which way to lean.';
 
 // The fetch client attaches Firebase bearer auth (matching the API routes'
 // verifyApiAuth gate); stub it so tests need no signed-in user.
@@ -297,6 +297,9 @@ describe('DesignSessionFlow', () => {
       expect(screen.getByRole('button', { name: /^Pick design 4 / })).toBeTruthy();
       // Round two has no pick yet — no invite, no charged button.
       expect(screen.queryByRole('button', { name: 'Refine — 1 credit' })).toBeNull();
+      // Spec 10: the new pair opens by saying what was kept and what moves.
+      expect(screen.getByText('kept: fine-line. now splitting: literal vs abstract.')).toBeTruthy();
+      expect(screen.queryByText(REVEAL_NARRATION)).toBeNull();
     });
 
     it('lets the pick change until the round is charged', async () => {
