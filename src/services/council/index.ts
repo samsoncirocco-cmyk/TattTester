@@ -46,6 +46,11 @@ export interface CouncilEnhanceRequest {
 export interface CouncilEnhanceResult {
   prompts: { simple?: string; detailed?: string; ultra?: string };
   negativePrompt?: string;
+  /**
+   * Set when the TypeSafe judge stayed unsure after one regeneration.
+   * Callers that do not read it still receive the better draft.
+   */
+  clarifyingQuestion?: string;
   metadata?: Record<string, unknown>;
   [key: string]: unknown;
 }

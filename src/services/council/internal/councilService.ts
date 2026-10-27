@@ -10,11 +10,18 @@
    internals is deliberately out of scope for the move. */
 
 import { buildCharacterMap, getAllCharacterNames } from '../../../config/characterDatabase.js';
+import { envString } from '@/config/envSchema';
 import { selectModelWithFallback, getModelPromptEnhancements } from '../../../utils/styleModelMapping.js';
 import { COUNCIL_SKILL_PACK } from '../../../config/councilSkillPack';
 import { resolvePlacement } from '@/lib/placement';
 import { getGcpAccessToken } from '@/lib/google-auth-edge';
 import { logEvent } from '@/lib/observability';
+import {
+  isTypesafeCouncilEnabled,
+  redactSecret,
+  tryTypedCouncil,
+  type GeneratedDraft,
+} from './typesafeJudge';
 
 const COUNCIL_API_URL = process.env.NEXT_PUBLIC_COUNCIL_API_URL || process.env.COUNCIL_API_URL;
 const DEMO_MODE = process.env.NEXT_PUBLIC_COUNCIL_DEMO_MODE === 'true' || process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
@@ -116,6 +123,13 @@ const PROJECT_ID = process.env.NEXT_PUBLIC_VERTEX_AI_PROJECT_ID || process.env.G
 const REGION = process.env.GCP_REGION || 'us-central1';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
+/**
+ * Legacy serial council, used only when TYPESAFE_COUNCIL is off or TypeSafe
+ * errors, times out, or has no key. These model ids are outdated on purpose:
+ * rollback has to be the path that already shipped. The typed path drafts
+ * once with COUNCIL_GENERATOR_MODEL (default google/gemini-2.5-flash) or
+ * with GEMINI_MODEL on Vertex.
+ */
 const COUNCIL_MEMBERS = {
   creative: {
     model: 'anthropic/claude-3.5-sonnet',
@@ -136,6 +150,10 @@ const COUNCIL_MEMBERS = {
     estimatedCostUsd: 0.02
   }
 };
+
+function councilGeneratorModel(): string {
+  return envString('COUNCIL_GENERATOR_MODEL') || 'google/gemini-2.5-flash';
+}
 
 const CHARACTER_MAP = buildCharacterMap() as Record<string, string>;
 const CHARACTER_NAMES = getAllCharacterNames() as string[];
@@ -481,7 +499,7 @@ function buildCouncilSystemPrompt({ bodyPart, isStencilMode }: { bodyPart: strin
   ].join('\n');
 }
 
-async function callOpenRouter(model: string, systemPrompt: string, userPrompt: string) {
+async function callOpenRouter(model: string, systemPrompt: string, userPrompt: string, maxTokens = 500) {
   if (!OPENROUTER_API_KEY) {
     throw new Error('OPENROUTER_API_KEY not configured in environment variables');
   }
@@ -501,7 +519,7 @@ async function callOpenRouter(model: string, systemPrompt: string, userPrompt: s
         { role: 'user', content: userPrompt }
       ],
       temperature: 0.7,
-      max_tokens: 500
+      max_tokens: maxTokens
     })
   });
 
@@ -651,7 +669,8 @@ async function enhancePromptWithVertexAI({
   bodyPart = 'forearm',
   onDiscussionUpdate = null,
   isStencilMode = false,
-  requestId
+  requestId,
+  revisionNotes = ''
 }: any) {
   if (onDiscussionUpdate) {
     setTimeout(() => onDiscussionUpdate('Gemini AI: Analyzing your tattoo concept...'), 300);
@@ -696,7 +715,7 @@ Return as JSON:
     body: JSON.stringify({
       contents: [{
         role: 'user',
-        parts: [{ text: `${systemPrompt}\n\nUser Idea: ${userIdea}` }]
+        parts: [{ text: `${systemPrompt}\n\nUser Idea: ${userIdea}${revisionNotes ? `\n\nRevise the draft. Fix these problems and do not add lettering or real people the user did not name:\n${revisionNotes}` : ''}` }]
       }],
       generationConfig: {
         responseMimeType: 'application/json'
@@ -771,6 +790,93 @@ export function resolveVertexProjectId(): string | null {
   return null;
 }
 
+/**
+ * One current-model draft: simple, detailed, ultra, and the negative prompt.
+ * Vertex Gemini when that lane is on and configured; otherwise a single
+ * OpenRouter call to COUNCIL_GENERATOR_MODEL. Never the legacy trio.
+ */
+async function generateSingleDraft({
+  userIdea,
+  style,
+  bodyPart,
+  isStencilMode,
+  requestId,
+  revisionNotes
+}: {
+  userIdea: string;
+  style: string;
+  bodyPart: string;
+  isStencilMode: boolean;
+  requestId: string;
+  revisionNotes?: string;
+}): Promise<GeneratedDraft> {
+  const useVertex = (process.env.COUNCIL_VERTEX_AI_ENABLED ?? process.env.NEXT_PUBLIC_VERTEX_AI_ENABLED) !== 'false';
+  if (useVertex && isVertexAIConfigured()) {
+    const result = await enhancePromptWithVertexAI({
+      userIdea,
+      style,
+      bodyPart,
+      onDiscussionUpdate: null,
+      isStencilMode,
+      requestId,
+      revisionNotes
+    });
+    return {
+      prompts: {
+        simple: result.prompts.simple,
+        detailed: result.prompts.detailed,
+        ultra: result.prompts.ultra
+      },
+      negativePrompt: result.negativePrompt || '',
+      generator: 'vertex',
+      generatorModel: GEMINI_MODEL
+    };
+  }
+
+  if (!isOpenRouterConfigured()) {
+    throw new Error('No single council generator is configured');
+  }
+
+  const councilSystemPrompt = buildCouncilSystemPrompt({ bodyPart, isStencilMode });
+  const flowToken = resolvePlacement(bodyPart).flow;
+  const stencilHint = isStencilMode ? 'Stencil mode: prioritize clean, high-contrast linework.' : '';
+  const revisionBlock = revisionNotes
+    ? `\n\nProblems to fix:\n${revisionNotes}`
+    : '';
+  const content = await callOpenRouter(
+    councilGeneratorModel(),
+    `${councilSystemPrompt}\nYou draft one tattoo prompt. Return JSON only. Do not role-play a panel of experts.`,
+    `Write one tattoo prompt set for ${style} style on ${bodyPart}.
+
+User request: "${userIdea}"
+Flow guidance: "${flowToken}"
+${stencilHint}${revisionBlock}
+
+Return JSON:
+{
+  "simple": "one sentence",
+  "detailed": "two or three sentences",
+  "ultra": "four or five sentences",
+  "negativePrompt": "comma-separated things to avoid"
+}`,
+    900
+  );
+  const parsed = parseJsonFromText(content);
+  if (!parsed?.simple || !parsed?.detailed || !parsed?.ultra) {
+    throw new Error('Failed to parse council generator response');
+  }
+  return {
+    prompts: {
+      simple: String(parsed.simple),
+      detailed: String(parsed.detailed),
+      ultra: String(parsed.ultra)
+    },
+    negativePrompt: String(parsed.negativePrompt || ''),
+    generator: 'openrouter',
+    generatorModel: councilGeneratorModel()
+  };
+}
+
 function isVertexAIConfigured() {
   const credJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON || process.env.GCP_SERVICE_ACCOUNT_KEY;
   const credPair = process.env.GCP_SERVICE_ACCOUNT_EMAIL && process.env.GCP_PRIVATE_KEY;
@@ -806,7 +912,7 @@ export async function enhancePrompt({
     userIdea,
     style,
     bodyPart,
-    complexity: String(resolvedStencilMode)
+    complexity: `${resolvedStencilMode}|ts:${isTypesafeCouncilEnabled() ? '1' : '0'}`
   });
   if (!DEMO_MODE) {
     const cached = cacheGet(cKey);
@@ -833,6 +939,53 @@ export async function enhancePrompt({
     bodyPart,
     stencil: resolvedStencilMode
   });
+
+  if (!DEMO_MODE) {
+    try {
+      if (isTypesafeCouncilEnabled()) {
+        const typed = await tryTypedCouncil({
+          requestId,
+          userIdea,
+          style,
+          bodyPart,
+          isStencilMode: resolvedStencilMode,
+          onDiscussionUpdate,
+          generateDraft: async (revisionNotes) => {
+            const raw = await generateSingleDraft({
+              userIdea,
+              style,
+              bodyPart,
+              isStencilMode: resolvedStencilMode,
+              requestId,
+              revisionNotes
+            });
+            const hardened = applyCouncilSkillPack(
+              raw.prompts,
+              raw.negativePrompt,
+              { bodyPart, isStencilMode: resolvedStencilMode, characterMatches }
+            );
+            return {
+              prompts: {
+                simple: hardened.prompts.simple,
+                detailed: hardened.prompts.detailed,
+                ultra: hardened.prompts.ultra
+              },
+              negativePrompt: hardened.negativePrompt,
+              generator: raw.generator,
+              generatorModel: raw.generatorModel
+            };
+          }
+        });
+        if (typed) {
+          cacheSet(cKey, typed);
+          return typed;
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[CouncilService] Typed council unavailable, using legacy path:', redactSecret(message, process.env.TYPESAFE_API_KEY));
+    }
+  }
 
   const USE_VERTEX_AI = (process.env.COUNCIL_VERTEX_AI_ENABLED ?? process.env.NEXT_PUBLIC_VERTEX_AI_ENABLED) !== 'false';
   if (USE_VERTEX_AI && !DEMO_MODE) {

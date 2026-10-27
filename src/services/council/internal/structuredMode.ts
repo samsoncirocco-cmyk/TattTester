@@ -6,8 +6,10 @@
  * two cuts spread on one axis per round). With structured input the
  * Council's job shifts from interpretation to axis differentiation
  * (ADR-0012), so construction is fully template-based and works offline —
- * no LLM/provider call is made. The classic `enhance()` path and its
- * provider fallbacks are untouched.
+ * no generative model is called. When TYPESAFE_COUNCIL is on, each draft
+ * is judged with one TypeSafe call; a judge error leaves the template
+ * result unchanged. The classic `enhance()` path and its provider
+ * fallbacks are untouched.
  */
 
 import type {
@@ -21,12 +23,27 @@ import { sessionPalette, settledAxes } from '../../intake/settledAxes';
 import type { Palette } from '../../intake/settledAxes';
 import { getBaseNegativePrompt, validatePromptLength } from './councilService';
 import { resolvePlacement } from '@/lib/placement';
+import {
+  isTypesafeCouncilEnabled,
+  judgeStructuredVariations,
+  typesafeApiKey,
+} from './typesafeJudge';
 
 export interface StructuredVariation {
   /** Which quadrant this variation occupies (questionnaire mode) or which compositional treatment it uses. */
   axisPosition: Record<string, string> | { composition: string };
   prompts: { simple?: string; detailed?: string; ultra?: string };
   negativePrompt?: string;
+  /** Set when TYPESAFE_COUNCIL judged the draft and still was not sure. */
+  clarifyingQuestion?: string;
+  /** Image model from the TypeSafe Choice, or the rules table when that choice is weak. */
+  modelSelection?: {
+    modelId: string;
+    modelName: string;
+    reasoning: string;
+    isFallback: boolean;
+    source?: string;
+  };
 }
 
 export interface StructuredEnhanceResult {
@@ -746,10 +763,48 @@ function compositionalPair(
   return pool.slice(offset, offset + 2);
 }
 
+async function applyTypedJudges(
+  variations: StructuredVariation[],
+  record: IntakeRecord
+): Promise<StructuredVariation[]> {
+  try {
+    if (!isTypesafeCouncilEnabled() || !typesafeApiKey()) return variations;
+    const judged = await judgeStructuredVariations(variations, {
+      requestId: `structured_${Date.now()}`,
+      userRequest: [record.subject, record.meaning].filter(Boolean).join('. '),
+      style: record.styleTags.join(', ') || 'unspecified',
+      bodyPart: record.placement || 'unspecified',
+    });
+    return judged.map((entry, index) => {
+      const base = variations[index];
+      if (entry.fellBack) return base;
+      return {
+        ...base,
+        prompts: entry.draft.prompts,
+        negativePrompt: entry.draft.negativePrompt,
+        clarifyingQuestion: entry.clarifyingQuestion,
+        modelSelection: entry.modelSelection
+          ? {
+              modelId: entry.modelSelection.modelId,
+              modelName: entry.modelSelection.modelName,
+              reasoning: entry.modelSelection.reasoning,
+              isFallback: entry.modelSelection.isFallback,
+              source: entry.modelSelection.source,
+            }
+          : undefined,
+      };
+    });
+  } catch (error) {
+    console.error('[CouncilStructured] TypeSafe judge unavailable, keeping template drafts:', error instanceof Error ? error.message : error);
+    return variations;
+  }
+}
+
 /**
  * Structured-input enhancement (ADR-0015): the first round's two
- * axis-divergent variations from an intake record (ADR-0049). Pure template
- * construction — never calls a provider.
+ * axis-divergent variations from an intake record (ADR-0049). Template
+ * construction does not call a generative model. TypeSafe judges run only
+ * when TYPESAFE_COUNCIL is on.
  */
 export async function enhanceStructured(
   record: IntakeRecord,
@@ -777,7 +832,11 @@ export async function enhanceStructured(
     );
   }
 
-  return { variations, axisSelection, metadata: resultMetadata(record) };
+  return {
+    variations: await applyTypedJudges(variations, record),
+    axisSelection,
+    metadata: resultMetadata(record),
+  };
 }
 
 /** One later round's spread (see enhanceRoundStructured). */
@@ -800,7 +859,7 @@ export interface RoundSpread {
  * One REFINE round's two variations (ADR-0049): spread on the round's axis
  * while holding every previously picked pole; a 'reroll' round holds the
  * locked poles and draws twice. Same template machinery as the first
- * round — never calls a provider.
+ * round. TypeSafe judges run only when TYPESAFE_COUNCIL is on.
  */
 export async function enhanceRoundStructured(
   record: IntakeRecord,
@@ -839,7 +898,7 @@ export async function enhanceRoundStructured(
   }
 
   return {
-    variations,
+    variations: await applyTypedJudges(variations, record),
     axisSelection: {
       mode: spread.axis === 'composition' ? 'compositional' : 'questionnaire',
       axes: spread.axis === 'composition' || spread.axis === 'reroll' ? [] : [spread.axis],

@@ -338,6 +338,28 @@ export const ENV_SECTIONS = [
         name: 'GEMINI_MODEL', type: 'string', required: false, default: 'gemini-2.5-flash',
         purpose: 'Model overrides (defaults live in code).',
       },
+      {
+        name: 'TYPESAFE_API_KEY', type: 'string', required: false, commentedOut: true,
+        example: 'ts_your_key_here',
+        purpose: 'TypeSafe System One key for council judges (server only). Never log it.\nhttps://docs.typesafe.ai/introduction',
+      },
+      {
+        name: 'TYPESAFE_COUNCIL', type: 'bool', required: false, default: 'false',
+        example: 'false',
+        purpose: 'When true, the council drafts once and judges with TypeSafe. Off, or any TypeSafe error, uses the legacy council.',
+      },
+      {
+        name: 'TYPESAFE_MODEL', type: 'string', required: false, default: 'jev-latest',
+        purpose: 'System One model alias. jev-latest tracks the current stable Jev.',
+      },
+      {
+        name: 'TYPESAFE_TIMEOUT_MS', type: 'int', required: false, default: '8000',
+        purpose: 'Abort a TypeSafe judge call after this many milliseconds and use the legacy council.',
+      },
+      {
+        name: 'COUNCIL_GENERATOR_MODEL', type: 'string', required: false, default: 'google/gemini-2.5-flash',
+        purpose: 'Single OpenRouter model for the typed council draft. The legacy three-model path does not read it.',
+      },
       { name: 'CONVERSATION_MODEL', type: 'string', required: false, purpose: '' },
       {
         name: 'INTAKE_EXTRACTION_MODEL', type: 'string', required: false,
