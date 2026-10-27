@@ -1743,6 +1743,18 @@ async function conversationTurn(
  * `armedAt` is the same token pattern as critique/refine: after stale
  * recovery a second yes may arm again, and this callback must not also run.
  */
+/**
+ * A moderation hold carries the user-facing sentence on the error. Other
+ * reveal failures keep the generic "didn't come together" line.
+ */
+function moderationRefusalText(error: unknown): string | null {
+  if (!error || typeof error !== 'object') return null;
+  const code = (error as { code?: unknown }).code;
+  if (code !== 'PROMPT_BLOCKED' && code !== 'PROMPT_IN_REVIEW') return null;
+  const message = (error as { message?: unknown }).message;
+  return typeof message === 'string' && message.trim() ? message : null;
+}
+
 export async function executeReveal(
   sessionId: string,
   phone: string,
@@ -1777,6 +1789,7 @@ export async function executeReveal(
   try {
     session = await confirmProposal(sessionId);
   } catch (error) {
+    const held = moderationRefusalText(error);
     // Refund the reserved cap slot. Always — this attempt failed. A newer
     // arm consumed a separate increment; one release leaves that intact.
     // Re-arm the proposal only when this job is still the armed one.
@@ -1791,13 +1804,21 @@ export async function executeReveal(
       profile.updatedAt = new Date().toISOString();
       await store.save(profile);
     }
-    logger.error({
-      event_type: 'sketchbot_sms.reveal_failed',
-      phone_last4: phoneLast4(phone),
-      session_id: sessionId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return { cuts: [], closingText: REVEAL_FAILED_TEXT };
+    if (held) {
+      logger.info({
+        event_type: 'sketchbot_sms.reveal_held',
+        phone_last4: phoneLast4(phone),
+        session_id: sessionId,
+      });
+    } else {
+      logger.error({
+        event_type: 'sketchbot_sms.reveal_failed',
+        phone_last4: phoneLast4(phone),
+        session_id: sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return { cuts: [], closingText: held ?? REVEAL_FAILED_TEXT };
   }
 
   const profile = (await store.get(phone)) ?? newProfile(phone);

@@ -9,6 +9,7 @@ import {
   NOT_REMOVED_CLAUSE,
   isSafeArtistId,
   normalizeInstagramHandle,
+  takedownModerationText,
   tombstoneKeysFor,
   validateTakedownRequest,
 } from './takedown';
@@ -155,6 +156,26 @@ describe('validateTakedownRequest', () => {
     const r = validateTakedownRequest({ ...good, contactEmail: '  Ging@Example.COM ' });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.contactEmail).toBe('ging@example.com');
+  });
+});
+
+describe('takedownModerationText', () => {
+  const request = {
+    artistId: 'artist_tattoosbyging',
+    contactEmail: 'ging@example.com',
+    relationship: 'artist' as const,
+    scope: 'all' as const,
+    message: 'These photos are my copyright. Please remove them.',
+  };
+
+  it('sends the message and not the contact email', () => {
+    const text = takedownModerationText(request);
+    expect(text).toContain('These photos are my copyright');
+    expect(text).not.toContain('ging@example.com');
+  });
+
+  it('is empty when there is no message, so the call is skipped', () => {
+    expect(takedownModerationText({ ...request, message: null })).toBe('');
   });
 });
 

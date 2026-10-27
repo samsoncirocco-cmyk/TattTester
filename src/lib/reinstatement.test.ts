@@ -13,6 +13,7 @@ import {
   isVerificationCodeExpired,
   normalizeInstagramHandle,
   tombstoneKeyForHandle,
+  reinstatementModerationText,
   validateReinstatementRequest,
   type ReinstatementFacts,
 } from '@/lib/reinstatement';
@@ -201,5 +202,28 @@ describe('decideReinstatement', () => {
       );
       expect(d.ok).toBe(false);
     });
+  });
+});
+
+describe('reinstatementModerationText', () => {
+  it('is the appeal message only — handle, uid, and email stay out', () => {
+    const text = reinstatementModerationText({
+      instagram: 'tattoosbyging',
+      uid: 'uid_1',
+      contactEmail: 'ging@example.com',
+      message: 'I am appealing the removal. This is my copyrighted work.',
+    });
+    expect(text).toBe('I am appealing the removal. This is my copyrighted work.');
+    expect(text).not.toContain('uid_1');
+    expect(text).not.toContain('ging@example.com');
+  });
+
+  it('is empty when the appeal has no message', () => {
+    expect(reinstatementModerationText({
+      instagram: 'tattoosbyging',
+      uid: 'uid_1',
+      contactEmail: 'ging@example.com',
+      message: null,
+    })).toBe('');
   });
 });

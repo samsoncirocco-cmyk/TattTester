@@ -198,3 +198,17 @@ export function validateTakedownRequest(body: unknown): ValidationResult<Takedow
     },
   };
 }
+
+/**
+ * The words a moderation call may read from a takedown.
+ *
+ * The contact email stays out of the model call. The decision that comes
+ * back must not delete an artist and must not move this request off
+ * `pending` — callers record it either way. An empty string means there is
+ * no message to screen, and the request proceeds as it does today.
+ */
+export function takedownModerationText(request: TakedownRequest): string {
+  const message = request.message?.trim() ?? '';
+  if (!message) return '';
+  return `Takedown request (${request.relationship}, scope ${request.scope}):\n${message}`;
+}

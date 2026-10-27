@@ -43,6 +43,7 @@ import { mintResumeKey } from './resume';
 import type { StoredSession } from './store';
 import {
   DesignSessionError,
+  assertDesignPromptAllowed,
   claimRevealSlot,
   loadSession,
   releaseRevealSlot,
@@ -304,6 +305,11 @@ export async function confirmProposal(
     .filter((entry) => entry.role === 'user')
     .map((entry) => entry.text)
     .join(' ');
+
+  // One moderation call on the user's words before the reveal buys renders.
+  // A hold throws here, before the slot is claimed, so a blocked prompt does
+  // not occupy the reveal lock. Flag-off and call failures do not throw.
+  await assertDesignPromptAllowed(userText);
 
   // Belt and braces with the per-turn merge in converse(): the record that
   // reaches Council enhancement and generation carries every attached

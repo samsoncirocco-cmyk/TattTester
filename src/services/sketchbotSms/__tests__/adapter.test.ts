@@ -376,6 +376,22 @@ describe('reveal flow', () => {
     expect(converse).toHaveBeenCalledTimes(1); // only the proposal turn
   });
 
+  it('tells the texter the moderation reason instead of a generic render failure', async () => {
+    await driveToProposal();
+    await handleInbound({ phone: PHONE, body: 'yes' });
+    vi.mocked(confirmProposal).mockRejectedValueOnce(
+      new DesignSessionError(
+        'PROMPT_BLOCKED',
+        "We can't generate this design. It looks like it depicts or names a real person, or uses a trademark or franchise character, and we don't draw those automatically.",
+      ),
+    );
+
+    const delivery = await executeReveal('s1', PHONE, await currentArmedAt());
+    expect(delivery.cuts).toHaveLength(0);
+    expect(delivery.closingText).toMatch(/can't generate/i);
+    expect(delivery.closingText).not.toBe(REVEAL_FAILED_TEXT);
+  });
+
   it('refunds the slot, tells the truth, and allows a retry when generation fails', async () => {
     await driveToProposal();
     await handleInbound({ phone: PHONE, body: 'yes' });

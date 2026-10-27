@@ -14,6 +14,7 @@ const {
   verifyFirebaseTokenMock,
   reserveGenerationCreditMock,
   releaseGenerationCreditMock,
+  screenContentMock,
 } = vi.hoisted(() => ({
   generateMock: vi.fn(),
   observeRenderedImageMock: vi.fn(),
@@ -24,6 +25,7 @@ const {
   verifyFirebaseTokenMock: vi.fn(),
   reserveGenerationCreditMock: vi.fn(),
   releaseGenerationCreditMock: vi.fn(),
+  screenContentMock: vi.fn(),
 }));
 
 // routeGeneration is real, not mocked: the route calls it to label a failure
@@ -67,6 +69,10 @@ vi.mock('@/lib/logger', () => ({
 
 vi.mock('@/lib/observeRender', () => ({ observeRenderedImage: observeRenderedImageMock }));
 
+vi.mock('@/lib/typesafeModeration', () => ({
+  screenContent: screenContentMock,
+}));
+
 import { POST } from '../route';
 
 function makeRequest(body: Record<string, unknown>) {
@@ -104,6 +110,49 @@ describe('/api/v1/generate route adapter', () => {
     rateLimitMock.mockResolvedValue({ allowed: true });
     checkBudgetMock.mockResolvedValue({ allowed: true });
     recordSpendMock.mockResolvedValue(undefined);
+    screenContentMock.mockResolvedValue({
+      action: 'pass',
+      userMessage: null,
+      skipped: true,
+      reason: 'disabled',
+      hazards: [],
+    });
+  });
+
+  it('blocks a design prompt before reserving a credit or generating', async () => {
+    screenContentMock.mockResolvedValueOnce({
+      action: 'block',
+      userMessage: "We can't generate this design. It looks like it depicts or names a real person, or uses a trademark or franchise character, and we don't draw those automatically.",
+      skipped: false,
+      hazards: ['trademark'],
+    });
+
+    const res = await POST(makeRequest({ prompt: 'mickey mouse on my calf' }));
+    const json = await res.json();
+
+    expect(res.status).toBe(422);
+    expect(json.code).toBe('PROMPT_BLOCKED');
+    expect(json.error).toMatch(/can't generate/i);
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(reserveGenerationCreditMock).not.toHaveBeenCalled();
+  });
+
+  it('holds a mid-range design prompt for review without generating', async () => {
+    screenContentMock.mockResolvedValueOnce({
+      action: 'review',
+      userMessage: "This design needs a person to look at it before we can generate it. We've saved it for review and won't draw it automatically.",
+      skipped: false,
+      hazards: ['real_person'],
+    });
+
+    const res = await POST(makeRequest({ prompt: 'a portrait of my friend alex' }));
+    const json = await res.json();
+
+    expect(res.status).toBe(422);
+    expect(json.code).toBe('PROMPT_IN_REVIEW');
+    expect(json.error).toMatch(/person to look/i);
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(reserveGenerationCreditMock).not.toHaveBeenCalled();
   });
 
   it('returns the vertex success shape and records vertex spend per image', async () => {
@@ -318,6 +367,13 @@ describe('the pixel guard reaches this lane too', () => {
     rateLimitMock.mockResolvedValue({ allowed: true });
     checkBudgetMock.mockResolvedValue({ allowed: true });
     recordSpendMock.mockResolvedValue(undefined);
+    screenContentMock.mockResolvedValue({
+      action: 'pass',
+      userMessage: null,
+      skipped: true,
+      reason: 'disabled',
+      hazards: [],
+    });
   });
 
   it('observes every image it charged for, not just the first', async () => {

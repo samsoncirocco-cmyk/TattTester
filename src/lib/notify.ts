@@ -178,6 +178,20 @@ export async function notifyOpsOfArtistClaim(
   }
 }
 
+/** A moderation hold to include in the ops email. Absent when the call was not used. */
+export interface ModerationNotice {
+  action: 'review' | 'block';
+  summary: string;
+}
+
+function moderationParagraph(notice?: ModerationNotice | null): string {
+  if (!notice) return '';
+  return (
+    `Moderation: ${notice.action.toUpperCase()}. ${notice.summary}\n` +
+    `Nothing was deleted and this request was not resolved. A person decides.\n\n`
+  );
+}
+
 /**
  * Tell a human that an artist has asked to be removed. See docs/adr/0025.
  *
@@ -193,6 +207,7 @@ export async function notifyOpsOfArtistClaim(
 export async function notifyOpsOfTakedownRequest(
   request: TakedownRequest,
   requestId: string,
+  moderation?: ModerationNotice | null,
 ): Promise<NotifyResult> {
   const to = process.env.OPS_NOTIFY_EMAIL;
   if (!to) {
@@ -218,6 +233,7 @@ export async function notifyOpsOfTakedownRequest(
     `Relationship: ${request.relationship} (self-declared — NOT verified)\n` +
     `Scope:        ${scopeLine}\n\n` +
     `Message:\n${request.message || '(none provided)'}\n\n` +
+    moderationParagraph(moderation) +
     `--- Before you remove anything ---\n` +
     `Nothing has been removed. This request changed no data.\n` +
     `Verify the requester controls the artist's Instagram handle (ask them to post\n` +
@@ -272,6 +288,7 @@ export async function notifyOpsOfReinstatementRequest(
   request: ReinstatementRequest,
   requestId: string,
   verificationCode: string,
+  moderation?: ModerationNotice | null,
 ): Promise<NotifyResult> {
   const to = process.env.OPS_NOTIFY_EMAIL;
   if (!to) {
@@ -289,6 +306,7 @@ export async function notifyOpsOfReinstatementRequest(
     `Firebase uid: ${request.uid}\n` +
     `Contact:      ${request.contactEmail}\n\n` +
     `Message:\n${request.message || '(none provided)'}\n\n` +
+    moderationParagraph(moderation) +
     `--- Nothing has changed ---\n` +
     `No tombstone was lifted and no profile was unsuppressed; this request changed\n` +
     `no data. It also does not confirm that this handle was ever removed — the\n` +

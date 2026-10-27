@@ -180,6 +180,22 @@ describe('POST /api/v1/design-session route adapter', () => {
     expect(startSessionMock).not.toHaveBeenCalled();
   });
 
+  it('returns the moderation message and releases the credit when the prompt is blocked', async () => {
+    startSessionMock.mockRejectedValueOnce(Object.assign(
+      new Error("We can't generate this design. It looks like it depicts or names a real person, or uses a trademark or franchise character, and we don't draw those automatically."),
+      { code: 'PROMPT_BLOCKED', status: 422 },
+    ));
+
+    const res = await POST(makeRequest(URL, { placementAnswer: 'forearm', meaningAnswer: 'mickey mouse' }));
+    const json = await res.json();
+
+    expect(res.status).toBe(422);
+    expect(json.code).toBe('PROMPT_BLOCKED');
+    expect(json.error).toMatch(/can't generate/i);
+    expect(json.retryable).toBe(false);
+    expect(releaseCreditMock).toHaveBeenCalledWith('uid-1', expect.objectContaining({ id: 'res-1' }));
+  });
+
   it('maps unknown service failures to 500 without recording spend', async () => {
     startSessionMock.mockRejectedValueOnce(Object.assign(new Error('council exploded'), { code: 'COUNCIL_FAILED' }));
 
