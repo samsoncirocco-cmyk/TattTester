@@ -1,8 +1,8 @@
-# REA gap specs 1–16
+# REA gap specs 1–17
 
 Implementation specs for the product changes that came out of the 2026-10-23 to 2026-10-26 competitor study. Specs only: nothing here changes product code. TattTester is pre-launch (see `CLAUDE.md`, Status), so "problem" means "this would be wrong on day one", not "someone is affected now".
 
-Spec ids 1–15 follow the order Samson asked for, **not** the roll-up's rank numbers (see the crosswalk). Spec 16 was added by amendment from the CoCreate report.
+Spec ids 1–15 follow the order Samson asked for, **not** the roll-up's rank numbers (see the crosswalk). Spec 16 was added by amendment from the CoCreate report. Spec 17 splits the guess-first intake out of spec 10.
 
 ## Index
 
@@ -24,6 +24,7 @@ Spec ids 1–15 follow the order Samson asked for, **not** the roll-up's rank nu
 | 14 | [Swipe card evidence, undo, broadened deck](14-swipe-card-evidence-undo-and-broadened-deck.md) | Matching | M (L if distance needs new geo data) | 13 for server undo; 15 for radius | 11 (part) · T1, T4, T5 |
 | 15 | [Intent and budget pills](15-intent-and-budget-pills.md) | Matching | S (radius blocked on data) | none; radius needs 14 tier 2 | T3 (not separately ranked) |
 | 16 | [Artist policies, FAQ, travel dates](16-artist-policies-faq-and-travel-dates.md) | Booking / artist profile | M | none; copy-coordinates with 3 and 4 | CoCreate O7 (published) |
+| 17 | [Guess-first intake](17-guess-first-intake.md) | Generation | M | none; split from 10 | 14 · V1 |
 
 ### Crosswalk: roll-up rank → spec
 

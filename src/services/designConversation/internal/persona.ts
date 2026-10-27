@@ -84,6 +84,21 @@ export const PROPOSAL_AFFORDANCE =
 export const PROPOSAL_REMINDER =
   'two cuts, one tap, whenever you want them.';
 
+/** The consent question on a guess-first proposal (spec 17). */
+export const GUESS_FIRST_AFFORDANCE = 'want me to draw that, or tell me what to change?';
+
+/**
+ * The guess-first proposal beat (spec 17, Veri V1): say what was assumed,
+ * play the brief back, and keep the consent question. Assumptions are
+ * already-phrased clauses ("it goes on your inner forearm"); none means the
+ * brief needed no guessing and only the playback is said. Keeps
+ * PROPOSAL_LEAD so the engine still sees that the beat has fired.
+ */
+export function guessFirstReply(assumptions: readonly string[], playback: string): string {
+  const assumed = assumptions.length ? `i'm assuming ${assumptions.join(', and ')}. ` : '';
+  return `${assumed}${PROPOSAL_LEAD} ${playback}. ${GUESS_FIRST_AFFORDANCE}`;
+}
+
 /** The announce-and-confirm proposal beat (ADR-0020, exact phrasing style). */
 export function proposalReply(playback: string): string {
   return `${PROPOSAL_LEAD} ${playback}. ${PROPOSAL_AFFORDANCE}`;

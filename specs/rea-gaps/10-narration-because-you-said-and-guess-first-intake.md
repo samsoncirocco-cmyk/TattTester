@@ -38,7 +38,7 @@ Non-goals: SMS intake (rollup rank 19, parked); changing the axis ladder or the 
 2. **Refined rounds.** Before the new pair: "kept: fine line. now splitting: black ink vs color." The kept part is the picked pole from the previous round; the splitting part is the next ladder axis.
 3. **Critique re-cut and re-roll.** The first line names the change in the customer's words: "changed: thinner outline, per 'too heavy'." For a fresh-set ask: "changed: new set on the same direction (kept your pick)."
 4. **Interim line.** When the customer confirms, before cuts exist: "drawing your phoenix, forearm, fine line." Built from the intake fields the client already holds.
-5. **Guess-first (optional mode).** For a vague first message the bot immediately says what it will assume and offers to draw: "I'm assuming fine-line, black ink, outer forearm. Want me to draw that? Or tell me what to change." Tapping Draw it confirms (existing consent step). The questions remain as optional chips, not gates.
+5. **Guess-first (optional mode).** *Moved to [spec 17](17-guess-first-intake.md), which supersedes this item and the guess-first bullets in 4.2.* For a vague first message the bot immediately says what it will assume and offers to draw: "I'm assuming fine-line, black ink, outer forearm. Want me to draw that? Or tell me what to change." Tapping Draw it confirms (existing consent step). The questions remain as optional chips, not gates.
 
 ### 4.2 Data and API
 

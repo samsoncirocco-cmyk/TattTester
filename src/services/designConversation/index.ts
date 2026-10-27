@@ -13,6 +13,7 @@
 // ConversationUnavailableError and the caller downgrades to the v1 scripted
 // intake flow (ADR-0019).
 import { runConversationTurn, type RunTurnRequest } from './internal/engine';
+export { GUESS_FIRST_ACCEPTED_EVENT, GUESS_FIRST_EDITED_EVENT } from './events';
 import { OPENER } from './internal/persona';
 import type { ConversationTurnResult } from './types';
 

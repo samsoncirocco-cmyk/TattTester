@@ -30,6 +30,7 @@
  */
 
 import { logger } from '@/lib/logger';
+import { GUESS_FIRST_EDITED_EVENT } from '../events';
 import {
   type IntakeRecord,
   type VariationAxis,
@@ -72,6 +73,7 @@ import {
   EVOCATION_STEM,
   evocationQuestion,
   AESTHETIC_ACK,
+  guessFirstReply,
 } from './persona';
 import {
   detectAxisRequest,
@@ -100,6 +102,16 @@ import { isDemoMode, runDemoTurn } from './demoScript';
 
 /** Cadence caps (ADR-0021) — deterministic code, never exposed as limits. */
 export const FORCE_PROPOSAL_TURN = 12;
+
+export { GUESS_FIRST_EDITED_EVENT } from '../events';
+
+/**
+ * Guess-first intake (spec 17) is off unless DESIGN_INTAKE_GUESS_FIRST is
+ * 'true'. Read per turn so a flag flip needs no restart.
+ */
+export function isGuessFirstEnabled(): boolean {
+  return process.env.DESIGN_INTAKE_GUESS_FIRST === 'true';
+}
 export const HANDOFF_TURN = 20;
 
 export interface RunTurnRequest {
@@ -1075,6 +1087,25 @@ export async function runConversationTurn(
   // placement re-ask takes the committed default.
   settleStalledAnswer(record, request.messages, ontology);
 
+  // Guess-first carry-forward (spec 17): a placement the bot assumed and
+  // said out loud stays on the record until the customer names one, so the
+  // next proposal still states it. The model re-extracts the record from
+  // the transcript every turn and may drop an assumption it never heard
+  // the customer say.
+  const previousLog = request.previousTurnLogs?.[request.previousTurnLogs.length - 1];
+  let assumedPlacement: string | undefined;
+  if (previousLog?.assumedPlacement && !(record.placement ?? '').trim()) {
+    record.placement = previousLog.assumedPlacement;
+    assumedPlacement = previousLog.assumedPlacement;
+  }
+  if (previousLog?.firedRule === 'guess-first-proposal') {
+    logger.info({
+      event_type: GUESS_FIRST_EDITED_EVENT,
+      turn: request.userTurn,
+      placement_named: assumedPlacement === undefined,
+    });
+  }
+
   let { confidence, missingFields, hasRequiredFields } = scoreRecord(record);
   const hasPlacement = Boolean((record.placement ?? '').trim());
   const hasNamedCharacters = Boolean((record.subject ?? '').trim());
@@ -1192,6 +1223,31 @@ export async function runConversationTurn(
       record,
       request.messages
     );
+  } else if (
+    // Guess-first (spec 17, Veri V1): the first message has something to
+    // draw but the cadence would ask a question first. State the
+    // assumptions and propose now. Placement is the only field defaulted,
+    // and it is said out loud and confirmed by the consent tap (ADR-0020),
+    // never silent. Style is never invented: an open style is the split the
+    // two cuts show.
+    isGuessFirstEnabled() &&
+    request.userTurn === 1 &&
+    Boolean((record.subject ?? '').trim() || (record.meaning ?? '').trim())
+  ) {
+    const assumptions: string[] = [];
+    if (!hasPlacement) {
+      record.placement = DEFAULT_PLACEMENT;
+      assumedPlacement = DEFAULT_PLACEMENT;
+      assumptions.push(`it goes on your ${DEFAULT_PLACEMENT}`);
+    }
+    if ((record.styleTags ?? []).length === 0) {
+      assumptions.push('the two cuts split the style so you can pick');
+    }
+    ({ confidence, missingFields, hasRequiredFields } = scoreRecord(record));
+    stage = 'proposal';
+    firedRule = 'guess-first-proposal';
+    playback = buildPlayback(record, characterLabel, sceneAnchor);
+    reply = withIpNote(guessFirstReply(assumptions, playback), record, request.messages);
   } else if (stalledField !== undefined) {
     // The stall rule (#376): the same field has blocked the proposal for
     // STALLED_FIELD_TURNS turns in a row — the model is chatting past it.
@@ -1316,6 +1372,7 @@ export async function runConversationTurn(
     firedRule,
     model,
     ...(blockingField !== undefined ? { blockingField } : {}),
+    ...(assumedPlacement !== undefined ? { assumedPlacement } : {}),
   };
   logTurn(turnLog, stage);
 
