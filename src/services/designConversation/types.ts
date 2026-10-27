@@ -59,6 +59,10 @@ export interface TurnLog {
      *  a row — the bot asked for it directly instead of chatting past it
      *  (#376). */
     | 'stalled-field-ask'
+    /** Guess-first intake (spec 17): the first message had something to
+     *  draw but could not propose, so the bot stated its assumptions and
+     *  proposed at once. The consent tap still gates the render. */
+    | 'guess-first-proposal'
     | 'none';
   /**
    * The one field holding the proposal back this turn, if any (#376). The
@@ -66,6 +70,12 @@ export interface TurnLog {
    * the stage is 'proposal'/'handoff' or nothing blocks.
    */
   blockingField?: BlockingField;
+  /**
+   * The placement the bot assumed and said out loud (spec 17). Carried
+   * forward turn to turn until the customer names one, so every later
+   * proposal still states it. Absent when the customer gave the placement.
+   */
+  assumedPlacement?: string;
   /** Model that served the turn (per-session pinned; fallback noted). */
   model: string;
 }

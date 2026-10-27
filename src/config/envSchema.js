@@ -381,6 +381,11 @@ export const ENV_SECTIONS = [
         name: 'STYLE_ONTOLOGY_PATH', type: 'path', required: false,
         purpose: 'Optional override for the style ontology file (design conversation).',
       },
+      {
+        name: 'DESIGN_INTAKE_GUESS_FIRST', type: 'bool', required: false, default: 'false',
+        example: 'false',
+        purpose: 'Guess-first intake (spec 17): a vague first message gets stated assumptions and a proposal instead of a question.',
+      },
     ],
   },
   {

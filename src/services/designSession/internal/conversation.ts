@@ -21,6 +21,7 @@ import {
   HANDOFF_URL,
   ConversationUnavailableError,
 } from '../../designConversation';
+import { GUESS_FIRST_ACCEPTED_EVENT } from '../../designConversation/events';
 import type {
   ConversationTurnResult,
   ConverseRequest,
@@ -284,6 +285,17 @@ export async function confirmProposal(
       'INVALID_PHASE',
       'The conversation has not reached its proposal yet — generation fires on announce + confirm (ADR-0020), never before.'
     );
+  }
+
+  // Guess-first (spec 17): the proposal being confirmed was the bot's
+  // stated guess, and the customer took it as said.
+  const lastTurnLog = session.conversation.turnLogs[session.conversation.turnLogs.length - 1];
+  if (lastTurnLog?.firedRule === 'guess-first-proposal') {
+    logger.info({
+      event_type: GUESS_FIRST_ACCEPTED_EVENT,
+      session_id: session.id,
+      turn: lastTurnLog.turn,
+    });
   }
 
   // The user's own words across the conversation — the backfill source when

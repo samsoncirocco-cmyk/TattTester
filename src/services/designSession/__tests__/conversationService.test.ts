@@ -535,6 +535,40 @@ describe('confirmProposal', () => {
       status: 404,
     });
   });
+
+  // Spec 17: the customer tapped Draw on the bot's stated guess.
+  it('logs guess_first_accepted when the confirmed proposal was a guess-first proposal', async () => {
+    const opened = await converse({});
+    runTurnMock.mockResolvedValueOnce(
+      turnResult({
+        reply: "i'm assuming it goes on your inner forearm. here's what i'm hearing: a piece on your inner forearm.",
+        stage: 'proposal',
+        playback: 'a piece on your inner forearm',
+        record: intakeRecord,
+        turnLog: turnLog({ turn: 1, firedRule: 'guess-first-proposal', assumedPlacement: 'inner forearm' }),
+      })
+    );
+    await converse({ sessionId: opened.sessionId, message: 'something for my grandma' });
+
+    await confirmProposal(opened.sessionId);
+
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'design_conversation.guess_first_accepted',
+        session_id: opened.sessionId,
+        turn: 1,
+      })
+    );
+  });
+
+  it('does not log guess_first_accepted for an ordinary proposal', async () => {
+    const sessionId = await converseToProposal();
+    await confirmProposal(sessionId);
+
+    expect(logger.info).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event_type: 'design_conversation.guess_first_accepted' })
+    );
+  });
 });
 
 describe('confirmProposal — one reveal at a time (claim race)', () => {
