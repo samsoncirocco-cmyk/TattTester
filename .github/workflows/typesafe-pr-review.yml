@@ -1,0 +1,57 @@
+# Advisory TypeSafe semantic review for pull request diffs.
+#
+# Not a required check. A missing TYPESAFE_API_KEY, a fork, or a TypeSafe
+# or GitHub failure prints a notice and exits 0. continue-on-error keeps
+# the workflow green if the script is killed before it can exit.
+#
+# Required repository secret: TYPESAFE_API_KEY
+# Warning threshold: 0.70 (Noul probability). Override with
+# TYPESAFE_WARN_THRESHOLD only if you change this workflow.
+# Call cap: 6 TypeSafe requests per run (TYPESAFE_MAX_CALLS, 1–12).
+#
+# Rollback: delete this file. Nothing else in the repo calls it.
+
+name: TypeSafe semantic review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Fork pull requests do not receive secrets. The job condition skips them
+# anyway so untrusted workflow edits cannot run this script with a token
+# from the base repository. pull_request_target is intentionally unused.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: typesafe-pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  semantic-review:
+    name: TypeSafe semantic review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run TypeSafe semantic review
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: node scripts/ci/typesafe-pr-review.mjs
