@@ -28,6 +28,9 @@ features:
       - src/services/designSession/index.ts
       - src/services/designConversation/__tests__/conversationEngine.test.ts
       - src/features/design-session/__tests__/DesignSessionFlow.test.tsx
+      - src/services/designSession/__tests__/typesafeDesignRouting.test.ts
+    limitations:
+      - TYPESAFE_DESIGN_ROUTING defaults off. When it is on, one TypeSafe call per steerable turn decides whether the brief is ready to generate and which question axis to ask next. Low confidence, a missing key, a timeout, or an error keeps the existing conversation rules. SMS placement uses the same call only to choose its follow-up line.
 
   one_design_door:
     status: implemented
