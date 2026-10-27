@@ -158,6 +158,7 @@ describe('the reveal shows its first cut as it lands', () => {
           stage: 'proposal',
           playback: 'a fox, bold lines',
           turn: 2,
+          notes: { placement: 'forearm', cast: [], style: 'bold lines', ipHeadsUp: false, sufficient: true },
         });
       }
       if (path.endsWith('/confirm')) return confirm.promise;
@@ -171,6 +172,8 @@ describe('the reveal shows its first cut as it lands', () => {
     fireEvent.click(await screen.findByRole('button', { name: /show me/i }));
 
     expect(await screen.findByTestId('elapsed')).toBeTruthy();
+    // Spec 10: one line says what is being drawn before any cut exists.
+    expect(screen.getByText('drawing your design, forearm, bold lines.')).toBeTruthy();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2100);
     });

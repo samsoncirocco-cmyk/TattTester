@@ -11,7 +11,7 @@ import { getApiAuthHeaders, getOptionalApiAuthHeaders, SignInRequiredError } fro
 // The in-voice reveal narration derived from the fixture's axisSelection —
 // the raw audit rationale (ADR-0012) never renders in the chat.
 const REVEAL_NARRATION =
-  'I split these two on line weight — your pick tells me which way to lean.';
+  'For your inner forearm, I split these two on line weight — your pick tells me which way to lean.';
 
 // The fetch client attaches Firebase bearer auth (matching the API routes'
 // verifyApiAuth gate); stub it so tests need no signed-in user.

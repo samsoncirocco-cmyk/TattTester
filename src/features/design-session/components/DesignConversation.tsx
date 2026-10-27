@@ -23,6 +23,7 @@ import { refreshCreditBalance } from '../services/creditBalance';
 import { BuyCreditsLink, CreditCountLine } from './CreditBalance';
 import { REVEAL_BEAT_LINES } from './GeneratingBeat';
 import { RenderProgress } from './RenderProgress';
+import { interimLine } from '../services/interimLine';
 import { previewFrom, usePreviewPoll } from '../services/renderPreview';
 import type { Variation } from '@/services/designSession/types';
 import type { SessionRendering } from '@/services/designSession/resumeContract';
@@ -501,6 +502,7 @@ export function DesignConversation({
           lines={REVEAL_BEAT_LINES}
           startedAt={revealStartedAt}
           preview={livePreview}
+          interim={interimLine(notes)}
         />
       )}
       {pending && revealStartedAt === null && <ThinkingLine label="Typing" />}

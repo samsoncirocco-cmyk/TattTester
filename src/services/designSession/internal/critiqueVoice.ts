@@ -156,3 +156,31 @@ export function fixesLeftLine(remaining: number): string {
  */
 export const ALLOWANCE_SPENT_LINE =
   "you've been round this a few times now — that's your artist's job, honestly. pick the closest one and they'll close the rest on skin.";
+
+const MAX_QUOTED = 60;
+
+/** The customer's own words, trimmed to 60 characters at a word boundary. */
+function quoted(text: string): string {
+  const clean = text.trim().replace(/\s+/g, ' ');
+  if (clean.length <= MAX_QUOTED) return clean;
+  const cut = clean.slice(0, MAX_QUOTED + 1);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > 0 ? cut.slice(0, space) : clean.slice(0, MAX_QUOTED)).replace(/[,;:\s]+$/, '')}…`;
+}
+
+/**
+ * The first line of a landed re-cut (spec 10): what changed, in the
+ * customer's words. Spoken only after the render came back, so it never
+ * claims a change a refusal or a failed render did not make.
+ */
+export function changedLine(texts: readonly string[]): string | null {
+  const words = texts.map((text) => text.trim()).filter(Boolean).join('; ');
+  return words ? `changed: per ‘${quoted(words)}’.` : null;
+}
+
+/** The first line of a landed fresh set: the hint said back, or the plain fact. */
+export function rerollChangedLine(hint: string): string {
+  return hint.trim()
+    ? `changed: new set, per ‘${quoted(hint)}’.`
+    : 'changed: new set on the same direction.';
+}

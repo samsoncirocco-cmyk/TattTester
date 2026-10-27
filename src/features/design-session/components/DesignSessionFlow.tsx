@@ -2,7 +2,11 @@
 
 import { useState } from 'react';
 import type { DesignSession, Variation } from '@/services/designSession/types';
-import { refineInviteLine } from '@/services/designSession/roundPlan';
+import {
+  isLadderAxis,
+  refineInviteLine,
+  roundChangeLine,
+} from '@/services/designSession/roundPlan';
 import { settledAxes } from '@/services/intake/settledAxes';
 import type { ConversationMessage } from '@/services/designConversation';
 import {
@@ -180,6 +184,24 @@ export function DesignSessionFlow({
       : session.variations
     : [];
   const roundPickId = liveRound?.pickedId;
+  // Spec 10: from round two on, say what moved before the new pair — the
+  // pole kept from the round before, and the axis now being split.
+  const priorRound =
+    session?.rounds && session.rounds.length > 1
+      ? session.rounds[session.rounds.length - 2]
+      : undefined;
+  const roundChange =
+    session && liveRound && priorRound
+      ? roundChangeLine({
+          picked: Boolean(priorRound.pickedId),
+          keptPole: isLadderAxis(priorRound.axis)
+            ? session.variations.find((cut) => cut.id === priorRound.pickedId)?.axisPosition[
+                priorRound.axis
+              ]
+            : undefined,
+          axis: liveRound.axis,
+        })
+      : null;
 
   /** The resumed round settled: new cuts landed, or it failed or died. */
   const settleRound = (result: ResumeFetchResult) => {
@@ -380,7 +402,13 @@ export function DesignSessionFlow({
       )}
       {showGrid && session && (
         <>
-          <ChatBubble role="bot">{revealNarration(session.axisSelection)}</ChatBubble>
+          {roundChange ? (
+            <ChatBubble role="bot">{roundChange}</ChatBubble>
+          ) : (
+            <ChatBubble role="bot">
+              {revealNarration(session.axisSelection, session.intake)}
+            </ChatBubble>
+          )}
           {roundNotice && <ChatBubble role="bot">{roundNotice}</ChatBubble>}
           <ChatBubble role="bot">{ROUND_PROMPT}</ChatBubble>
           <RevealGrid

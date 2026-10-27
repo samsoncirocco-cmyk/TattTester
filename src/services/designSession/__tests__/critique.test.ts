@@ -37,6 +37,9 @@ import {
   rerollLandedLine,
 } from '../internal/critiqueVoice';
 import { DEFAULT_STUDIO_FIX_ALLOWANCE } from '@/lib/studio-fix-allowance';
+
+/** Spec 10: a fresh set with no hint opens by saying it is a new set. */
+const NEW_SET_LINE = 'changed: new set on the same direction.';
 import { generate } from '../../generation';
 import { enhanceRound } from '../../council';
 import {
@@ -605,6 +608,22 @@ describe('critique — the orchestrator turn', () => {
     expect(result.reply).toContain('the totem');
   });
 
+  it('opens a landed fix with what changed, in their words (spec 10)', async () => {
+    await seed({ variations: sleeveCuts() });
+    const result = await critique('sess-critique', { message: 'the totem, but bigger' });
+
+    expect(result.generated).toBe(true);
+    expect(result.reply.startsWith('changed: per ‘the totem, but bigger’. re-cut ')).toBe(true);
+  });
+
+  it('says nothing changed-shaped on a turn that bought nothing', async () => {
+    await seed({ variations: sleeveCuts() });
+    const result = await critique('sess-critique', { message: 'love it honestly' });
+
+    expect(result.generated).toBe(false);
+    expect(result.reply).not.toMatch(/^changed:/);
+  });
+
   it('applies a bare critique to the pick once one exists', async () => {
     await seed({ phase: 'picked', pickId: 'v2', mostNotYouId: 'v4' });
     const result = await critique('sess-critique', { message: "riku's missing" });
@@ -729,7 +748,7 @@ describe('critique — the reroll-set arm, wired (sprint fix #2)', () => {
     expect(result.generated).toBe(true);
     expect(result.round).toMatchObject({ round: 2, axis: 'bold-fine', variationIds: ['v5', 'v6'] });
     expect(result.cuts?.map(cut => cut.id)).toEqual(['v5', 'v6']);
-    expect(result.reply).toBe(rerollLandedLine('bold vs fine-line', true));
+    expect(result.reply).toBe(`${NEW_SET_LINE} ${rerollLandedLine('bold vs fine-line', true)}`);
     // One credit exactly, through the port, kept (no downgrade).
     expect(port.reserve).toHaveBeenCalledTimes(1);
     expect(port.release).not.toHaveBeenCalled();
@@ -895,7 +914,7 @@ describe('critique — the reroll-set arm, wired (sprint fix #2)', () => {
     // The landed line does not claim a credit that went back, and the note
     // claims the refund only because the release actually landed.
     expect(result.reply).toBe(
-      `${rerollLandedLine('bold vs fine-line', false)} ${REROLL_DOWNGRADED_REFUNDED_NOTE}`
+      `${NEW_SET_LINE} ${rerollLandedLine('bold vs fine-line', false)} ${REROLL_DOWNGRADED_REFUNDED_NOTE}`
     );
   });
 
@@ -935,7 +954,7 @@ describe('critique — the reroll-set arm, wired (sprint fix #2)', () => {
     expect(result.generated).toBe(true);
     expect(mockGenerate).not.toHaveBeenCalled();
     expect(result.cuts).toHaveLength(2);
-    expect(result.reply).toBe(rerollLandedLine('bold vs fine-line', false));
+    expect(result.reply).toBe(`${NEW_SET_LINE} ${rerollLandedLine('bold vs fine-line', false)}`);
   });
 });
 
