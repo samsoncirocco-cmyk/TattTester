@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useId, useRef } from 'react';
+import { drawnOnLine, seedLine } from '../services/laneLabel';
 
 /**
  * One cut, full size, over the page (TAT-58).
@@ -54,8 +55,17 @@ export function CutLightbox({
   onClose,
   onPrev,
   onNext,
+  lane,
+  seed,
 }: {
   imageUrl: string;
+  /**
+   * The model that drew the cut and its seed (spec 12). Provenance, not
+   * axis internals: shown as a friendly lane name, the seed behind a
+   * details disclosure. Absent on cuts stored before provenance existed.
+   */
+  lane?: string;
+  seed?: number;
   /** Screen-reader name for the image itself — "Design 3", same as the grid. */
   alt: string;
   /** The cut's designed name, e.g. "the bold, blackwork one". */
@@ -70,6 +80,8 @@ export function CutLightbox({
   onNext?: () => void;
 }) {
   const titleId = useId();
+  const drawnOn = drawnOnLine(lane);
+  const seedDetail = seedLine(lane, seed);
   const cardRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
 
@@ -102,7 +114,7 @@ export function CutLightbox({
       // rather than cached because the prev/next controls flip between
       // enabled and disabled as the customer steps through the set.
       const focusables = cardRef.current?.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])'
+        'a[href], button:not([disabled]), summary, textarea, input, select, [tabindex]:not([tabindex="-1"])'
       );
       if (!focusables || focusables.length === 0) return;
       const first = focusables[0];
@@ -159,6 +171,17 @@ export function CutLightbox({
             <p id={titleId} className="font-body text-[11px] lowercase tracking-[0.1em] text-white">
               {name}
             </p>
+            {drawnOn && (
+              <p className="font-body text-[10px] lowercase tracking-[0.08em] text-white/50">
+                {drawnOn}
+              </p>
+            )}
+            {seedDetail && (
+              <details className="font-body text-[10px] lowercase tracking-[0.08em] text-white/40">
+                <summary className="cursor-pointer hover:text-pink">details</summary>
+                <p className="tabular-nums">{seedDetail}</p>
+              </details>
+            )}
           </div>
           <button
             ref={closeRef}

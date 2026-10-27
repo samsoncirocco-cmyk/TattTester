@@ -263,6 +263,8 @@ export function RevealGrid({
           alt={`Design ${expandedIndex + 1}`}
           name={expandedIdentity.name}
           caption={expandedIdentity.caption}
+          lane={expanded.lane}
+          seed={expanded.seed}
           step={{ position: expandedPosition + 1, total: expandable.length }}
           onClose={closeLightbox}
           onPrev={

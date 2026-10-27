@@ -105,7 +105,8 @@ function resolveMaxRerolls(maxRerolls?: number): number {
  */
 async function screenAndReroll(
   first: GenerationResult,
-  render: () => Promise<GenerationResult>,
+  // `attempt` counts re-rolls from 1, so a seeded request can vary its seed.
+  render: (attempt: number) => Promise<GenerationResult>,
   prompt: string,
   maxRerolls: number
 ): Promise<GenerationResult> {
@@ -185,7 +186,7 @@ async function screenAndReroll(
      * provider call throws and we hand back the first batch.
      */
     try {
-      result = await render();
+      result = await render(rerolls + 1);
       rerolls += 1;
     } catch {
       lastFlagged.metadata.textIntrusion = true;
@@ -196,6 +197,20 @@ async function screenAndReroll(
   }
 }
 
+/**
+ * The request for text-guard re-roll `attempt` (spec 12). Without a seed the
+ * provider's own randomness makes the re-roll differ; WITH one, re-sending
+ * the same seed would redraw the same lettered picture and the re-roll would
+ * be paid for nothing. So a seeded re-roll moves to the next seed, and the
+ * provider reports back the seed of the attempt that was kept.
+ */
+export function rerollRequest(request: GenerationRequest, attempt: number): GenerationRequest {
+  if (request.seed === undefined || request.seed === '') return request;
+  const seed = Number(request.seed);
+  if (!Number.isFinite(seed)) return request;
+  return { ...request, seed: (Math.trunc(seed) + attempt) % 2 ** 31 };
+}
+
 export async function generate(request: GenerationRequest): Promise<GenerationResult> {
   const { route, request: resolved } = resolveRoute(request);
 
@@ -203,7 +218,7 @@ export async function generate(request: GenerationRequest): Promise<GenerationRe
     if (!request.screenText) return result;
     return screenAndReroll(
       result,
-      () => dispatch(route.provider, resolved),
+      (attempt) => dispatch(route.provider, rerollRequest(resolved, attempt)),
       resolved.prompt,
       resolveMaxRerolls(request.screenText.maxRerolls)
     );
@@ -249,8 +264,11 @@ export async function generate(request: GenerationRequest): Promise<GenerationRe
         return request.screenText
           ? await screenAndReroll(
               result,
-              async () => {
-                const retry = await replicateProvider.generate({ ...resolved, modelId });
+              async (attempt) => {
+                const retry = await replicateProvider.generate({
+                  ...rerollRequest(resolved, attempt),
+                  modelId,
+                });
                 retry.metadata.fallbackUsed = true;
                 retry.metadata.fallbackReason = result.metadata.fallbackReason;
                 return retry;
