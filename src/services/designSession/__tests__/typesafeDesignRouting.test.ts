@@ -12,10 +12,12 @@ import { checkBudget, recordSpend } from '@/lib/budget-tracker';
 import { logger } from '@/lib/logger';
 import { planPlacementFollowUp, widthFractionFor } from '@/services/sketchbotSms/internal/placement';
 import { PLACEMENT_DONE_TEXT } from '@/services/sketchbotSms/internal/render';
+import { TYPESAFE_EVALUATED_MODEL, intakeStateFingerprint, publishIntakeDecisionPacket, clearIntakeDecisionPackets } from '@/services/typesafe';
 import {
   DESIGN_ROUTING_COST_CENTS,
   questionForAxis,
   routeDesignTurn,
+  routingTranscriptFingerprint,
   TYPESAFE_SYSTEMONE_URL,
 } from '../typesafeDesignRouting';
 
@@ -172,15 +174,13 @@ describe('design session routing', () => {
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe(`Bearer ${KEY}`);
     const body = JSON.parse(String(init.body));
-    expect(body.model).toBe('jev-latest');
+    expect(body.model).toBe(TYPESAFE_EVALUATED_MODEL);
     expect(body.state.channel).toBe('design-session');
     expect(body.questions.enough_to_generate.type).toBe('noul');
     expect(body.questions.enough_to_generate.criteria.true).toEqual(expect.any(String));
     expect(body.questions.next_question.type).toBe('choice');
     expect(body.questions.next_question.options).toBeUndefined();
-    expect(Object.keys(body.questions.next_question.criteria).sort()).toEqual(
-      ['bold-fine', 'color', 'literal-abstract', 'minimal-ornate', 'other', 'placement', 'size', 'style', 'subject'].sort()
-    );
+    expect(Object.keys(body.questions.next_question.criteria).sort()).toEqual(['other', 'size']);
     expect(JSON.stringify(body)).not.toContain(KEY);
     expect(recordSpend).toHaveBeenCalledTimes(1);
     expect(recordSpend).toHaveBeenCalledWith(DESIGN_ROUTING_COST_CENTS);
@@ -196,6 +196,7 @@ describe('design session routing', () => {
         reply: "here's what i'm hearing: a sparrow on your forearm. want to see two cuts?",
         stage: 'proposal',
         playback: 'a sparrow on your forearm',
+        record: { ...readyRecord, styleTags: [] },
         turnLog: turnLog({ firedRule: 'judgment', confidence: 0.84, missingFields: [] }),
       })
     );
@@ -265,6 +266,80 @@ describe('design session routing', () => {
     expect(handoff.stage).toBe('handoff');
     expect(handoff.handoffUrl).toBe('/smart-match');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolved fields and the intake packet', () => {
+  const transcript = [{ role: 'user' as const, text: 'a memorial sparrow, placement already said' }];
+
+  beforeEach(() => {
+    clearIntakeDecisionPackets();
+  });
+
+  it('keeps the engine reply when the model asks a settled field', async () => {
+    enableRouting();
+    const fetchMock = mockTypesafe(0.1, 'placement', 0.9);
+    const decision = await routeDesignTurn({
+      channel: 'design-session',
+      transcript,
+      record: {
+        placement: 'right forearm',
+        styleTags: [],
+        meaning: '',
+        subject: '',
+        references: [],
+        ambiguousAxes: [],
+      },
+      stage: 'chatting',
+      firedRule: 'none',
+    });
+
+    expect(decision.action).toBe('keep');
+    if (decision.action === 'keep') expect(decision.reason).toBe('resolved_field');
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body));
+    expect(body.questions.next_question.criteria).not.toHaveProperty('placement');
+    expect(body.questions.next_question.criteria).toHaveProperty('subject');
+    expect(body.questions.next_question.criteria).not.toHaveProperty('bold-fine');
+  });
+
+  it('reuses the intake packet and does not call TypeSafe again', async () => {
+    enableRouting();
+    const fetchMock = mockTypesafe(0.1, 'placement', 0.9);
+    publishIntakeDecisionPacket({
+      version: 1,
+      fingerprint: intakeStateFingerprint(transcript.map((message) => `${message.role}: ${message.text}`).join('\n')),
+      reading: {
+        placement: null,
+        styleTags: [],
+        ambiguousAxes: [],
+        readinessNoul: 0.1,
+        nextQuestion: { axis: 'subject', confidence: 0.9 },
+        unresolvedFields: ['placement', 'subject', 'style'],
+      },
+    });
+    expect(routingTranscriptFingerprint(transcript)).toBe(
+      intakeStateFingerprint(transcript.map((message) => `${message.role}: ${message.text}`).join('\n'))
+    );
+
+    const decision = await routeDesignTurn({
+      channel: 'design-session',
+      transcript,
+      record: {
+        placement: '',
+        styleTags: [],
+        meaning: '',
+        subject: '',
+        references: [],
+        ambiguousAxes: [],
+      },
+      stage: 'chatting',
+      firedRule: 'none',
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(recordSpend).not.toHaveBeenCalled();
+    expect(decision.action).toBe('ask');
+    if (decision.action === 'ask') expect(decision.axis).toBe('subject');
   });
 });
 
@@ -366,7 +441,7 @@ describe('SMS placement follow-up', () => {
   it('asks the chosen axis when the brief is not ready', async () => {
     enableRouting();
     mockTypesafe(0.05, 'subject', 0.84);
-    const plan = await planPlacementFollowUp('a bit smaller', brief);
+    const plan = await planPlacementFollowUp('a bit smaller', { ...brief, subject: '', meaning: '' });
 
     expect(plan.closingText).toBe(questionForAxis('subject'));
     expect(plan.widthFraction).toBe(widthFractionFor('a bit smaller'));

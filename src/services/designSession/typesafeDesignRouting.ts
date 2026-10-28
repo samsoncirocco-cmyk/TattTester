@@ -26,10 +26,18 @@
  * again would split probability with `color`.
  */
 
-import { envBool, envFloat, envInt, envString } from '@/config/envSchema';
+import { envBool, envFloat } from '@/config/envSchema';
 import { checkBudget, recordSpend } from '@/lib/budget-tracker';
 import { logger } from '@/lib/logger';
 import type { IntakeRecord } from '@/services/intake/types';
+import {
+  intakeStateFingerprint,
+  takeIntakeDecisionPacket,
+  TYPESAFE_SYSTEMONE_URL,
+  typesafeApiKey,
+  typesafeModel,
+  typesafeTimeoutMs,
+} from '@/services/typesafe';
 import type {
   BlockingField,
   ConversationMessage,
@@ -39,10 +47,7 @@ import type {
   TurnLog,
 } from '@/services/designConversation/types';
 
-export const TYPESAFE_SYSTEMONE_URL = 'https://api.typesafe.ai/v1/systemone';
-
-const DEFAULT_MODEL = 'jev-latest';
-const DEFAULT_TIMEOUT_MS = 8_000;
+export { TYPESAFE_SYSTEMONE_URL };
 
 /**
  * Flat cents recorded against the global spend cap after a 2xx. Jev's list
@@ -115,6 +120,7 @@ export type DesignRoutingKeepReason =
   | 'timeout'
   | 'parse'
   | 'low_confidence'
+  | 'resolved_field'
   | 'not_steerable';
 
 export type DesignRoutingDecision =
@@ -173,7 +179,42 @@ export function designRoutingThresholds(env: NodeJS.ProcessEnv = process.env): {
   return { noulYes, noulNo, choiceConfidence };
 }
 
-export function buildDesignRoutingQuestions(): Record<string, unknown> {
+const NEXT_QUESTION_CRITERIA: Record<DesignQuestionAxis, string> = {
+  placement: 'Where on the body the tattoo goes is missing or too vague to draw.',
+  size: 'How large the tattoo should be is the open question.',
+  style: 'The line, school, or overall style is unresolved.',
+  subject: 'What the tattoo depicts is missing or too vague.',
+  color: 'Full color versus black ink or blackwork is unresolved.',
+  'bold-fine': 'Bold heavy lines versus fine delicate linework is the most useful open variation.',
+  'literal-abstract': 'A recognizable depiction versus an abstract treatment is the most useful open variation.',
+  'minimal-ornate': 'A minimal design versus an ornate one is the most useful open variation.',
+  other: 'None of the axes above is the right next question.',
+};
+
+/**
+ * Axes that are still open. A settled placement, subject, style, palette
+ * answer, or variation axis is not a candidate. Size has no stored field,
+ * so it stays askable. `other` is the abstain option.
+ */
+export function unresolvedQuestionAxes(record: Partial<IntakeRecord>): DesignQuestionAxis[] {
+  const open: DesignQuestionAxis[] = ['other', 'size'];
+  if (!(record.placement ?? '').trim()) open.push('placement');
+  if (!(record.subject ?? '').trim() && !(record.meaning ?? '').trim()) open.push('subject');
+  if (!(record.styleTags ?? []).some((tag) => tag.trim())) open.push('style');
+  const ambiguous = new Set(record.ambiguousAxes ?? []);
+  if (ambiguous.has('color-blackwork') && !record.paletteAnswer) open.push('color');
+  if (ambiguous.has('bold-fine')) open.push('bold-fine');
+  if (ambiguous.has('literal-abstract')) open.push('literal-abstract');
+  if (ambiguous.has('minimal-ornate')) open.push('minimal-ornate');
+  return open;
+}
+
+export function buildDesignRoutingQuestions(record: Partial<IntakeRecord> = {}): Record<string, unknown> {
+  const open = new Set(unresolvedQuestionAxes(record));
+  const criteria: Record<string, string> = {};
+  for (const axis of DESIGN_QUESTION_AXES) {
+    if (open.has(axis)) criteria[axis] = NEXT_QUESTION_CRITERIA[axis];
+  }
   return {
     enough_to_generate: {
       type: 'noul',
@@ -186,20 +227,16 @@ export function buildDesignRoutingQuestions(): Record<string, unknown> {
     next_question: {
       type: 'choice',
       instructions:
-        'If one more question would most improve this brief before generating, which axis should it ask about?',
-      criteria: {
-        placement: 'Where on the body the tattoo goes is missing or too vague to draw.',
-        size: 'How large the tattoo should be is the open question.',
-        style: 'The line, school, or overall style is unresolved.',
-        subject: 'What the tattoo depicts is missing or too vague.',
-        color: 'Full color versus black ink or blackwork is unresolved.',
-        'bold-fine': 'Bold heavy lines versus fine delicate linework is the most useful open variation.',
-        'literal-abstract': 'A recognizable depiction versus an abstract treatment is the most useful open variation.',
-        'minimal-ornate': 'A minimal design versus an ornate one is the most useful open variation.',
-        other: 'None of the axes above is the right next question.',
-      },
+        'If one more question would most improve this brief before generating, which unresolved axis should it ask about?',
+      criteria,
     },
   };
+}
+
+export function routingTranscriptFingerprint(
+  transcript: Array<{ role: string; text: string }>
+): string {
+  return intakeStateFingerprint(transcript.map((message) => `${message.role}: ${message.text}`).join('\n'));
 }
 
 function hasRequiredFields(record: Partial<IntakeRecord>): boolean {
@@ -250,6 +287,9 @@ export function interpretDesignRouting(
 
   const choiceActs = choiceConfidence >= thresholds.choiceConfidence && isActionable(choice);
   if (!choiceActs) return { action: 'keep', reason: 'low_confidence', ...parsed };
+  if (!unresolvedQuestionAxes(input.record).includes(choice)) {
+    return { action: 'keep', reason: 'resolved_field', ...parsed };
+  }
 
   if (noul <= thresholds.noulNo) {
     return {
@@ -341,6 +381,35 @@ export async function routeDesignTurn(
   if (env.NEXT_PUBLIC_DEMO_MODE === 'true') return { action: 'keep', reason: 'demo' };
   if (!isSteerable(input)) return { action: 'keep', reason: 'not_steerable' };
 
+  const packet = takeIntakeDecisionPacket(routingTranscriptFingerprint(input.transcript));
+  if (packet) {
+    const { readinessNoul, nextQuestion } = packet.reading;
+    if (readinessNoul === null || !nextQuestion) {
+      logRouting({
+        channel: input.channel,
+        sessionId: input.sessionId,
+        action: 'keep',
+        reason: 'low_confidence',
+        packet: true,
+      });
+      return { action: 'keep', reason: 'low_confidence' };
+    }
+    try {
+      return interpretDesignRouting(
+        {
+          answers: {
+            enough_to_generate: { noul: readinessNoul },
+            next_question: { choice: nextQuestion.axis, confidence: nextQuestion.confidence },
+          },
+        },
+        input,
+        designRoutingThresholds(env)
+      );
+    } catch {
+      return { action: 'keep', reason: 'parse' };
+    }
+  }
+
   const key = typesafeApiKey(env);
   if (!key) {
     logRouting({ channel: input.channel, sessionId: input.sessionId, action: 'keep', reason: 'missing_key' }, 'warn');
@@ -382,7 +451,7 @@ export async function routeDesignTurn(
       body: JSON.stringify({
         model: typesafeModel(env),
         state: routingState(input),
-        questions: buildDesignRoutingQuestions(),
+        questions: buildDesignRoutingQuestions(input.record),
       }),
     });
     if (!response.ok) {
@@ -459,21 +528,6 @@ function gateFor(axis: DesignQuestionAxis): GateState | undefined {
     axis === 'placement' ? 'placement' : axis === 'subject' ? 'meaning' : axis === 'style' ? 'styleTags' : undefined;
   if (!blocking) return undefined;
   return { blocking, stalled: false, line: GATE_LINE[blocking] };
-}
-
-function typesafeApiKey(env: NodeJS.ProcessEnv): string | undefined {
-  const key = envString('TYPESAFE_API_KEY', env);
-  return key || undefined;
-}
-
-function typesafeModel(env: NodeJS.ProcessEnv): string {
-  return envString('TYPESAFE_MODEL', env) || DEFAULT_MODEL;
-}
-
-function typesafeTimeoutMs(env: NodeJS.ProcessEnv): number {
-  const value = envInt('TYPESAFE_TIMEOUT_MS', env);
-  if (value === undefined || !Number.isFinite(value) || value < 1) return DEFAULT_TIMEOUT_MS;
-  return value;
 }
 
 async function recordRoutingSpend(): Promise<void> {
