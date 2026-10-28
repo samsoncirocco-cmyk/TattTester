@@ -21,9 +21,12 @@
  * 1. **Not a bare OCR check.** Script tattoos, memorial names and banner text
  *    are ordinary tattoo work; a gate that rejected them would break the
  *    product to protect it. So the vision call reads the lettering and a
- *    separate, deterministic test on the request decides whether it belongs —
- *    see `requestsLettering` for why those two jobs are split rather than
- *    asked as one question.
+ *    separate test on the request decides whether it belongs. That test is a
+ *    TypeSafe Noul when `TYPESAFE_LETTERING` is on, and the keyword list in
+ *    `requestsLettering` otherwise. The two jobs stay split: the vision call
+ *    never sees the request. Asking one image model to do both failed, because
+ *    with pixels in front of it the model reads lettering as a defect no
+ *    matter what the prompt says. The Noul sees only the prompt.
  *
  * 2. **Not fail-closed.** Any provider, budget or parse failure returns
  *    `clean` with `screened: false`. A vision outage must not stop a customer
@@ -32,6 +35,8 @@
  *    problem for an outage. Every skip is visible in the verdict rather than
  *    silently indistinguishable from a pass.
  */
+import { envBool, envFloat, envInt, envString } from '@/config/envSchema';
+import { typesafeModel } from '@/services/typesafe';
 import { logger } from '@/lib/logger';
 import { getGcpAccessToken } from '@/lib/google-auth-edge';
 import { buildVertexEndpoint } from '@/lib/vertex-endpoint';
@@ -87,22 +92,21 @@ function skipped(skipReason: TextVerdict['skipReason']): TextVerdict {
 /**
  * Does the request ask for writing to appear in the artwork?
  *
- * Deliberately a keyword test on our own prompt text, not a model judgment.
+ * Keyword fallback for the lettering Noul. Used when `TYPESAFE_LETTERING` is
+ * off, and when the Noul cannot answer (missing key, timeout, HTTP error,
+ * parse error, or a budget denial). The list misses phrasings — "in memory
+ * of my grandmother Margaret" asks for a name and matches nothing here — and
+ * that miss re-rolls a legitimate tattoo. The Noul exists to close those
+ * misses. This list stays so a TypeSafe outage cannot change the guard's
+ * answer, and so the flag-off path stays the one ADR-0047 measured.
  *
  * The first three versions of this guard asked ONE vision call to do both
  * jobs — read the lettering and decide whether it was requested — and it
- * failed the same way each time. Given a request that explicitly asked for
- * "the character names GOKU, VEGETA and PICCOLO lettered in a banner", it
- * still reported the banner as intruded. Sharpening the wording fixed the
- * opposite direction and never this one: with the image in front of it, the
- * model reads lettering as a defect regardless of what the request says.
+ * failed the same way each time. The Noul does not reopen that. It never
+ * receives the image.
  *
- * So the judgment moves out of the vision call. The prompt is text we
- * generate (structuredMode builds it), so a keyword test over it is
- * auditable and deterministic, and the failure is bounded in the safe
- * direction: a missed phrasing flags a legitimate script tattoo, which costs
- * a re-roll and a metadata flag — it never withholds the design, because
- * nothing here rejects a render.
+ * A missed phrasing on this fallback flags a legitimate script tattoo, which
+ * costs a re-roll and a metadata flag. Nothing here withholds a design.
  */
 const LETTERING_REQUESTED = [
   'lettering', 'letters', 'text', 'script', 'calligraphy', 'typography', 'font',
@@ -159,6 +163,234 @@ export function requestsLettering(prompt: string): boolean {
     // requesting lettering via the needles "text"/"word"/"script".
     return new RegExp(`\\b${escapeRegExp(needle)}\\b`).test(haystack);
   });
+}
+
+/** Same endpoint the shared TypeSafe client uses. */
+export const TYPESAFE_SYSTEMONE_URL = 'https://api.typesafe.ai/v1/systemone';
+
+const DEFAULT_TYPESAFE_TIMEOUT_MS = 8_000;
+
+/**
+ * Flat cents recorded against the global spend cap after a 2xx. Jev's list
+ * price is about $0.042 per million input tokens, so this call is a fraction
+ * of a cent. One cent is the same deliberate over-estimate vision analysis
+ * uses. Timeouts and transport errors are not metered.
+ */
+export const LETTERING_NOUL_COST_CENTS = 1;
+
+/** TypeSafe's starting yes-line. A Noul has no separate confidence. */
+export const DEFAULT_LETTERING_NOUL_THRESHOLD = 0.7;
+
+/** TypeSafe's starting no-line. Between this and the yes-line, abstain to the keyword check. */
+export const LETTERING_NOUL_NO = 0.3;
+
+/**
+ * The question, phrased so a high value means the customer wants writing in
+ * the tattoo. "A name" means a name to letter, which `criteria` pins down so
+ * a character's name does not read as a banner.
+ */
+export const LETTERING_NOUL_QUESTION =
+  'Does this request ask for text, a name, lettering or a script?';
+
+/**
+ * Decide whether the request asked for writing.
+ *
+ * The Noul runs only when the flag is on, a key is set, and the spend cap
+ * allows the call. Every other case — flag off, missing key, timeout, HTTP
+ * or parse error, budget denial — returns the keyword answer. A metering
+ * write failure after a 2xx still uses the Noul: the call already happened.
+ * The key is never written to a log.
+ */
+export async function letteringWasRequested(prompt: string): Promise<boolean> {
+  if (!letteringNoulEnabled()) return requestsLettering(prompt);
+
+  const key = typesafeApiKey();
+  if (!key) {
+    logLettering({ fallback: 'missing_key' }, 'warn');
+    return requestsLettering(prompt);
+  }
+
+  try {
+    const budget = await checkBudget();
+    if (!budget.allowed) {
+      logLettering({ fallback: 'budget' }, 'warn');
+      return requestsLettering(prompt);
+    }
+  } catch (error) {
+    logLettering({ fallback: 'budget', error: redact(errorText(error), key) }, 'warn');
+    return requestsLettering(prompt);
+  }
+
+  const started = Date.now();
+  try {
+    const response = await fetch(TYPESAFE_SYSTEMONE_URL, {
+      method: 'POST',
+      signal: AbortSignal.timeout(typesafeTimeoutMs()),
+      headers: {
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: typesafeModel(),
+        state: prompt,
+        questions: {
+          requests_lettering: {
+            type: 'noul',
+            instructions: LETTERING_NOUL_QUESTION,
+            criteria: {
+              true: 'The customer wants readable writing in the tattoo: words, a personal name, a date, a quote, lettering, calligraphy, or another script.',
+              false: 'Names of subjects or characters, and style words such as script or calligraphy, say what to draw. They are not a request to letter text. A refusal such as "no text" or "remove the lettering" is not a request for writing.',
+            },
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      // Drain the body so a key echoed by an error page cannot reach a log.
+      await response.text().catch(() => undefined);
+      logLettering({
+        fallback: 'http',
+        status: response.status,
+        durationMs: Date.now() - started,
+      }, 'warn');
+      return requestsLettering(prompt);
+    }
+
+    await recordLetteringSpend(key);
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      logLettering({
+        fallback: 'parse',
+        error: redact(errorText(error), key),
+        durationMs: Date.now() - started,
+      }, 'warn');
+      return requestsLettering(prompt);
+    }
+
+    const noul = readNoul(payload);
+    if (noul === undefined) {
+      logLettering({ fallback: 'parse', durationMs: Date.now() - started }, 'warn');
+      return requestsLettering(prompt);
+    }
+
+    const threshold = letteringThreshold();
+    const asked = letteringFromNoul(noul, prompt, threshold);
+    logLettering({ noul, threshold, asked, durationMs: Date.now() - started });
+    return asked;
+  } catch (error) {
+    logLettering({
+      fallback: isTimeoutError(error) ? 'timeout' : 'error',
+      error: redact(errorText(error), key),
+      durationMs: Date.now() - started,
+    }, 'warn');
+    return requestsLettering(prompt);
+  }
+}
+
+function letteringNoulEnabled(): boolean {
+  try {
+    return envBool('TYPESAFE_LETTERING');
+  } catch {
+    return false;
+  }
+}
+
+function typesafeApiKey(): string | undefined {
+  try {
+    const key = envString('TYPESAFE_API_KEY');
+    return key || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Yes at or above the yes-line, no at or below 0.3, and the keyword check
+ * in the unsure band. A Noul has no separate confidence, so the middle is
+ * abstention rather than a confident no.
+ */
+export function letteringFromNoul(noul: number, prompt: string, yes = DEFAULT_LETTERING_NOUL_THRESHOLD): boolean {
+  const yesLine = Number.isFinite(yes) && yes > LETTERING_NOUL_NO && yes <= 1
+    ? yes
+    : DEFAULT_LETTERING_NOUL_THRESHOLD;
+  if (noul >= yesLine) return true;
+  if (noul <= LETTERING_NOUL_NO) return false;
+  return requestsLettering(prompt);
+}
+
+function typesafeTimeoutMs(): number {
+  try {
+    const value = envInt('TYPESAFE_TIMEOUT_MS');
+    if (value === undefined || !Number.isFinite(value) || value < 1) return DEFAULT_TYPESAFE_TIMEOUT_MS;
+    return value;
+  } catch {
+    return DEFAULT_TYPESAFE_TIMEOUT_MS;
+  }
+}
+
+function letteringThreshold(): number {
+  try {
+    const value = envFloat('TYPESAFE_LETTERING_THRESHOLD');
+    if (value === undefined || !Number.isFinite(value) || value < 0 || value > 1) {
+      return DEFAULT_LETTERING_NOUL_THRESHOLD;
+    }
+    return value;
+  } catch {
+    return DEFAULT_LETTERING_NOUL_THRESHOLD;
+  }
+}
+
+function readNoul(payload: unknown): number | undefined {
+  if (!isRecord(payload) || !isRecord(payload.answers)) return undefined;
+  const answer = payload.answers.requests_lettering;
+  if (!isRecord(answer)) return undefined;
+  const noul = answer.noul;
+  if (typeof noul !== 'number' || !Number.isFinite(noul) || noul < 0 || noul > 1) return undefined;
+  return noul;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function recordLetteringSpend(key: string): Promise<void> {
+  try {
+    await recordSpend(LETTERING_NOUL_COST_CENTS);
+  } catch (error) {
+    logger.warn({
+      event_type: 'generation.text_guard.lettering_noul',
+      fallback: 'spend_unrecorded',
+      error: redact(errorText(error), key),
+    });
+  }
+}
+
+function logLettering(fields: Record<string, unknown>, level: 'info' | 'warn' = 'info'): void {
+  const payload: Record<string, unknown> = { event_type: 'generation.text_guard.lettering_noul' };
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) payload[key] = value;
+  }
+  logger[level](payload);
+}
+
+function isTimeoutError(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('name' in error)) return false;
+  const name = String((error as { name?: string }).name);
+  return name === 'TimeoutError' || name === 'AbortError';
+}
+
+function errorText(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.slice(0, 200);
+}
+
+function redact(message: string, key: string): string {
+  if (!key || !message.includes(key)) return message;
+  return message.split(key).join('[redacted]');
 }
 
 /**
@@ -278,19 +510,23 @@ export async function screenForText(
       : [];
 
     /*
-     * The comparison happens here, not in the model: lettering is intruded
-     * unless the request asked for writing at all. Words are reported either
-     * way so a reviewer can see what was in the image.
+     * The comparison happens here, not in the vision model: lettering is
+     * intruded unless the request asked for writing at all. The Noul (or the
+     * keyword fallback) sees the prompt only. Words are reported either way
+     * so a reviewer can see what was in the image. No OCR words means the
+     * request judgment cannot change the verdict, so the Noul is not called.
      */
+    const asked = words.length > 0 ? await letteringWasRequested(requestPrompt) : false;
     return {
-      intruded: words.length > 0 && !requestsLettering(requestPrompt),
+      intruded: words.length > 0 && !asked,
       words,
       screened: true,
     };
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     logger.warn({
       event_type: 'generation.text_guard.failed',
-      error: error instanceof Error ? error.message : String(error),
+      error: redact(message, typesafeApiKey() ?? ''),
     });
     return skipped('parse');
   }

@@ -29,8 +29,17 @@ vi.mock('@/lib/budget-tracker', () => ({
   VISION_ANALYSIS_COST_CENTS: 1,
 }));
 
+import { logger } from '@/lib/logger';
 import { generate } from '../index';
-import { isClean, requestsLettering, screenForText } from '../internal/textGuard';
+import {
+  DEFAULT_LETTERING_NOUL_THRESHOLD,
+  isClean,
+  LETTERING_NOUL_COST_CENTS,
+  LETTERING_NOUL_QUESTION,
+  requestsLettering,
+  screenForText,
+  TYPESAFE_SYSTEMONE_URL,
+} from '../internal/textGuard';
 
 describe('requestsLettering — the half that is deliberately not a model call', () => {
   it.each([
@@ -95,6 +104,7 @@ describe('screenForText — image payload resolution', () => {
     vi.stubGlobal('fetch', fetchMock);
     vi.stubEnv('GCP_PROJECT_ID', 'tatt-test');
     vi.stubEnv('TEXT_GUARD_MODEL', 'gemini-3.1-flash-lite');
+    vi.stubEnv('TYPESAFE_LETTERING', 'false');
     checkBudgetMock.mockResolvedValue({ allowed: true });
     recordSpendMock.mockResolvedValue(undefined);
   });
@@ -189,6 +199,20 @@ function ocrResponse(words: string[] = []) {
   };
 }
 
+/** A TypeSafe System One Noul answer for `requests_lettering`. */
+function noulResponse(noul: number) {
+  return {
+    ok: true,
+    status: 200,
+    text: async () => '',
+    json: async () => ({
+      model: 'jev-latest',
+      answers: { requests_lettering: { type: 'noul', noul } },
+      usage: { input_tokens: 48, output_tokens: 8 },
+    }),
+  };
+}
+
 describe('generation seam — unrequested-lettering guard', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let renderCalls: number;
@@ -221,6 +245,7 @@ describe('generation seam — unrequested-lettering guard', () => {
     vi.stubEnv('REPLICATE_API_TOKEN', '');
     vi.stubEnv('GCP_PROJECT_ID', 'tatt-test');
     vi.stubEnv('TEXT_GUARD_MODEL', 'gemini-3.1-flash-lite');
+    vi.stubEnv('TYPESAFE_LETTERING', 'false');
     checkBudgetMock.mockResolvedValue({ allowed: true });
     recordSpendMock.mockResolvedValue(undefined);
   });
@@ -576,5 +601,314 @@ describe('generation seam — unrequested-lettering guard', () => {
     expect(result.metadata.textIntrusion).toBe(true);
     expect(result.metadata.textIntrusionWords).toEqual(['GOKU']);
     expect(result.metadata.textGuardRerolls).toBe(1);
+  });
+});
+
+const MEMORIAL = 'in memory of my grandmother Margaret';
+const SCRIPT = "script lettering reading Margaret, my grandmother's name";
+const HANDWRITTEN = 'a handwritten dedication across the collarbone';
+const NO_LETTERING = 'a wolf head in profile, fine detail, high contrast';
+const KEY = 'ts_test_secret_key';
+
+describe('lettering Noul — replaces the keyword check when TYPESAFE_LETTERING is on', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubEnv('GCP_PROJECT_ID', 'tatt-test');
+    vi.stubEnv('TEXT_GUARD_MODEL', 'gemini-3.1-flash-lite');
+    vi.stubEnv('TYPESAFE_LETTERING', 'true');
+    vi.stubEnv('TYPESAFE_API_KEY', KEY);
+    checkBudgetMock.mockResolvedValue({ allowed: true });
+    recordSpendMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.clearAllMocks();
+  });
+
+  function loggedText(): string {
+    return JSON.stringify([
+      vi.mocked(logger.warn).mock.calls,
+      vi.mocked(logger.info).mock.calls,
+      vi.mocked(logger.error).mock.calls,
+      vi.mocked(logger.debug).mock.calls,
+    ]);
+  }
+
+  function typesafeCalls(): unknown[][] {
+    return fetchMock.mock.calls.filter(([url]) => String(url).includes('api.typesafe.ai'));
+  }
+
+  /**
+   * Data-URL screens hit Vertex once, then TypeSafe. `noul` is the probability,
+   * or a failure mode that must fall back to the keyword list.
+   */
+  function arm(words: string[], noul: number | 'timeout' | 'http' | 'bad-json') {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).includes('api.typesafe.ai')) {
+        if (noul === 'timeout') {
+          throw Object.assign(new Error('The operation was aborted due to timeout'), {
+            name: 'TimeoutError',
+          });
+        }
+        if (noul === 'http') {
+          return {
+            ok: false,
+            status: 503,
+            text: async () => `invalid key ${KEY}`,
+            json: async () => ({}),
+          };
+        }
+        if (noul === 'bad-json') {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => 'nope',
+            json: async () => {
+              throw new Error(`bad json ${KEY}`);
+            },
+          };
+        }
+        return noulResponse(noul);
+      }
+      return ocrResponse(words);
+    });
+  }
+
+  it('asks the lettering question and meters one cent on a 2xx', async () => {
+    expect(LETTERING_NOUL_QUESTION).toBe(
+      'Does this request ask for text, a name, lettering or a script?'
+    );
+    expect(DEFAULT_LETTERING_NOUL_THRESHOLD).toBe(0.7);
+    expect(LETTERING_NOUL_COST_CENTS).toBe(1);
+    // The keyword list misses this memorial. The Noul is what clears it.
+    expect(requestsLettering(MEMORIAL)).toBe(false);
+    arm(['Margaret'], 0.91);
+
+    const verdict = await screenForText('data:image/png;base64,IMG', MEMORIAL);
+
+    expect(verdict).toEqual({ intruded: false, words: ['Margaret'], screened: true });
+    expect(recordSpendMock).toHaveBeenCalledTimes(2);
+    expect(recordSpendMock).toHaveBeenNthCalledWith(2, LETTERING_NOUL_COST_CENTS);
+
+    const [url, init] = typesafeCalls()[0];
+    expect(url).toBe(TYPESAFE_SYSTEMONE_URL);
+    expect(init.headers.Authorization).toBe(`Bearer ${KEY}`);
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    const body = JSON.parse(init.body);
+    expect(body.model).toBe('jev-1.14.0');
+    expect(body.state).toBe(MEMORIAL);
+    expect(body.questions.requests_lettering.type).toBe('noul');
+    expect(body.questions.requests_lettering.instructions).toBe(LETTERING_NOUL_QUESTION);
+    expect(body.questions.requests_lettering.options).toBeUndefined();
+    expect(body.questions.requests_lettering.criteria.true).toEqual(expect.any(String));
+    expect(String(body.questions.requests_lettering.criteria.false).toLowerCase()).toContain('no text');
+
+    const vision = fetchMock.mock.calls.find(([url]) => !String(url).includes('api.typesafe.ai'));
+    const visionText = JSON.parse(vision[1].body).contents[0].parts[1].text as string;
+    expect(visionText).toContain('List every piece of legible lettering');
+    expect(visionText).not.toContain('Does this request ask');
+    expect(loggedText()).not.toContain(KEY);
+  });
+
+  it('does not re-roll a memorial name the keyword list misses', async () => {
+    let renders = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      const u = String(url);
+      if (u.includes('api.typesafe.ai')) return noulResponse(0.93);
+      if (u.includes('flash-lite')) return ocrResponse(['Margaret']);
+      renders += 1;
+      return renderResponse();
+    });
+
+    const result = await generate({
+      prompt: MEMORIAL,
+      style: 'fine-line',
+      modelId: 'imagen3',
+      screenText: {},
+    });
+
+    expect(requestsLettering(MEMORIAL)).toBe(false);
+    expect(renders).toBe(1);
+    expect(result.metadata.textIntrusion).toBe(false);
+    expect(result.metadata.textGuardRerolls).toBeUndefined();
+    expect(recordSpendMock).toHaveBeenCalledWith(LETTERING_NOUL_COST_CENTS);
+  });
+
+  it('treats a script request as requested lettering', async () => {
+    expect(requestsLettering(SCRIPT)).toBe(true);
+    vi.stubEnv('TYPESAFE_MODEL', 'jev-1.13.0');
+    arm(['Margaret'], 0.97);
+
+    const verdict = await screenForText('data:image/png;base64,IMG', SCRIPT);
+
+    expect(verdict).toEqual({ intruded: false, words: ['Margaret'], screened: true });
+    const body = JSON.parse(typesafeCalls()[0][1].body);
+    expect(body.model).toBe('jev-1.13.0');
+    expect(body.questions.requests_lettering.instructions).toBe(
+      'Does this request ask for text, a name, lettering or a script?'
+    );
+  });
+
+  it('clears a script phrasing the keyword list does not recognise', async () => {
+    // "handwritten" contains "written" but not as a whole word, so the
+    // fallback would re-roll this dedication. The Noul is the decision.
+    expect(requestsLettering(HANDWRITTEN)).toBe(false);
+    arm(['For Elise'], 0.88);
+
+    const verdict = await screenForText('data:image/png;base64,IMG', HANDWRITTEN);
+
+    expect(verdict).toEqual({ intruded: false, words: ['For Elise'], screened: true });
+  });
+
+  it('still flags lettering when the request asked for none', async () => {
+    expect(requestsLettering(NO_LETTERING)).toBe(false);
+    let renders = 0;
+    let guards = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      const u = String(url);
+      if (u.includes('api.typesafe.ai')) return noulResponse(0.05);
+      if (u.includes('flash-lite')) {
+        guards += 1;
+        return ocrResponse(guards === 1 ? ['GOKU'] : []);
+      }
+      renders += 1;
+      return renderResponse();
+    });
+
+    const result = await generate({
+      prompt: NO_LETTERING,
+      style: 'realism',
+      modelId: 'imagen3',
+      screenText: {},
+    });
+
+    expect(renders).toBe(2);
+    expect(result.metadata.textIntrusion).toBe(false);
+    expect(result.metadata.textGuardRerolls).toBe(1);
+    expect(typesafeCalls()).toHaveLength(1);
+  });
+
+  it('uses a low Noul even when the keyword list would have allowed the words', async () => {
+    const prompt = 'the word RESILIENCE in bold cursive';
+    expect(requestsLettering(prompt)).toBe(true);
+    arm(['RESILIENCE'], 0.04);
+
+    const verdict = await screenForText('data:image/png;base64,IMG', prompt);
+
+    expect(verdict).toEqual({ intruded: true, words: ['RESILIENCE'], screened: true });
+  });
+
+  it('counts a Noul equal to the threshold as a request for lettering', async () => {
+    arm(['Margaret'], DEFAULT_LETTERING_NOUL_THRESHOLD);
+
+    const verdict = await screenForText('data:image/png;base64,IMG', MEMORIAL);
+
+    expect(verdict.intruded).toBe(false);
+  });
+
+  it('keeps the keyword answer when the Noul is between 0.3 and 0.7', async () => {
+    const prompt = 'the word RESILIENCE in bold cursive';
+    expect(requestsLettering(prompt)).toBe(true);
+    arm(['RESILIENCE'], 0.5);
+
+    const verdict = await screenForText('data:image/png;base64,IMG', prompt);
+
+    expect(verdict).toEqual({ intruded: false, words: ['RESILIENCE'], screened: true });
+  });
+
+  it('honours a lower threshold and ignores one outside 0..1', async () => {
+    arm(['Margaret'], 0.65);
+
+    const belowDefault = await screenForText('data:image/png;base64,IMG', MEMORIAL);
+    expect(belowDefault.intruded).toBe(true);
+
+    vi.stubEnv('TYPESAFE_LETTERING_THRESHOLD', '0.6');
+    const lowered = await screenForText('data:image/png;base64,IMG', MEMORIAL);
+    expect(lowered.intruded).toBe(false);
+
+    vi.stubEnv('TYPESAFE_LETTERING_THRESHOLD', '1.5');
+    const ignored = await screenForText('data:image/png;base64,IMG', MEMORIAL);
+    expect(ignored.intruded).toBe(true);
+  });
+
+  it('does not call TypeSafe when OCR found no lettering', async () => {
+    arm([], 0.99);
+
+    const verdict = await screenForText('data:image/png;base64,IMG', MEMORIAL);
+
+    expect(verdict).toEqual({ intruded: false, words: [], screened: true });
+    expect(typesafeCalls()).toHaveLength(0);
+    expect(recordSpendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the keyword check when the flag is off', async () => {
+    vi.stubEnv('TYPESAFE_LETTERING', 'false');
+    arm(['Margaret'], 0.99);
+
+    const verdict = await screenForText('data:image/png;base64,IMG', MEMORIAL);
+
+    expect(verdict.intruded).toBe(true);
+    expect(typesafeCalls()).toHaveLength(0);
+    expect(recordSpendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the keyword check when the key is missing', async () => {
+    vi.stubEnv('TYPESAFE_API_KEY', '');
+    arm(['Margaret'], 0.99);
+
+    const verdict = await screenForText('data:image/png;base64,IMG', MEMORIAL);
+
+    expect(verdict.intruded).toBe(true);
+    expect(typesafeCalls()).toHaveLength(0);
+    expect(loggedText()).not.toContain(KEY);
+  });
+
+  it('falls back to the keyword check on timeout without metering the call', async () => {
+    arm(['Margaret'], 'timeout');
+
+    const verdict = await screenForText('data:image/png;base64,IMG', MEMORIAL);
+
+    expect(verdict.intruded).toBe(true);
+    expect(recordSpendMock).toHaveBeenCalledTimes(1);
+    expect(loggedText()).toContain('timeout');
+    expect(loggedText()).not.toContain(KEY);
+  });
+
+  it('falls back to the keyword check on an HTTP error and does not log the key', async () => {
+    arm(['Margaret'], 'http');
+
+    const verdict = await screenForText('data:image/png;base64,IMG', MEMORIAL);
+
+    expect(verdict.intruded).toBe(true);
+    expect(recordSpendMock).toHaveBeenCalledTimes(1);
+    expect(loggedText()).not.toContain(KEY);
+  });
+
+  it('meters a 2xx whose body cannot be parsed, then uses the keyword check', async () => {
+    arm(['Margaret'], 'bad-json');
+
+    const verdict = await screenForText('data:image/png;base64,IMG', MEMORIAL);
+
+    expect(verdict.intruded).toBe(true);
+    expect(recordSpendMock).toHaveBeenNthCalledWith(2, LETTERING_NOUL_COST_CENTS);
+    expect(loggedText()).not.toContain(KEY);
+  });
+
+  it('falls back to the keyword check when the cap cannot cover the Noul', async () => {
+    checkBudgetMock
+      .mockResolvedValueOnce({ allowed: true, remainingCents: 1 })
+      .mockResolvedValueOnce({ allowed: false, remainingCents: 0 });
+    arm(['Margaret'], 0.99);
+
+    const verdict = await screenForText('data:image/png;base64,IMG', MEMORIAL);
+
+    expect(verdict.intruded).toBe(true);
+    expect(typesafeCalls()).toHaveLength(0);
+    expect(recordSpendMock).toHaveBeenCalledTimes(1);
   });
 });

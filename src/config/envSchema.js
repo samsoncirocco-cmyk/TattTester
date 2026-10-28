@@ -338,6 +338,16 @@ export const ENV_SECTIONS = [
         name: 'GEMINI_MODEL', type: 'string', required: false, default: 'gemini-2.5-flash',
         purpose: 'Model overrides (defaults live in code).',
       },
+      {
+        name: 'TYPESAFE_LETTERING', type: 'bool', required: false, default: 'false',
+        example: 'false',
+        purpose: 'When true, a TypeSafe Noul decides whether the tattoo request asks for text, a name, lettering, or a script. Off, missing key, timeout, or error keeps the keyword check.',
+      },
+      {
+        name: 'TYPESAFE_LETTERING_THRESHOLD', type: 'float', required: false, default: '0.7',
+        example: '0.7',
+        purpose: 'Noul at or above this counts as a request for lettering. At or below 0.3 counts as no lettering. Between the two, the keyword check decides. TypeSafe starting yes-line is 0.7.',
+      },
       { name: 'CONVERSATION_MODEL', type: 'string', required: false, purpose: '' },
       {
         name: 'INTAKE_EXTRACTION_MODEL', type: 'string', required: false,
