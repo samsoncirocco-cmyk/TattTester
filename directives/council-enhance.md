@@ -53,15 +53,17 @@ Transform a short user tattoo idea (e.g., "dragon sleeve") into three progressiv
    | Priority | Provider | Condition | Model | Cost |
    |----------|----------|-----------|-------|------|
    | 1 | Vertex AI | `NEXT_PUBLIC_VERTEX_AI_ENABLED !== 'false'` and credentials configured | `gemini-2.0-flash-exp` | ~$0 (free tier) |
-   | 2 | OpenRouter | `NEXT_PUBLIC_USE_OPENROUTER === 'true'` and key set | 3 models (see below) | ~$0.08/call |
+   | 2 | OpenRouter | `NEXT_PUBLIC_USE_OPENROUTER === 'true'` and key set | Legacy: 3 models serial (see below). Typed path (`TYPESAFE_COUNCIL=true`): one current model | ~$0.08 legacy / ~$0.0014 typed |
    | 3 | Demo Mode | `NEXT_PUBLIC_COUNCIL_DEMO_MODE === 'true'` | Mock responses | $0 |
    | 4 | External API | Fallback to `COUNCIL_API_URL/prompt-generation` | Varies | Varies |
    | 5 | Mock fallback | All above fail | Hardcoded templates | $0 |
 
-5. **OpenRouter Council Members** (used in priority 2):
-   - Creative Director: `anthropic/claude-3.5-sonnet` (~$0.03) — artistic vision
-   - Technical Expert: `openai/gpt-4-turbo` (~$0.03) — tattoo feasibility, also generates negative prompt
-   - Style Specialist: `google/gemini-pro-1.5` (~$0.02) — style authenticity
+5. **OpenRouter council** (priority 2), two modes:
+   - **Typed** (`TYPESAFE_COUNCIL=true` and `TYPESAFE_API_KEY` set): one generator (`COUNCIL_GENERATOR_MODEL`, default `google/gemini-2.5-flash`, or Vertex `GEMINI_MODEL` when that lane is configured) writes simple/detailed/ultra and the negative prompt. One TypeSafe `jev-latest` call scores the draft, chooses the image model, and checks two hazards. A low score or low confidence regenerates once. Timeout, HTTP error, missing key, or a repeated text/brand hazard falls through to the legacy path below.
+   - **Legacy** (flag off, or TypeSafe unavailable) — serial, outdated ids kept for rollback:
+     - Creative Director: `anthropic/claude-3.5-sonnet` (~$0.03) — artistic vision
+     - Technical Expert: `openai/gpt-4-turbo` (~$0.03) — tattoo feasibility, also generates negative prompt
+     - Style Specialist: `google/gemini-1.5-pro` (~$0.02) — style authenticity
 
 6. After LLM generation, the service applies the **Council Skill Pack** (`councilSkillPack.ts`):
    - Anatomical flow tokens based on `bodyPart`
@@ -114,10 +116,12 @@ Transform a short user tattoo idea (e.g., "dragon sleeve") into three progressiv
 
 **Vertex AI path (recommended)**: Gemini 2.0 Flash is currently free or extremely low cost. Estimated $0 per call.
 
-**OpenRouter path**: ~$0.08 per enhancement (4 API calls across 3 models: creative, technical for detailed, style for ultra, technical for negative prompt). Estimated costs per member:
+**OpenRouter legacy path**: ~$0.08 per enhancement in the service's flat sum (4 API calls across 3 models: creative, technical for detailed, style for ultra, technical for negative prompt). The flat sum counts the technical model once. A token-priced estimate of all four calls is ~$0.034. Per member:
 - Creative Director (Claude 3.5 Sonnet): ~$0.03
 - Technical Expert (GPT-4 Turbo): ~$0.03
-- Style Specialist (Gemini Pro 1.5): ~$0.02
+- Style Specialist (Gemini 1.5 Pro): ~$0.02
+
+**Typed path** (`TYPESAFE_COUNCIL=true`): 1 generator call (~$0.0013 at Gemini 2.5 Flash list price) + 1 Jev judge call (~$0.00007, input-only). A regeneration is those two calls again. `scripts/benchmark-council-typesafe.mjs` prints the comparison. The enhance route's budget debit is unchanged.
 
 **Demo/Mock path**: $0 (no external API calls).
 

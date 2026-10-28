@@ -338,6 +338,10 @@ export const ENV_SECTIONS = [
         name: 'GEMINI_MODEL', type: 'string', required: false, default: 'gemini-2.5-flash',
         purpose: 'Model overrides (defaults live in code).',
       },
+      {
+        name: 'COUNCIL_GENERATOR_MODEL', type: 'string', required: false, default: 'google/gemini-2.5-flash',
+        purpose: 'Single OpenRouter model for an offline typed council draft. The legacy three-model path does not read it, and the live council does not switch to it while replacement is staged.',
+      },
       { name: 'CONVERSATION_MODEL', type: 'string', required: false, purpose: '' },
       {
         name: 'INTAKE_EXTRACTION_MODEL', type: 'string', required: false,
@@ -425,6 +429,11 @@ export const ENV_SECTIONS = [
         name: 'TYPESAFE_TIMEOUT_MS', type: 'int', required: false, default: '8000',
         example: '8000',
         purpose: 'Abort a TypeSafe System One call after this many milliseconds and keep the existing path.',
+      },
+      {
+        name: 'TYPESAFE_COUNCIL', type: 'bool', required: false, default: 'false',
+        example: 'false',
+        purpose: 'Staged council judge. On does not replace the legacy council. The offline evaluator can still be run in tests. Off is the default.',
       },
     ],
   },

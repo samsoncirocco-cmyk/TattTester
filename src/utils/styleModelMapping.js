@@ -281,14 +281,41 @@ export function getModelPromptEnhancements(modelId, basePrompt, isCouncilEnhance
 }
 
 /**
- * Select model with automatic fallback handling
- * 
+ * Select model with automatic fallback handling.
+ *
+ * A TypeSafe Choice can pass `options.preferredModelId`. That choice wins
+ * when the id is a configured, available model. Anything else — missing
+ * choice, low confidence (the caller omits the id), unknown id, or an
+ * unavailable model — keeps this rules table.
+ *
  * @param {string} style - Tattoo style
  * @param {string} prompt - User prompt (for complexity analysis)
  * @param {string} bodyPart - Body part for placement
+ * @param {{ preferredModelId?: string, reasoning?: string, choiceConfidence?: number, choiceProbabilities?: Record<string, number> }} [options]
  * @returns {Promise<Object>} Selected model with fallback if needed
  */
-export async function selectModelWithFallback(style, prompt = '', bodyPart = 'forearm') {
+export async function selectModelWithFallback(style, prompt = '', bodyPart = 'forearm', options = {}) {
+    const preferred = options.preferredModelId;
+    if (preferred && MODEL_CONFIGS[preferred]) {
+        const isPreferredAvailable = await validateModelAvailability(preferred);
+        if (isPreferredAvailable) {
+            const preferredConfig = MODEL_CONFIGS[preferred];
+            return {
+                modelId: preferred,
+                modelName: preferredConfig.name,
+                modelConfig: preferredConfig,
+                reasoning: options.reasoning || `TypeSafe judge selected ${preferredConfig.name}`,
+                fallbackChain: MODEL_FALLBACK_CHAIN[preferred] || [],
+                estimatedTime: preferredConfig.estimatedTime,
+                cost: preferredConfig.cost,
+                isFallback: false,
+                source: 'typesafe',
+                choiceConfidence: options.choiceConfidence ?? null,
+                choiceProbabilities: options.choiceProbabilities ?? null
+            };
+        }
+    }
+
     const complexity = determineComplexity(prompt);
     const selection = selectOptimalModel(style, complexity, bodyPart);
 
@@ -298,7 +325,9 @@ export async function selectModelWithFallback(style, prompt = '', bodyPart = 'fo
     if (isPrimaryAvailable) {
         return {
             ...selection,
-            isFallback: false
+            isFallback: false,
+            source: 'rules',
+            typesafeChoiceIgnored: Boolean(preferred)
         };
     }
 
@@ -316,7 +345,9 @@ export async function selectModelWithFallback(style, prompt = '', bodyPart = 'fo
         estimatedTime: fallbackConfig.estimatedTime,
         cost: fallbackConfig.cost,
         isFallback: true,
-        originalModel: selection.modelId
+        originalModel: selection.modelId,
+        source: 'rules',
+        typesafeChoiceIgnored: Boolean(preferred)
     };
 }
 
