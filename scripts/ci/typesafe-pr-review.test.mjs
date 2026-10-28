@@ -11,6 +11,7 @@ import {
   WARN_THRESHOLD,
   buildRequest,
   isForkPullRequest,
+  mergeWithPrior,
   parseDiff,
   planBatches,
   renderComment,
@@ -651,7 +652,10 @@ describe('workflow contract', () => {
     expect(workflow).toContain('continue-on-error: true');
     expect(workflow).toContain('contents: read');
     expect(workflow).toContain('pull-requests: write');
-    expect(workflow).toContain('issues: write');
+    expect(workflow).not.toContain('issues: write');
+    expect(workflow).toContain('ref: ${{ github.event.pull_request.base.sha }}');
+    expect(workflow).toContain("vars.TYPESAFE_PR_REVIEW_LIVE == 'true' && secrets.TYPESAFE_API_KEY || ''");
+    expect(workflow).not.toMatch(/github\.event\.pull_request\.(title|body)/);
     expect(workflow).toContain('node scripts/ci/typesafe-pr-review.mjs');
     expect(workflow).not.toMatch(/^\s*pull_request_target\s*:/m);
     expect(workflow).not.toMatch(/contents:\s*write/);
@@ -660,5 +664,59 @@ describe('workflow contract', () => {
     const imports = [...script.matchAll(/from '([^']+)'/g)].map((match) => match[1]);
     expect(imports.length).toBeGreaterThan(0);
     expect(imports.every((specifier) => specifier.startsWith('node:'))).toBe(true);
+  });
+});
+
+describe('partial reviews (S427-1)', () => {
+  const prior = `${COMMENT_MARKER}\n### TypeSafe semantic review (advisory)\n| \`src/a.js\` | secret | 0.91 |`;
+  const priorComments = (patched) => (init) => {
+    if (!init.method || init.method === 'GET') {
+      return http({ body: [{ id: 42, url: 'https://api.github.com/repos/samsoncirocco-cmyk/TattTester/issues/comments/42', body: prior }] });
+    }
+    if (init.method === 'PATCH') { patched.push(JSON.parse(init.body).body); return http({ body: { id: 42 } }); }
+    return http({ status: 500 });
+  };
+
+  for (const [name, answers] of [
+    ['an empty 2xx answer set', () => ({})],
+    ['out-of-range probabilities', (body) => answersFor(body, () => 1.7).answers],
+    ['non-numeric probabilities', (body) => answersFor(body, () => 'high').answers],
+  ]) {
+    it(`does not report clean and keeps the earlier warning for ${name}`, async () => {
+      const patched = [];
+      const { fetch } = installFetch({
+        typesafe(init) { return http({ body: { model: 'jev-1.14.0', answers: answers(JSON.parse(init.body)) } }); },
+        comments: priorComments(patched),
+      });
+      const result = await runReview({ env: baseEnv(), fetch, signal: new AbortController().signal, sleep: async () => {}, log() {} });
+      expect(result.exitCode).toBe(0);
+      expect(result.partial).toBe(true);
+      expect(patched).toHaveLength(1);
+      expect(patched[0]).not.toContain('No warnings at or above the threshold.');
+      expect(patched[0]).toContain('Partial review');
+      expect(patched[0]).toContain('not reviewed');
+      expect(patched[0]).toContain('| `src/a.js` | secret | 0.91 |');
+    });
+  }
+
+  it('marks out-of-range answers as missing', () => {
+    const index = [{ id: 'h0_secret', file: 'a', label: 'secret' }, { id: 'h0_price', file: 'a', label: 'price' }];
+    const parsed = warningsFromAnswers(index, { h0_secret: { noul: -0.2 }, h0_price: { noul: 0.9 } }, 0.7);
+    expect(parsed.missing).toEqual(['h0_secret']);
+    expect(parsed.warnings).toHaveLength(1);
+  });
+
+  it('does not nest an older kept review twice', () => {
+    const once = mergeWithPrior('new', prior);
+    const twice = mergeWithPrior('newer', `${COMMENT_MARKER}\n${once}`);
+    expect(twice.match(/Earlier review/g)).toHaveLength(1);
+  });
+
+  it('escapes backslashes before pipes in table cells', () => {
+    const comment = renderComment({
+      warnings: [{ file: 'a\\|b.js', label: 'x', location: 'L1', probability: 0.9 }],
+      reviewedHunks: 1, calls: 1, skipped: [],
+    });
+    expect(comment).toContain('a\\\\\\|b.js');
   });
 });

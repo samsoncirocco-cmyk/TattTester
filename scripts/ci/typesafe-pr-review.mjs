@@ -263,7 +263,7 @@ export function warningsFromAnswers(index, answers, threshold = WARN_THRESHOLD) 
   const missing = [];
   for (const item of index) {
     const probability = answers?.[item.id]?.noul;
-    if (typeof probability !== 'number' || !Number.isFinite(probability)) {
+    if (typeof probability !== 'number' || !Number.isFinite(probability) || probability < 0 || probability > 1) {
       missing.push(item.id);
       continue;
     }
@@ -280,7 +280,11 @@ export function warningsFromAnswers(index, answers, threshold = WARN_THRESHOLD) 
 }
 
 function cell(value) {
-  return String(value).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+  // Escape backslashes first so a trailing backslash cannot unescape the pipe.
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|')
+    .replace(/\r?\n/g, ' ');
 }
 
 export function renderComment({
@@ -294,7 +298,9 @@ export function renderComment({
   answeredBy = [],
   truncated = false,
   partialFailure = false,
+  unanswered = 0,
 }) {
+  const partial = partialFailure || unanswered > 0;
   const lines = [
     COMMENT_MARKER,
     '### TypeSafe semantic review (advisory)',
@@ -303,7 +309,9 @@ export function renderComment({
     '',
   ];
 
-  if (warnings.length === 0) {
+  if (warnings.length === 0 && partial) {
+    lines.push('**Partial review.** No warnings were found in the answers received, but this is not a clean result.');
+  } else if (warnings.length === 0) {
     lines.push('No warnings at or above the threshold.');
   } else {
     const sorted = [...warnings].sort((a, b) => (
@@ -341,6 +349,9 @@ export function renderComment({
   }
   if (partialFailure) {
     lines.push('Some TypeSafe calls failed. Those hunks are omitted. The workflow still exits successfully.');
+  }
+  if (unanswered > 0) {
+    lines.push(`${unanswered} ${unanswered === 1 ? 'check' : 'checks'} got no valid answer and ${unanswered === 1 ? 'was' : 'were'} not reviewed.`);
   }
   return lines.join('\n');
 }
@@ -484,10 +495,21 @@ async function listReviewComments({ fetch, env, signal }) {
   return null;
 }
 
-export async function upsertReviewComment({ fetch, env, body, signal }) {
+export const PRIOR_MARKER = '<!-- typesafe-prior-review -->';
+
+// A partial run never erases an earlier review: the earlier result is kept below the new one.
+export function mergeWithPrior(body, priorBody) {
+  if (!priorBody) return body;
+  const prior = priorBody.split(PRIOR_MARKER)[0].replace(COMMENT_MARKER, '').trim();
+  if (!prior) return body;
+  return `${body}\n\n${PRIOR_MARKER}\n<details><summary>Earlier review, kept because this run was partial</summary>\n\n${prior}\n\n</details>`;
+}
+
+export async function upsertReviewComment({ fetch, env, body, signal, partial = false }) {
   const headers = githubHeaders(env.GITHUB_TOKEN, 'application/vnd.github+json');
   const existing = await listReviewComments({ fetch, env, signal });
   if (existing) {
+    if (partial) body = mergeWithPrior(body, existing.body);
     const response = await fetch(existing.url, {
       method: 'PATCH',
       headers,
@@ -558,6 +580,7 @@ export async function runReview(deps) {
     const sent = [];
     let calls = 0;
     let partialFailure = false;
+    let unanswered = 0;
 
     for (let index = 0; index < batches.length; index += 1) {
       const batch = batches[index];
@@ -579,6 +602,7 @@ export async function runReview(deps) {
         }
         const parsed = warningsFromAnswers(request.index, response?.answers, options.threshold);
         warnings.push(...parsed.warnings);
+        unanswered += parsed.missing.length;
         if (parsed.missing.length > 0) {
           notice(`TypeSafe response omitted ${parsed.missing.length} answer(s).`);
         }
@@ -606,21 +630,23 @@ export async function runReview(deps) {
       answeredBy,
       truncated,
       partialFailure,
+      unanswered,
     });
+    const partial = partialFailure || unanswered > 0;
 
     if (!env.GITHUB_TOKEN || !env.GITHUB_REPOSITORY || !env.PR_NUMBER) {
       notice('GitHub comment target is not set. The review result was not posted.');
       log(comment);
-      return { exitCode: 0, notices, commented: false, warnings, calls, comment };
+      return { exitCode: 0, notices, commented: false, warnings, calls, comment, partial };
     }
 
     try {
-      const action = await upsertReviewComment({ fetch, env, body: comment, signal });
+      const action = await upsertReviewComment({ fetch, env, body: comment, signal, partial });
       log(`TypeSafe review comment ${action}.`);
-      return { exitCode: 0, notices, commented: true, warnings, calls, comment, action };
+      return { exitCode: 0, notices, commented: true, warnings, calls, comment, action, partial };
     } catch (error) {
       notice(`Could not post the pull request comment (${safeError(error, secret)}).`);
-      return { exitCode: 0, notices, commented: false, warnings, calls, comment };
+      return { exitCode: 0, notices, commented: false, warnings, calls, comment, partial };
     }
   } catch (error) {
     notice(`TypeSafe review failed (${safeError(error, secret)}).`);
