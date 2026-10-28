@@ -7,17 +7,25 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { checkBudget, recordSpend } from '@/lib/budget-tracker';
+import { TYPESAFE_EVALUATED_MODEL } from '@/services/typesafe';
 import { extractIntake } from '../index';
 import { resetOntologyCache } from '../internal/ontology';
 import {
   INTAKE_TYPESAFE_THRESHOLDS,
   TYPESAFE_SYSTEMONE_URL,
+  sideForSelectedPlacement,
   styleDimensionFor,
 } from '../internal/typesafeExtraction';
 import ontology from '../../../../data/style-ontology.json';
 
 vi.mock('@/lib/google-auth-edge', () => ({
   getGcpAccessToken: vi.fn().mockResolvedValue('test-gcp-token'),
+}));
+
+vi.mock('@/lib/budget-tracker', () => ({
+  checkBudget: vi.fn(async () => ({ allowed: true, spentCents: 0, remainingCents: 50_000 })),
+  recordSpend: vi.fn(async () => undefined),
 }));
 
 const FIXTURE_PATH = path.join(
@@ -42,6 +50,7 @@ const ENV_KEYS = [
   'TYPESAFE_MODEL',
   'TYPESAFE_TIMEOUT_MS',
   'STYLE_ONTOLOGY_PATH',
+  'NEXT_PUBLIC_DEMO_MODE',
 ];
 
 let savedEnv: Record<string, string | undefined>;
@@ -54,6 +63,8 @@ beforeEach(() => {
   }
   process.env.STYLE_ONTOLOGY_PATH = FIXTURE_PATH;
   resetOntologyCache();
+  vi.mocked(checkBudget).mockResolvedValue({ allowed: true, spentCents: 0, remainingCents: 50_000 });
+  vi.mocked(recordSpend).mockClear();
 });
 
 afterEach(() => {
@@ -111,13 +122,24 @@ function noul(value: number) {
 function confidentAnswers() {
   return {
     placement: choice('forearm', INTAKE_TYPESAFE_THRESHOLDS.placement + 0.35),
-    style_palette: choice('none', 0.9),
-    style_line: choice('fine-line', INTAKE_TYPESAFE_THRESHOLDS.style + 0.42),
-    style_school: choice('none', 0.88),
+    'style_fine-line': choice('present', INTAKE_TYPESAFE_THRESHOLDS.style + 0.42),
+    'style_american-traditional': choice('absent', 0.9),
+    style_blackwork: choice('absent', 0.9),
+    style_watercolor: choice('absent', 0.9),
+    style_japanese: choice('absent', 0.88),
     'axis_bold-fine': noul(0.05),
     'axis_color-blackwork': noul(0.08),
     'axis_literal-abstract': noul(0.1),
     'axis_minimal-ornate': noul(0.04),
+  };
+}
+
+function blendedStyleAnswers() {
+  return {
+    ...confidentAnswers(),
+    'style_fine-line': choice('present', 0.91),
+    style_blackwork: choice('present', 0.86),
+    style_watercolor: choice('present', 0.84),
   };
 }
 
@@ -129,9 +151,11 @@ function confidentAnswers() {
 function ambiguousAnswers() {
   return {
     placement: choice('shoulder', INTAKE_TYPESAFE_THRESHOLDS.placement - 0.45),
-    style_palette: choice('blackwork', INTAKE_TYPESAFE_THRESHOLDS.style - 0.3),
-    style_line: choice('fine-line', INTAKE_TYPESAFE_THRESHOLDS.style - 0.28),
-    style_school: choice('japanese', INTAKE_TYPESAFE_THRESHOLDS.style - 0.2),
+    'style_fine-line': choice('present', INTAKE_TYPESAFE_THRESHOLDS.style - 0.28),
+    style_blackwork: choice('unknown', 0.4),
+    style_watercolor: choice('absent', 0.8),
+    style_japanese: choice('present', INTAKE_TYPESAFE_THRESHOLDS.style - 0.2),
+    'style_american-traditional': choice('absent', 0.7),
     'axis_bold-fine': noul(INTAKE_TYPESAFE_THRESHOLDS.noulYes + 0.2),
     'axis_color-blackwork': noul(INTAKE_TYPESAFE_THRESHOLDS.noulResolved - 0.18),
     'axis_literal-abstract': noul(0.55),
@@ -230,7 +254,7 @@ describe('extractIntake — TypeSafe flag', () => {
     expect(init.headers).toMatchObject({ Authorization: `Bearer ${KEY}` });
     expect(init.body).not.toContain(KEY);
     const body = JSON.parse(String(init.body));
-    expect(body.model).toBe('jev-latest');
+    expect(body.model).toBe(TYPESAFE_EVALUATED_MODEL);
     expect(body.questions.placement.type).toBe('choice');
     expect(body.questions.placement.criteria.forearm).toBeTruthy();
     expect(body.questions.placement.criteria.ribcage).toBeTruthy();
@@ -243,16 +267,24 @@ describe('extractIntake — TypeSafe flag', () => {
       expect(question.criteria).toBeTruthy();
     }
     expect(Object.keys(body.questions).filter((id) => id.startsWith('style_')).sort()).toEqual([
-      'style_line',
-      'style_palette',
-      'style_school',
+      'style_american-traditional',
+      'style_blackwork',
+      'style_fine-line',
+      'style_japanese',
+      'style_watercolor',
     ]);
+    expect(body.questions['style_fine-line'].criteria).toMatchObject({
+      present: expect.any(String),
+      absent: expect.any(String),
+      unknown: expect.any(String),
+    });
 
     expect(record.placement).toBe('left forearm');
     expect(record.styleTags).toEqual(['fine-line']);
     expect(record.ambiguousAxes).toEqual([]);
     // Free text stays with Gemini.
     expect(record.subject).toContain('Goku');
+    expect(vi.mocked(recordSpend)).toHaveBeenCalledTimes(1);
     expect(record.characterIdentities).toContainEqual({ name: 'Goku', series: 'Dragon Ball' });
     expect(record.references).toEqual(['https://example.com/ref.jpg']);
     expect(record.meaning).toBe('Goku from Dragon Ball charging a Kamehameha');
@@ -335,5 +367,68 @@ describe('extractIntake — TypeSafe flag', () => {
     const logged = warn.mock.calls.flat().join(' ');
     expect(logged).toContain('timeout');
     expect(logged).not.toContain(KEY);
+  });
+
+  it('does not call TypeSafe in demo mode, even with the flag and a key', async () => {
+    enableTypesafe();
+    process.env.NEXT_PUBLIC_DEMO_MODE = 'true';
+    const fetchMock = routeFetch(typesafeResponse(confidentAnswers()));
+
+    const record = await extractIntake({
+      placementAnswer: 'left forearm',
+      meaningAnswer: 'a rose',
+    });
+
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('api.typesafe.ai'))).toBe(false);
+    expect(vi.mocked(checkBudget)).not.toHaveBeenCalled();
+    expect(vi.mocked(recordSpend)).not.toHaveBeenCalled();
+    expect(record.placement).toBe('ankle');
+  });
+
+  it('does not call TypeSafe when the shared budget governor denies the call', async () => {
+    enableTypesafe();
+    vi.mocked(checkBudget).mockResolvedValue({ allowed: false, spentCents: 50_000, remainingCents: 0 });
+    const fetchMock = routeFetch(typesafeResponse(confidentAnswers()));
+
+    const record = await extractIntake({
+      placementAnswer: 'left forearm',
+      meaningAnswer: 'a rose',
+    });
+
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('api.typesafe.ai'))).toBe(false);
+    expect(vi.mocked(recordSpend)).not.toHaveBeenCalled();
+    expect(record.placement).toBe('ankle');
+    expect(record.styleTags).toEqual(['japanese']);
+  });
+
+  it('keeps every explicitly requested compatible style tag', async () => {
+    enableTypesafe();
+    const fetchMock = routeFetch(typesafeResponse(blendedStyleAnswers()));
+
+    const record = await extractIntake({
+      placementAnswer: 'forearm',
+      meaningAnswer: 'fine line blackwork with watercolor accents',
+    });
+
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('api.typesafe.ai'))).toBe(true);
+    expect(record.styleTags).toEqual(['fine-line', 'blackwork', 'watercolor']);
+  });
+});
+
+describe('sideForSelectedPlacement', () => {
+  it('uses the corrected side of the selected part, not an earlier left', () => {
+    const state = 'user: left arm\nuser: actually the right calf';
+    expect(sideForSelectedPlacement(state, 'calf')).toBe('right');
+    expect(sideForSelectedPlacement(state, 'arm')).toBe('left');
+  });
+
+  it('does not copy a subject left hand onto a right placement', () => {
+    const state = 'user: right forearm, the figure holds an object in its left hand';
+    expect(sideForSelectedPlacement(state, 'forearm')).toBe('right');
+  });
+
+  it('ignores a bot suggestion and abstains when both sides name the selected part', () => {
+    expect(sideForSelectedPlacement('bot: try the left forearm\nuser: the right calf', 'forearm')).toBeNull();
+    expect(sideForSelectedPlacement('user: the left calf or the right calf', 'calf')).toBeNull();
   });
 });

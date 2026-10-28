@@ -14,10 +14,16 @@ import { runTurn, type ConversationMessage } from '../index';
 import { resetStyleTagCache } from '../internal/ontology';
 import { STALLED_PLACEMENT_ASK } from '../internal/persona';
 import { resetOntologyCache } from '@/services/intake/internal/ontology';
+import { TYPESAFE_EVALUATED_MODEL } from '@/services/typesafe';
 import { INTAKE_TYPESAFE_THRESHOLDS } from '@/services/intake/internal/typesafeExtraction';
 
 vi.mock('@/lib/google-auth-edge', () => ({
   getGcpAccessToken: vi.fn().mockResolvedValue('test-gcp-token'),
+}));
+
+vi.mock('@/lib/budget-tracker', () => ({
+  checkBudget: vi.fn(async () => ({ allowed: true, spentCents: 0, remainingCents: 50_000 })),
+  recordSpend: vi.fn(async () => undefined),
 }));
 
 vi.mock('@/lib/logger', () => ({
@@ -121,9 +127,11 @@ function noul(value: number) {
 function confidentAnswers() {
   return {
     placement: choice('forearm', INTAKE_TYPESAFE_THRESHOLDS.placement + 0.35),
-    style_palette: choice('none', 0.9),
-    style_line: choice('fine-line', INTAKE_TYPESAFE_THRESHOLDS.style + 0.4),
-    style_school: choice('none', 0.88),
+    'style_fine-line': choice('present', INTAKE_TYPESAFE_THRESHOLDS.style + 0.4),
+    'style_american-traditional': choice('absent', 0.9),
+    style_blackwork: choice('absent', 0.9),
+    style_watercolor: choice('absent', 0.9),
+    style_japanese: choice('absent', 0.88),
     'axis_bold-fine': noul(0.05),
     'axis_color-blackwork': noul(0.08),
     'axis_literal-abstract': noul(0.1),
@@ -134,9 +142,11 @@ function confidentAnswers() {
 function ambiguousAnswers() {
   return {
     placement: choice('shoulder', INTAKE_TYPESAFE_THRESHOLDS.placement - 0.45),
-    style_palette: choice('blackwork', INTAKE_TYPESAFE_THRESHOLDS.style - 0.3),
-    style_line: choice('fine-line', INTAKE_TYPESAFE_THRESHOLDS.style - 0.28),
-    style_school: choice('japanese', INTAKE_TYPESAFE_THRESHOLDS.style - 0.2),
+    'style_fine-line': choice('present', INTAKE_TYPESAFE_THRESHOLDS.style - 0.28),
+    style_blackwork: choice('unknown', 0.4),
+    style_watercolor: choice('absent', 0.8),
+    style_japanese: choice('present', INTAKE_TYPESAFE_THRESHOLDS.style - 0.2),
+    'style_american-traditional': choice('absent', 0.7),
     'axis_bold-fine': noul(INTAKE_TYPESAFE_THRESHOLDS.noulYes + 0.2),
     'axis_color-blackwork': noul(INTAKE_TYPESAFE_THRESHOLDS.noulResolved - 0.18),
     'axis_literal-abstract': noul(0.9),
@@ -198,7 +208,7 @@ describe('runTurn — TypeSafe intake', () => {
     const typesafe = fetchMock.mock.calls.find((call) => String(call[0]).includes('api.typesafe.ai'));
     expect(typesafe).toBeTruthy();
     const body = JSON.parse(String((typesafe![1] as RequestInit).body));
-    expect(body.model).toBe('jev-latest');
+    expect(body.model).toBe(TYPESAFE_EVALUATED_MODEL);
     expect(body.questions.placement).not.toHaveProperty('options');
     expect(body.questions.placement.criteria.forearm).toBeTruthy();
     expect(body.state).toContain('Goku');

@@ -30,7 +30,7 @@ features:
       - src/services/designConversation/__tests__/typesafeTurn.test.ts
       - src/features/design-session/__tests__/DesignSessionFlow.test.tsx
     limitations:
-      - TYPESAFE_INTAKE defaults off. When it is on, one TypeSafe call types placement, style dimensions, and axis ambiguity; low confidence leaves the field unresolved so the existing ask flow continues. Gemini still extracts subject and characters. A missing key, timeout, or error keeps the Gemini extraction.
+      - TYPESAFE_INTAKE defaults off. When it is on, one TypeSafe call types placement, each style tag, and axis ambiguity. Demo mode does not call TypeSafe. Outside demo mode the call is checked and debited against the shared spend cap. Compatible tags are kept. Left or right comes from the selected placement, and a conflict abstains. Low confidence leaves the field unresolved so the existing ask flow continues. Gemini still extracts subject and characters. A missing key, timeout, denied budget, or error keeps the Gemini extraction. Live model quality is unmeasured.
 
   one_design_door:
     status: implemented

@@ -278,7 +278,7 @@ async function callOpenRouter(
 }
 
 /**
- * Type placement, style dimensions, and axis ambiguity when TYPESAFE_INTAKE
+ * Type placement, style tags, and axis ambiguity when TYPESAFE_INTAKE
  * is on. Subject, characters, meaning, and the reply stay on the Gemini
  * payload. A low-confidence placement is cleared so the engine's existing
  * ask (placement gate, stalled-field question) fires; low-confidence style
