@@ -303,6 +303,15 @@ features:
     limitations:
       - Pricing copy has no focused page test at this snapshot.
 
+  typesafe_lettering_noul:
+    status: implemented_unverified
+    evidence:
+      - docs/adr/0062-lettering-noul-abstains-when-unsure.md
+      - src/services/generation/internal/textGuard.ts
+      - src/services/generation/__tests__/textGuard.test.ts
+    limitations:
+      - TYPESAFE_LETTERING defaults off. A Noul at or above 0.7 means lettering was requested, at or below 0.3 means it was not, and the band between them uses the keyword check. Timeouts and errors use the keyword check. This is not a measured live-model result.
+
   shared_design_links:
     status: implemented
     evidence:

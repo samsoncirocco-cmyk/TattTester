@@ -339,21 +339,6 @@ export const ENV_SECTIONS = [
         purpose: 'Model overrides (defaults live in code).',
       },
       {
-        name: 'TYPESAFE_API_KEY', type: 'string', required: false, commentedOut: true,
-        example: 'ts_your_key_here',
-        purpose: 'TypeSafe System One key (server only). Never log it.\nhttps://docs.typesafe.ai/introduction',
-      },
-      {
-        name: 'TYPESAFE_MODEL', type: 'string', required: false, default: 'jev-latest',
-        example: 'jev-latest',
-        purpose: 'System One model alias. jev-latest tracks the current stable Jev.',
-      },
-      {
-        name: 'TYPESAFE_TIMEOUT_MS', type: 'int', required: false, default: '8000',
-        example: '8000',
-        purpose: 'Abort a TypeSafe System One call after this many milliseconds and keep the existing path.',
-      },
-      {
         name: 'TYPESAFE_LETTERING', type: 'bool', required: false, default: 'false',
         example: 'false',
         purpose: 'When true, a TypeSafe Noul decides whether the tattoo request asks for text, a name, lettering, or a script. Off, missing key, timeout, or error keeps the keyword check.',
@@ -361,7 +346,7 @@ export const ENV_SECTIONS = [
       {
         name: 'TYPESAFE_LETTERING_THRESHOLD', type: 'float', required: false, default: '0.7',
         example: '0.7',
-        purpose: 'Noul probability at or above this counts as a request for lettering. Below it, OCR words are unrequested. TypeSafe starting yes-line is 0.7.',
+        purpose: 'Noul at or above this counts as a request for lettering. At or below 0.3 counts as no lettering. Between the two, the keyword check decides. TypeSafe starting yes-line is 0.7.',
       },
       { name: 'CONVERSATION_MODEL', type: 'string', required: false, purpose: '' },
       {

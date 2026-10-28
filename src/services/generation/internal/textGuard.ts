@@ -36,6 +36,7 @@
  *    silently indistinguishable from a pass.
  */
 import { envBool, envFloat, envInt, envString } from '@/config/envSchema';
+import { typesafeModel } from '@/services/typesafe';
 import { logger } from '@/lib/logger';
 import { getGcpAccessToken } from '@/lib/google-auth-edge';
 import { buildVertexEndpoint } from '@/lib/vertex-endpoint';
@@ -164,10 +165,9 @@ export function requestsLettering(prompt: string): boolean {
   });
 }
 
-/** Same endpoint and model alias the other TypeSafe call sites use. */
+/** Same endpoint the shared TypeSafe client uses. */
 export const TYPESAFE_SYSTEMONE_URL = 'https://api.typesafe.ai/v1/systemone';
 
-const DEFAULT_TYPESAFE_MODEL = 'jev-latest';
 const DEFAULT_TYPESAFE_TIMEOUT_MS = 8_000;
 
 /**
@@ -180,6 +180,9 @@ export const LETTERING_NOUL_COST_CENTS = 1;
 
 /** TypeSafe's starting yes-line. A Noul has no separate confidence. */
 export const DEFAULT_LETTERING_NOUL_THRESHOLD = 0.7;
+
+/** TypeSafe's starting no-line. Between this and the yes-line, abstain to the keyword check. */
+export const LETTERING_NOUL_NO = 0.3;
 
 /**
  * The question, phrased so a high value means the customer wants writing in
@@ -275,7 +278,7 @@ export async function letteringWasRequested(prompt: string): Promise<boolean> {
     }
 
     const threshold = letteringThreshold();
-    const asked = noul >= threshold;
+    const asked = letteringFromNoul(noul, prompt, threshold);
     logLettering({ noul, threshold, asked, durationMs: Date.now() - started });
     return asked;
   } catch (error) {
@@ -305,12 +308,18 @@ function typesafeApiKey(): string | undefined {
   }
 }
 
-function typesafeModel(): string {
-  try {
-    return envString('TYPESAFE_MODEL') || DEFAULT_TYPESAFE_MODEL;
-  } catch {
-    return DEFAULT_TYPESAFE_MODEL;
-  }
+/**
+ * Yes at or above the yes-line, no at or below 0.3, and the keyword check
+ * in the unsure band. A Noul has no separate confidence, so the middle is
+ * abstention rather than a confident no.
+ */
+export function letteringFromNoul(noul: number, prompt: string, yes = DEFAULT_LETTERING_NOUL_THRESHOLD): boolean {
+  const yesLine = Number.isFinite(yes) && yes > LETTERING_NOUL_NO && yes <= 1
+    ? yes
+    : DEFAULT_LETTERING_NOUL_THRESHOLD;
+  if (noul >= yesLine) return true;
+  if (noul <= LETTERING_NOUL_NO) return false;
+  return requestsLettering(prompt);
 }
 
 function typesafeTimeoutMs(): number {

@@ -700,7 +700,7 @@ describe('lettering Noul — replaces the keyword check when TYPESAFE_LETTERING 
     expect(init.headers.Authorization).toBe(`Bearer ${KEY}`);
     expect(init.signal).toBeInstanceOf(AbortSignal);
     const body = JSON.parse(init.body);
-    expect(body.model).toBe('jev-latest');
+    expect(body.model).toBe('jev-1.14.0');
     expect(body.state).toBe(MEMORIAL);
     expect(body.questions.requests_lettering.type).toBe('noul');
     expect(body.questions.requests_lettering.instructions).toBe(LETTERING_NOUL_QUESTION);
@@ -809,6 +809,16 @@ describe('lettering Noul — replaces the keyword check when TYPESAFE_LETTERING 
     const verdict = await screenForText('data:image/png;base64,IMG', MEMORIAL);
 
     expect(verdict.intruded).toBe(false);
+  });
+
+  it('keeps the keyword answer when the Noul is between 0.3 and 0.7', async () => {
+    const prompt = 'the word RESILIENCE in bold cursive';
+    expect(requestsLettering(prompt)).toBe(true);
+    arm(['RESILIENCE'], 0.5);
+
+    const verdict = await screenForText('data:image/png;base64,IMG', prompt);
+
+    expect(verdict).toEqual({ intruded: false, words: ['RESILIENCE'], screened: true });
   });
 
   it('honours a lower threshold and ignores one outside 0..1', async () => {

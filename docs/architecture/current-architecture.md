@@ -57,6 +57,13 @@ normal and degraded behavior internally.
 Callers request tattoo directions without selecting Replicate or Vertex
 directly. Provider choice and fallback belong inside generation.
 
+The render text guard reads words from the image, then decides whether the
+request asked for them. `TYPESAFE_LETTERING` defaults off. When it is on, a
+TypeSafe Noul at or above 0.7 means the request asked for lettering, a Noul
+at or below 0.3 means it did not, and the band between them keeps the keyword
+check. A missing key, timeout, error, or denied budget also keeps the keyword
+check. Live model quality for that Noul is unmeasured.
+
 The design-session orchestrator passes the full intake style set into routing,
 pins one resulting model for the session, and records each image actually
 purchased. Named multi-character briefs are treated as composition problems:
