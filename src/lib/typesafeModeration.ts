@@ -9,11 +9,14 @@
  * successful 2xx records 1 cent on the existing spend cap. The API key is
  * never logged.
  *
- * Design prompts that block or need review are not generated. Takedown and
- * appeal text is only classified — callers still record the request and must
- * not delete data or resolve it from this result.
+ * Design prompts are advisory. A signal is recorded for a person and does
+ * not reject generation or declare a legal result. The user is told a design
+ * was saved for review only after a durable write with a correlation id.
+ * Takedown and appeal text is only classified — callers still record the
+ * request and must not delete data or resolve it from this result.
  */
 import { envBool, envInt, envString } from '@/config/envSchema';
+import { typesafeModel as pinnedTypesafeModel } from '@/services/typesafe';
 import {
   hazardsAtReview,
   moderationUserMessage,
@@ -29,7 +32,6 @@ import { recordModerationFlag } from '@/lib/moderationQueue';
 /** Same endpoint the other TypeSafe call sites use. */
 export const TYPESAFE_SYSTEMONE_URL = 'https://api.typesafe.ai/v1/systemone';
 
-const DEFAULT_TYPESAFE_MODEL = 'jev-latest';
 const DEFAULT_TYPESAFE_TIMEOUT_MS = 8_000;
 
 /**
@@ -180,18 +182,29 @@ export async function screenContent(input: ScreenInput): Promise<ScreenResult> {
       return skipped('parse');
     }
 
-    const action = routeModeration(assessment);
+    const routed = routeModeration(assessment);
+    // A design prompt is advisory. The model may signal review, but it does
+    // not prohibit generation or declare a legal result.
+    const action: ModerationAction = input.surface === 'design_prompt' && routed !== 'pass'
+      ? 'review'
+      : routed;
     const hazards = hazardsAtReview(assessment.nouls);
+    let receipt: { correlationId: string; durable: boolean } | null = null;
     if (action !== 'pass') {
-      await recordModerationFlag({
+      const correlationId = input.subjectId?.trim() || undefined;
+      const recorded = await recordModerationFlag({
         surface: input.surface,
         action,
         severity: assessment.severity,
         confidence: assessment.confidence,
         nouls: assessment.nouls,
         text,
-        subjectId: input.subjectId,
+        subjectId: correlationId ?? null,
       });
+      receipt = {
+        correlationId: recorded.flag.subjectId || recorded.flag.id,
+        durable: recorded.durable && Boolean(recorded.flag.subjectId),
+      };
     }
 
     logModeration({
@@ -205,7 +218,7 @@ export async function screenContent(input: ScreenInput): Promise<ScreenResult> {
 
     return {
       action,
-      userMessage: action === 'pass' ? null : moderationUserMessage(input.surface, action),
+      userMessage: action === 'pass' ? null : moderationUserMessage(input.surface, action === 'block' ? 'block' : 'review', receipt),
       skipped: false,
       severity: assessment.severity,
       confidence: assessment.confidence,
@@ -332,9 +345,9 @@ function typesafeApiKey(): string | undefined {
 
 function typesafeModel(): string {
   try {
-    return envString('TYPESAFE_MODEL') || DEFAULT_TYPESAFE_MODEL;
+    return pinnedTypesafeModel();
   } catch {
-    return DEFAULT_TYPESAFE_MODEL;
+    return 'jev-1.14.0';
   }
 }
 

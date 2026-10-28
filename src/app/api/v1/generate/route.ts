@@ -107,21 +107,13 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Prompt is required', code: 'INVALID_PROMPT' }, { status: 400 });
         }
 
-        // Before the credit reserve and before generate(). A hold must not
-        // touch the credit ledger. Flag off and call failures return pass.
-        const moderation = await screenContent({
+        // Advisory only. A model signal does not reject the prompt or reserve
+        // a credit. Flag off and call failures leave generation on the current path.
+        await screenContent({
             surface: 'design_prompt',
             text: prompt.trim(),
+            subjectId: req.headers.get('x-request-id'),
         });
-        if (!moderation.skipped && moderation.action !== 'pass') {
-            return NextResponse.json(
-                {
-                    error: moderation.userMessage,
-                    code: moderation.action === 'block' ? 'PROMPT_BLOCKED' : 'PROMPT_IN_REVIEW',
-                },
-                { status: 422 }
-            );
-        }
 
         const requestedCount = Number(sampleCount || num_outputs || 1);
         if (Number.isNaN(requestedCount) || requestedCount < 1 || requestedCount > 4) {

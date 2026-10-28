@@ -339,24 +339,9 @@ export const ENV_SECTIONS = [
         purpose: 'Model overrides (defaults live in code).',
       },
       {
-        name: 'TYPESAFE_API_KEY', type: 'string', required: false, commentedOut: true,
-        example: 'ts_your_key_here',
-        purpose: 'TypeSafe System One key (server only). Never log it.\nhttps://docs.typesafe.ai/introduction',
-      },
-      {
-        name: 'TYPESAFE_MODEL', type: 'string', required: false, default: 'jev-latest',
-        example: 'jev-latest',
-        purpose: 'System One model alias. jev-latest tracks the current stable Jev.',
-      },
-      {
-        name: 'TYPESAFE_TIMEOUT_MS', type: 'int', required: false, default: '8000',
-        example: '8000',
-        purpose: 'Abort a TypeSafe System One call after this many milliseconds and keep the existing path.',
-      },
-      {
         name: 'TYPESAFE_MODERATION', type: 'bool', required: false, default: 'false',
         example: 'false',
-        purpose: 'When true, one TypeSafe call screens a design prompt or takedown/appeal text. Off, missing key, timeout, or error keeps the current path. Never deletes data or resolves a takedown.',
+        purpose: 'When true, one TypeSafe call screens a design prompt or takedown/appeal text. The result is advisory and does not reject generation or resolve a takedown. Off, missing key, timeout, or error keeps the current path.',
       },
       { name: 'CONVERSATION_MODEL', type: 'string', required: false, purpose: '' },
       {

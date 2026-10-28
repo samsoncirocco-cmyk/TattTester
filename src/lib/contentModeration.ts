@@ -89,18 +89,13 @@ export function hazardsAtReview(nouls: Record<string, number>): string[] {
 export function moderationUserMessage(
   surface: ModerationSurface,
   action: 'review' | 'block',
+  receipt?: { correlationId: string; durable: boolean } | null,
 ): string {
   if (surface === 'design_prompt') {
-    if (action === 'block') {
-      return (
-        "We can't generate this design. It looks like it depicts or names a real person, " +
-        "or uses a trademark or franchise character, and we don't draw those automatically."
-      );
+    if (receipt?.durable && receipt.correlationId) {
+      return `Saved for review. Reference ${receipt.correlationId}.`;
     }
-    return (
-      'This design needs a person to look at it before we can generate it. ' +
-      "We've saved it for review and won't draw it automatically."
-    );
+    return 'This was not saved for review.';
   }
 
   if (surface === 'takedown') {

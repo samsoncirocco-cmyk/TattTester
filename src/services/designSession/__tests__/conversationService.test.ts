@@ -415,20 +415,18 @@ describe('converse — conversation lifecycle', () => {
 });
 
 describe('confirmProposal', () => {
-  it('does not render when moderation holds the prompt for review', async () => {
+  it('still renders when moderation only signals the prompt', async () => {
     const sessionId = await converseToProposal();
     mockScreenContent.mockResolvedValueOnce({
       action: 'review',
-      userMessage: 'This design needs a person to look at it before we can generate it.',
+      userMessage: 'This was not saved for review.',
       skipped: false,
       hazards: ['real_person'],
     });
 
-    await expect(confirmProposal(sessionId)).rejects.toMatchObject({
-      code: 'PROMPT_IN_REVIEW',
-      status: 422,
-    });
-    expect(mockGenerate).not.toHaveBeenCalled();
+    const session = await confirmProposal(sessionId);
+    expect(session.phase).toBe('revealed');
+    expect(mockGenerate).toHaveBeenCalled();
   });
 
   it('runs the existing reveal pipeline over the conversation record and moves intake → revealed', async () => {

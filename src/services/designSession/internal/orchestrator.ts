@@ -341,17 +341,10 @@ function generationPrompt(prompts: { simple?: string; detailed?: string; ultra?:
  */
 /**
  * Screen the user's own words before intake extraction or any render.
- * Flag off, and every failure mode of the call, returns without throwing so
- * the current path runs. Block and review throw before a credit's render
- * is bought; they do not delete anything.
+ * The result is advisory. It never rejects the design or deletes anything.
  */
 export async function assertDesignPromptAllowed(text: string): Promise<void> {
-  const decision = await screenContent({ surface: 'design_prompt', text });
-  if (decision.skipped || decision.action === 'pass') return;
-  throw new DesignSessionError(
-    decision.action === 'block' ? 'PROMPT_BLOCKED' : 'PROMPT_IN_REVIEW',
-    decision.userMessage ?? 'A person needs to review this design before we can generate it.',
-  );
+  await screenContent({ surface: 'design_prompt', text });
 }
 
 export async function startSession(request: StartSessionRequest): Promise<StoredSession> {

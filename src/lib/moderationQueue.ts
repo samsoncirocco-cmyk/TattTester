@@ -55,7 +55,7 @@ export async function recordModerationFlag(input: {
   nouls: Record<string, number>;
   text: string;
   subjectId?: string | null;
-}): Promise<ModerationFlag> {
+}): Promise<{ flag: ModerationFlag; durable: boolean }> {
   const flag: ModerationFlag = {
     id: randomUUID(),
     surface: input.surface,
@@ -71,12 +71,12 @@ export async function recordModerationFlag(input: {
   flags.set(flag.id, flag);
 
   try {
-    if (!ensureAdminApp()) return flag;
+    if (!ensureAdminApp()) return { flag, durable: false };
     const { getFirestore } = await import('firebase-admin/firestore');
     await getFirestore().collection(COLLECTION).doc(flag.id).set(flag);
+    return { flag, durable: true };
   } catch (error) {
-    // The decision already happened. Losing the durable copy must not turn
-    // a review into a pass or a block into a delete. The log is the backup.
+    // Losing the durable copy must not delete anything or resolve a takedown.
     logger.warn({
       event_type: 'moderation.flag_unpersisted',
       surface: flag.surface,
@@ -85,7 +85,6 @@ export async function recordModerationFlag(input: {
       excerpt: flag.excerpt,
       error: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
     });
+    return { flag, durable: false };
   }
-
-  return flag;
 }

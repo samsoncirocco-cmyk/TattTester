@@ -185,36 +185,33 @@ async function startAndPick(pickId = 'v3', mostNotYouId = 'v2') {
 }
 
 describe('startSession', () => {
-  it('does not extract or render when moderation blocks the prompt', async () => {
+  it('still extracts and renders when moderation only signals a design prompt', async () => {
     mockScreenContent.mockResolvedValueOnce({
-      action: 'block',
-      userMessage: "We can't generate this design.",
+      action: 'review',
+      userMessage: 'This was not saved for review.',
       skipped: false,
       hazards: ['trademark'],
     });
 
-    await expect(startSession(startRequest)).rejects.toMatchObject({
-      code: 'PROMPT_BLOCKED',
-      status: 422,
-    });
-    expect(mockExtractIntake).not.toHaveBeenCalled();
-    expect(mockGenerate).not.toHaveBeenCalled();
+    const session = await startSession(startRequest);
+    expect(session.id).toBeTruthy();
+    expect(mockExtractIntake).toHaveBeenCalled();
   });
 
-  it('does not extract or render when moderation sends the prompt to review', async () => {
+  it('still starts when a named subject is only a moderation signal', async () => {
     mockScreenContent.mockResolvedValueOnce({
       action: 'review',
-      userMessage: 'This design needs a person to look at it before we can generate it.',
+      userMessage: 'This was not saved for review.',
       skipped: false,
       hazards: ['real_person'],
     });
 
-    await expect(startSession(startRequest)).rejects.toMatchObject({
-      code: 'PROMPT_IN_REVIEW',
-      status: 422,
+    const session = await startSession({
+      placementAnswer: 'right forearm',
+      meaningAnswer: 'in memory of Margaret',
     });
-    expect(mockExtractIntake).not.toHaveBeenCalled();
-    expect(mockGenerate).not.toHaveBeenCalled();
+    expect(session.phase).toBe('revealed');
+    expect(mockGenerate).toHaveBeenCalled();
   });
 
   it('runs intake → council → four renders and persists a revealed session', async () => {

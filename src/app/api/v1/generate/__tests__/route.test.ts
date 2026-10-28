@@ -119,40 +119,33 @@ describe('/api/v1/generate route adapter', () => {
     });
   });
 
-  it('blocks a design prompt before reserving a credit or generating', async () => {
+  it('does not reject a design prompt from a model-only signal', async () => {
     screenContentMock.mockResolvedValueOnce({
-      action: 'block',
-      userMessage: "We can't generate this design. It looks like it depicts or names a real person, or uses a trademark or franchise character, and we don't draw those automatically.",
+      action: 'review',
+      userMessage: 'This was not saved for review.',
       skipped: false,
       hazards: ['trademark'],
     });
 
     const res = await POST(makeRequest({ prompt: 'mickey mouse on my calf' }));
-    const json = await res.json();
 
-    expect(res.status).toBe(422);
-    expect(json.code).toBe('PROMPT_BLOCKED');
-    expect(json.error).toMatch(/can't generate/i);
-    expect(generateMock).not.toHaveBeenCalled();
-    expect(reserveGenerationCreditMock).not.toHaveBeenCalled();
+    expect(res.status).not.toBe(422);
+    expect(generateMock).toHaveBeenCalled();
   });
 
-  it('holds a mid-range design prompt for review without generating', async () => {
+  it('still generates a mid-range design prompt', async () => {
     screenContentMock.mockResolvedValueOnce({
       action: 'review',
-      userMessage: "This design needs a person to look at it before we can generate it. We've saved it for review and won't draw it automatically.",
+      userMessage: 'This was not saved for review.',
       skipped: false,
       hazards: ['real_person'],
     });
+    generateMock.mockResolvedValueOnce(vertexResult(1));
 
     const res = await POST(makeRequest({ prompt: 'a portrait of my friend alex' }));
-    const json = await res.json();
 
-    expect(res.status).toBe(422);
-    expect(json.code).toBe('PROMPT_IN_REVIEW');
-    expect(json.error).toMatch(/person to look/i);
-    expect(generateMock).not.toHaveBeenCalled();
-    expect(reserveGenerationCreditMock).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(generateMock).toHaveBeenCalled();
   });
 
   it('returns the vertex success shape and records vertex spend per image', async () => {

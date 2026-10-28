@@ -57,6 +57,12 @@ normal and degraded behavior internally.
 Callers request tattoo directions without selecting Replicate or Vertex
 directly. Provider choice and fallback belong inside generation.
 
+`TYPESAFE_MODERATION` defaults off. When it is on, a TypeSafe signal about a
+design prompt is advisory: it can be recorded for a person, and it does not
+reject generation or decide a trademark or likeness question. The product
+says a design was saved for review only after that record is written durably
+with a correlation id. Otherwise it says the design was not saved for review.
+
 The design-session orchestrator passes the full intake style set into routing,
 pins one resulting model for the session, and records each image actually
 purchased. Named multi-character briefs are treated as composition problems:

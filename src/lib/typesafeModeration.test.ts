@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkBudget, recordSpend } from '@/lib/budget-tracker';
+import { ensureAdminApp } from '@/lib/firebase-admin';
 import { logger } from '@/lib/logger';
 import { clearModerationFlags, listModerationFlags } from '@/lib/moderationQueue';
 import {
@@ -18,6 +19,13 @@ vi.mock('@/lib/logger', () => ({
 }));
 
 vi.mock('@/lib/firebase-admin', () => ({ ensureAdminApp: vi.fn(() => false) }));
+vi.mock('firebase-admin/firestore', () => ({
+  getFirestore: () => ({
+    collection: () => ({
+      doc: () => ({ set: vi.fn(async () => undefined) }),
+    }),
+  }),
+}));
 
 const fetchMock = vi.fn();
 const KEY = 'ts_test_key_value';
@@ -103,16 +111,16 @@ describe('screenContent', () => {
       text: 'Mickey Mouse on my calf',
     });
 
-    expect(result.action).toBe('block');
+    expect(result.action).toBe('review');
     expect(result.skipped).toBe(false);
-    expect(result.userMessage).toMatch(/can't generate/i);
+    expect(result.userMessage).toBe('This was not saved for review.');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe(TYPESAFE_SYSTEMONE_URL);
     expect(recordSpend).toHaveBeenCalledWith(TYPESAFE_MODERATION_COST_CENTS);
     expect(TYPESAFE_MODERATION_COST_CENTS).toBe(1);
 
     const body = requestBody();
-    expect(body.model).toBe('jev-latest');
+    expect(body.model).toBe('jev-1.14.0');
     const questions = body.questions as Record<string, { type: string; options?: unknown }>;
     expect(questions.real_person.type).toBe('noul');
     expect(questions.trademark.type).toBe('noul');
@@ -122,9 +130,28 @@ describe('screenContent', () => {
     expect(JSON.stringify(body)).not.toContain(KEY);
 
     const [flag] = listModerationFlags();
-    expect(flag.action).toBe('block');
+    expect(flag.action).toBe('review');
     expect(flag.status).toBe('open');
     expect(flag.excerpt).toContain('Mickey Mouse');
+  });
+
+  it('says a design was saved only after a durable write with a correlation id', async () => {
+    vi.mocked(ensureAdminApp).mockReturnValueOnce(true);
+    fetchMock.mockResolvedValueOnce(systemOne(payload({
+      trademark: 0.94,
+      severity: 2.4,
+      confidence: 0.86,
+    })));
+
+    const result = await screenContent({
+      surface: 'design_prompt',
+      text: 'Mickey Mouse on my calf',
+      subjectId: 'session-42',
+    });
+
+    expect(result.action).toBe('review');
+    expect(result.userMessage).toBe('Saved for review. Reference session-42.');
+    expect(listModerationFlags()[0].subjectId).toBe('session-42');
   });
 
   it('sends a mid-range item to review', async () => {
@@ -137,7 +164,7 @@ describe('screenContent', () => {
     const result = await screenContent({ surface: 'design_prompt', text: 'a portrait of my friend Alex' });
 
     expect(result.action).toBe('review');
-    expect(result.userMessage).toMatch(/person to look/i);
+    expect(result.userMessage).toBe('This was not saved for review.');
     expect(listModerationFlags()[0].action).toBe('review');
     expect(recordSpend).toHaveBeenCalledTimes(1);
   });
