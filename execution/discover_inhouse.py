@@ -481,8 +481,19 @@ def enrich(provider: Any, handles: list[str], profiles_path: Path, misses_path: 
     if hasattr(provider, "prefetch") and todo:
         provider.prefetch(todo)
     resolved = 0
+
+    def persist() -> None:
+        save(profiles_path, profiles)
+        save(misses_path, misses)
+        save(prov_path, provenance)
+
     for handle in todo:
-        row = provider.fetch(handle)
+        try:
+            row = provider.fetch(handle)
+        except RuntimeError:
+            persist()  # keep everything fetched before a rate-limit/fatal stop
+            print(f"[enrich:{name}] stopped after requested={todo.index(handle)} resolved={resolved}")
+            raise
         if row is None:
             if provenance.get(handle) != name:
                 profiles.pop(handle, None)
@@ -494,9 +505,7 @@ def enrich(provider: Any, handles: list[str], profiles_path: Path, misses_path: 
             provenance[handle] = name
             misses.pop(handle, None)
             resolved += 1
-    save(profiles_path, profiles)
-    save(misses_path, misses)
-    save(prov_path, provenance)
+    persist()
     print(f"[enrich:{name}] requested={len(todo)} resolved={resolved} misses={len(todo) - resolved}")
     return profiles
 
