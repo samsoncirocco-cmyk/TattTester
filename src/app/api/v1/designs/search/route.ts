@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { searchDesignCandidates } from '@/services/matching/designSearch';
 import type { Design } from '@/services/designLibraryService';
+import { verifyApiAuthWithUser } from '@/lib/api-auth';
+import { rateLimit, rateLimitResponse } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,6 +12,12 @@ export const dynamic = 'force-dynamic';
  * returns a provider key. An empty or failed rerank keeps the submitted order.
  */
 export async function POST(req: NextRequest) {
+  // A rerank can make a paid TypeSafe call, so only a signed-in, rate-limited caller reaches it.
+  const { error: authError, user } = await verifyApiAuthWithUser(req);
+  if (authError) return authError;
+  const limit = await rateLimit(req, 'semantic-match', user.uid);
+  if (!limit.allowed) return rateLimitResponse(limit);
+
   const body = await req.json().catch(() => ({}));
   const brief = typeof body?.brief === 'string' ? body.brief.slice(0, 500) : '';
   const designs = Array.isArray(body?.designs) ? body.designs.map(asDesign).filter(Boolean) as Design[] : [];

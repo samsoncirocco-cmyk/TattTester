@@ -18,6 +18,7 @@ import {
 } from "@/lib/taste-profile";
 import { ManageBillingButton } from "@/components/billing/BillingButtons";
 import DesignJourneyRail from "./DesignJourneyRail";
+import { getOptionalApiAuthHeaders } from "@/lib/client-api-auth";
 import { deriveDesignTitle, getDesignJourney } from "./designJourney";
 
 function formatEdited(ts: number): string {
@@ -136,9 +137,9 @@ export default function DesignsPage() {
     }
     const controller = new AbortController();
     const timer = setTimeout(() => {
-      void fetch("/api/v1/designs/search", {
+      void getOptionalApiAuthHeaders().then((authHeaders) => fetch("/api/v1/designs/search", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders },
         signal: controller.signal,
         body: JSON.stringify({
           brief: needle,
@@ -149,7 +150,7 @@ export default function DesignsPage() {
             notes: design.prompt,
           })),
         }),
-      })
+      }))
         .then(async (response) => {
           if (!response.ok) throw new Error("search failed");
           const payload = await response.json() as { ids?: unknown };
