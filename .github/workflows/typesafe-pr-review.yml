@@ -1,0 +1,69 @@
+# Advisory TypeSafe semantic review for pull request diffs.
+#
+# Not a required check. A missing TYPESAFE_API_KEY, a fork, or a TypeSafe
+# or GitHub failure prints a notice and exits 0. continue-on-error keeps
+# the workflow green if the script is killed before it can exit.
+#
+# Required repository secret: TYPESAFE_API_KEY
+# Warning threshold: 0.70 (Noul probability). Override with
+# TYPESAFE_WARN_THRESHOLD only if you change this workflow.
+# Call cap: 6 TypeSafe requests per run (TYPESAFE_MAX_CALLS, 1–12).
+#
+# Dry-run by default: the key is only passed when the repository variable
+# TYPESAFE_PR_REVIEW_LIVE is exactly 'true'. Without it the script skips
+# every TypeSafe call. The reviewer script is checked out from the base
+# commit (trusted code); the pull request diff is fetched as data only.
+#
+# Rollback: delete this file. Nothing else in the repo calls it.
+
+name: TypeSafe semantic review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Fork pull requests do not receive secrets. The job condition skips them
+# anyway so untrusted workflow edits cannot run this script with a token
+# from the base repository. pull_request_target is intentionally unused.
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: typesafe-pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  semantic-review:
+    name: TypeSafe semantic review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      # Trusted code: run the reviewer from the base commit, never the PR head.
+      - name: Checkout base commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run TypeSafe semantic review
+        env:
+          # Opt-in: the key is empty (dry run) unless the live variable is set.
+          TYPESAFE_API_KEY: ${{ vars.TYPESAFE_PR_REVIEW_LIVE == 'true' && secrets.TYPESAFE_API_KEY || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [ ! -f scripts/ci/typesafe-pr-review.mjs ]; then
+            echo "::notice title=TypeSafe review::Reviewer is not on the base branch yet. Skipping."
+            exit 0
+          fi
+          node scripts/ci/typesafe-pr-review.mjs
