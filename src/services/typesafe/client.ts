@@ -165,7 +165,9 @@ export async function postGovernedSystemOne(args: PostSystemOneArgs): Promise<Po
   }
 
   if (!response.ok) {
-    await response.text().catch(() => undefined);
+    if (typeof response.text === 'function') {
+      await response.text().catch(() => undefined);
+    }
     return { ok: false, failure: 'http', status: response.status, metered: false };
   }
 
