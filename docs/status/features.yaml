@@ -303,6 +303,16 @@ features:
     limitations:
       - Pricing copy has no focused page test at this snapshot.
 
+  typesafe_moderation_advisory:
+    status: implemented_unverified
+    evidence:
+      - docs/adr/0063-moderation-signals-stay-advisory.md
+      - src/lib/typesafeModeration.ts
+      - src/lib/typesafeModeration.test.ts
+      - src/lib/moderationQueue.ts
+    limitations:
+      - TYPESAFE_MODERATION defaults off. A design-prompt signal does not return 422 or stop generation. A saved-for-review message is sent only after a durable write that carries a correlation id. Live model quality is unmeasured.
+
   shared_design_links:
     status: implemented
     evidence:

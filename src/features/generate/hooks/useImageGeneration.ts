@@ -127,6 +127,18 @@ export function describeGenerationError(error: unknown): GenerationErrorDetails 
     error instanceof Error ? error.message : errorRecord.message || ''
   ).toLowerCase();
 
+  if (code === 'PROMPT_BLOCKED' || code === 'PROMPT_IN_REVIEW') {
+    const original = String(
+      error instanceof Error ? error.message : errorRecord.message || ''
+    );
+    return {
+      title: code === 'PROMPT_BLOCKED' ? "We can't generate this" : 'A person needs to look first',
+      message: original || 'This design needs a change before we can draw it.',
+      guidance: 'Nothing was generated. Edit the prompt and try a different idea.',
+      retryable: false
+    };
+  }
+
   if (code.includes('AUTH') || message.includes('sign in') || message.includes('authentication')) {
     return {
       title: 'Sign in to keep creating',

@@ -14,6 +14,7 @@ import {
     type GenerationCreditReservation,
 } from '@/lib/generation-credits';
 import { CREDITS_EXHAUSTED_MESSAGE } from '@/lib/generation-credits-shared';
+import { screenContent } from '@/lib/typesafeModeration';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -105,6 +106,14 @@ export async function POST(req: NextRequest) {
         if (!prompt || typeof prompt !== 'string' || prompt.trim().length < 3) {
             return NextResponse.json({ error: 'Prompt is required', code: 'INVALID_PROMPT' }, { status: 400 });
         }
+
+        // Advisory only. A model signal does not reject the prompt or reserve
+        // a credit. Flag off and call failures leave generation on the current path.
+        await screenContent({
+            surface: 'design_prompt',
+            text: prompt.trim(),
+            subjectId: req.headers.get('x-request-id'),
+        });
 
         const requestedCount = Number(sampleCount || num_outputs || 1);
         if (Number.isNaN(requestedCount) || requestedCount < 1 || requestedCount > 4) {

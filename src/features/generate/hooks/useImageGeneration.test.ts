@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useImageGeneration } from './useImageGeneration';
+import { describeGenerationError, useImageGeneration } from './useImageGeneration';
 import { generateHighResDesign } from '../services/replicateService';
 
 vi.mock('../services/replicateService', () => ({
@@ -15,6 +15,28 @@ vi.mock('@/services/imageProcessingService', () => ({
 }));
 
 const generateMock = vi.mocked(generateHighResDesign);
+
+describe('describeGenerationError moderation', () => {
+  it('shows the server message for a blocked prompt and does not offer a retry', () => {
+    const details = describeGenerationError(Object.assign(
+      new Error("We can't generate this design. It looks like it depicts or names a real person."),
+      { code: 'PROMPT_BLOCKED' },
+    ));
+    expect(details.retryable).toBe(false);
+    expect(details.message).toMatch(/can't generate/i);
+    expect(details.guidance).toMatch(/nothing was generated/i);
+  });
+
+  it('shows the server message when the prompt is waiting on a person', () => {
+    const details = describeGenerationError(Object.assign(
+      new Error('This design needs a person to look at it before we can generate it.'),
+      { code: 'PROMPT_IN_REVIEW' },
+    ));
+    expect(details.retryable).toBe(false);
+    expect(details.title).toMatch(/person/i);
+    expect(details.message).toMatch(/person to look/i);
+  });
+});
 
 describe('useImageGeneration recovery', () => {
   beforeEach(() => {

@@ -22,9 +22,10 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
-import { validateTakedownRequest } from '@/lib/takedown';
+import { takedownModerationText, validateTakedownRequest } from '@/lib/takedown';
 import { recordTakedownRequest } from '@/lib/takedown-graph';
 import { notifyOpsOfTakedownRequest } from '@/lib/notify';
+import { moderationNotice, screenContent } from '@/lib/typesafeModeration';
 
 export const runtime = 'nodejs';
 
@@ -76,6 +77,21 @@ export async function POST(request: NextRequest) {
 
   const requestId = newRequestId();
 
+  // Classify the message before we record it. A block or a review still
+  // records a pending request and still emails a person. The screen never
+  // deletes data and never resolves the request. A failed call is a pass.
+  const moderation = await screenContent({
+    surface: 'takedown',
+    text: takedownModerationText(parsed.value),
+    subjectId: requestId,
+  }).catch(() => ({
+    action: 'pass' as const,
+    userMessage: null,
+    skipped: true,
+    reason: 'error',
+    hazards: [] as string[],
+  }));
+
   // Record first, notify second. If the email then fails we still have a durable
   // trace a human can find; the reverse ordering would lose the request entirely.
   // A graph failure must not block the notification, which is the real contract.
@@ -91,7 +107,11 @@ export async function POST(request: NextRequest) {
 
   let delivery: { delivered: boolean; reason?: string };
   try {
-    delivery = await notifyOpsOfTakedownRequest(parsed.value, requestId);
+    delivery = await notifyOpsOfTakedownRequest(
+      parsed.value,
+      requestId,
+      moderationNotice(moderation),
+    );
   } catch (err) {
     delivery = { delivered: false, reason: err instanceof Error ? err.message : String(err) };
   }
@@ -116,6 +136,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const held = !moderation.skipped && moderation.action !== 'pass';
   return NextResponse.json(
     {
       received: true,
@@ -123,7 +144,10 @@ export async function POST(request: NextRequest) {
       removed: false,
       requestId,
       logged,
-      status: 'Received and awaiting review by a person.',
+      status: held && moderation.userMessage
+        ? moderation.userMessage
+        : 'Received and awaiting review by a person.',
+      ...(held ? { moderation: moderation.action } : {}),
     },
     { status: 202 },
   );

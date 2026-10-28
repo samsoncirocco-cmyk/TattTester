@@ -42,6 +42,8 @@ const CONFLICT_CODES = new Set([
 // Request referenced something that can't apply (e.g. a pickId that isn't
 // one of the session's variations) → 400.
 const BAD_REQUEST_CODES = new Set(['INVALID_VARIATION']);
+// The prompt was held before any render. The message is the user-facing copy.
+const MODERATION_CODES = new Set(['PROMPT_BLOCKED', 'PROMPT_IN_REVIEW']);
 
 /*
  * Upstream statuses that mean "try again shortly" rather than "this request
@@ -123,6 +125,17 @@ export function designSessionErrorResponse(error: unknown): NextResponse {
         return errorResponse(
             { error: err.message || 'Invalid request', code, retryable: false },
             400
+        );
+    }
+
+    if (MODERATION_CODES.has(code)) {
+        return errorResponse(
+            {
+                error: err.message || 'A person needs to review this design before we can generate it.',
+                code,
+                retryable: false,
+            },
+            422
         );
     }
 

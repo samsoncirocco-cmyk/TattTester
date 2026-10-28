@@ -195,6 +195,18 @@ export function validateReinstatementRequest(
 }
 
 /**
+ * The appeal text a moderation call may read.
+ *
+ * The handle, uid, and email stay out of the model call. The decision that
+ * comes back must not lift a tombstone, must not restore a profile, and must
+ * not move this request off `pending` — callers record it either way. An
+ * empty string means there is no message to screen.
+ */
+export function reinstatementModerationText(request: ReinstatementRequest): string {
+  return request.message?.trim() ?? '';
+}
+
+/**
  * Everything the operator must be able to see before approving, as facts read
  * from the graph. Assembled by the executor; kept as a type here so the decision
  * rule below can be unit-tested without a driver.

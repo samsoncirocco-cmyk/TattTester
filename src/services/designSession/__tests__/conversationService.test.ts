@@ -23,6 +23,7 @@ import { extractIntake } from '../../intake';
 import type { IntakeRecord } from '../../intake/types';
 import type { ConversationTurnResult, TurnLog } from '../../designConversation/types';
 import { logger } from '@/lib/logger';
+import { screenContent } from '@/lib/typesafeModeration';
 
 const OPENER = 'Where on your body are you thinking, and what should it mean?';
 
@@ -64,6 +65,15 @@ vi.mock('@/services/storage/imageStorageService', () => ({
     async (objectPath: string) => `https://storage.googleapis.com/tatt-pro-assets/${objectPath}`
   ),
 }));
+vi.mock('@/lib/typesafeModeration', () => ({
+  screenContent: vi.fn(async () => ({
+    action: 'pass',
+    userMessage: null,
+    skipped: true,
+    reason: 'disabled',
+    hazards: [],
+  })),
+}));
 vi.mock('@/lib/budget-tracker', () => ({
   recordSpend: vi.fn(),
   VERTEX_IMAGEN_COST_CENTS: 4,
@@ -77,6 +87,7 @@ const runTurnMock = vi.mocked(runTurn);
 const mockExtractIntake = vi.mocked(extractIntake);
 const mockEnhanceStructured = vi.mocked(enhanceStructured);
 const mockGenerate = vi.mocked(generate);
+const mockScreenContent = vi.mocked(screenContent);
 const mockRouteGeneration = vi.mocked(routeGeneration);
 
 const intakeRecord: IntakeRecord = {
@@ -139,6 +150,13 @@ beforeEach(() => {
   clearMemorySessions();
   imageCounter = 0;
 
+  mockScreenContent.mockResolvedValue({
+    action: 'pass',
+    userMessage: null,
+    skipped: true,
+    reason: 'disabled',
+    hazards: [],
+  });
   runTurnMock.mockResolvedValue(turnResult());
   mockExtractIntake.mockResolvedValue(intakeRecord);
   mockEnhanceStructured.mockResolvedValue(questionnaireEnhance);
@@ -397,6 +415,20 @@ describe('converse — conversation lifecycle', () => {
 });
 
 describe('confirmProposal', () => {
+  it('still renders when moderation only signals the prompt', async () => {
+    const sessionId = await converseToProposal();
+    mockScreenContent.mockResolvedValueOnce({
+      action: 'review',
+      userMessage: 'This was not saved for review.',
+      skipped: false,
+      hazards: ['real_person'],
+    });
+
+    const session = await confirmProposal(sessionId);
+    expect(session.phase).toBe('revealed');
+    expect(mockGenerate).toHaveBeenCalled();
+  });
+
   it('runs the existing reveal pipeline over the conversation record and moves intake → revealed', async () => {
     const sessionId = await converseToProposal();
 

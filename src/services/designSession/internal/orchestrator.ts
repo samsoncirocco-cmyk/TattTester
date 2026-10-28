@@ -8,6 +8,7 @@
  */
 import { randomUUID } from 'crypto';
 import { logger } from '@/lib/logger';
+import { screenContent } from '@/lib/typesafeModeration';
 import { signingBucketName } from '@/services/gcs-service';
 import { DEMO_MOCK_IMAGES } from '@/lib/demo-images';
 import { extractIntake } from '../../intake';
@@ -99,7 +100,10 @@ export type DesignSessionErrorCode =
   | 'ROUND_UNPICKED'
   | 'ROUND_IN_FLIGHT'
   | 'REVEAL_IN_FLIGHT'
-  | 'CONVERSATION_UNAVAILABLE';
+  | 'CONVERSATION_UNAVAILABLE'
+  // Moderation held the prompt before any render. 422, not a provider failure.
+  | 'PROMPT_BLOCKED'
+  | 'PROMPT_IN_REVIEW';
 
 const ERROR_STATUS: Record<DesignSessionErrorCode, number> = {
   SESSION_NOT_FOUND: 404,
@@ -120,6 +124,8 @@ const ERROR_STATUS: Record<DesignSessionErrorCode, number> = {
   // Every conversation provider is down — the route maps this to 503 and
   // the UI downgrades to the scripted intake (ADR-0019 degraded mode).
   CONVERSATION_UNAVAILABLE: 503,
+  PROMPT_BLOCKED: 422,
+  PROMPT_IN_REVIEW: 422,
 };
 
 /** Domain error — carries a stable code and the HTTP status routes should map it to. */
@@ -333,7 +339,18 @@ function generationPrompt(prompts: { simple?: string; detailed?: string; ultra?:
  * the shared reveal path. This IS the ADR-0019 degraded mode — it stays
  * load-bearing as the LLM-down fallback for the conversational intake.
  */
+/**
+ * Screen the user's own words before intake extraction or any render.
+ * The result is advisory. It never rejects the design or deletes anything.
+ */
+export async function assertDesignPromptAllowed(text: string): Promise<void> {
+  await screenContent({ surface: 'design_prompt', text });
+}
+
 export async function startSession(request: StartSessionRequest): Promise<StoredSession> {
+  await assertDesignPromptAllowed(
+    [request.placementAnswer, request.meaningAnswer].filter(Boolean).join('\n'),
+  );
   const intake = await extractIntake({
     placementAnswer: request.placementAnswer,
     meaningAnswer: request.meaningAnswer,

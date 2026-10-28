@@ -33,11 +33,13 @@ import { verifyApiAuth } from '@/lib/api-auth';
 import { verifyFirebaseToken } from '@/lib/auth-dal';
 import {
   formatVerificationCode,
+  reinstatementModerationText,
   validateReinstatementRequest,
   VERIFICATION_CODE_TTL_MS,
 } from '@/lib/reinstatement';
 import { recordReinstatementRequest } from '@/lib/reinstatement-graph';
 import { notifyOpsOfReinstatementRequest } from '@/lib/notify';
+import { moderationNotice, screenContent } from '@/lib/typesafeModeration';
 
 export const runtime = 'nodejs';
 
@@ -103,6 +105,22 @@ export async function POST(request: NextRequest) {
   }
 
   const requestId = newRequestId();
+
+  // Classify the appeal text before we record it. Block and review still
+  // record a pending request. Nothing is restored and nothing is resolved.
+  // A failed call is a pass.
+  const moderation = await screenContent({
+    surface: 'appeal',
+    text: reinstatementModerationText(parsed.value),
+    subjectId: requestId,
+  }).catch(() => ({
+    action: 'pass' as const,
+    userMessage: null,
+    skipped: true,
+    reason: 'error',
+    hazards: [] as string[],
+  }));
+
   // Unpredictable so it cannot be pre-published by someone guessing. It is not a
   // secret — the artist publishes it — it is a proof of control of the account.
   const verificationCode = formatVerificationCode(randomUUID().replace(/-/g, ''));
@@ -121,7 +139,12 @@ export async function POST(request: NextRequest) {
 
   let delivery: { delivered: boolean; reason?: string };
   try {
-    delivery = await notifyOpsOfReinstatementRequest(parsed.value, requestId, verificationCode);
+    delivery = await notifyOpsOfReinstatementRequest(
+      parsed.value,
+      requestId,
+      verificationCode,
+      moderationNotice(moderation),
+    );
   } catch (err) {
     delivery = { delivered: false, reason: err instanceof Error ? err.message : String(err) };
   }
@@ -156,7 +179,13 @@ export async function POST(request: NextRequest) {
         `Post this code on the Instagram account @${parsed.value.instagram} — in your bio, ` +
         `a post, or a story — so we can confirm the account is yours. Then reply to our ` +
         `email, or wait for us to check.`,
-      status: 'Received and awaiting review by a person.',
+      status:
+        !moderation.skipped && moderation.action !== 'pass' && moderation.userMessage
+          ? moderation.userMessage
+          : 'Received and awaiting review by a person.',
+      ...(!moderation.skipped && moderation.action !== 'pass'
+        ? { moderation: moderation.action }
+        : {}),
       // Set expectations honestly, up front: this is not an undo button.
       restores:
         'Nothing that was deleted comes back. Your photographs and profile details were ' +

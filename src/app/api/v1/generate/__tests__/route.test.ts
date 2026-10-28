@@ -14,6 +14,7 @@ const {
   verifyFirebaseTokenMock,
   reserveGenerationCreditMock,
   releaseGenerationCreditMock,
+  screenContentMock,
 } = vi.hoisted(() => ({
   generateMock: vi.fn(),
   observeRenderedImageMock: vi.fn(),
@@ -24,6 +25,7 @@ const {
   verifyFirebaseTokenMock: vi.fn(),
   reserveGenerationCreditMock: vi.fn(),
   releaseGenerationCreditMock: vi.fn(),
+  screenContentMock: vi.fn(),
 }));
 
 // routeGeneration is real, not mocked: the route calls it to label a failure
@@ -67,6 +69,10 @@ vi.mock('@/lib/logger', () => ({
 
 vi.mock('@/lib/observeRender', () => ({ observeRenderedImage: observeRenderedImageMock }));
 
+vi.mock('@/lib/typesafeModeration', () => ({
+  screenContent: screenContentMock,
+}));
+
 import { POST } from '../route';
 
 function makeRequest(body: Record<string, unknown>) {
@@ -104,6 +110,42 @@ describe('/api/v1/generate route adapter', () => {
     rateLimitMock.mockResolvedValue({ allowed: true });
     checkBudgetMock.mockResolvedValue({ allowed: true });
     recordSpendMock.mockResolvedValue(undefined);
+    screenContentMock.mockResolvedValue({
+      action: 'pass',
+      userMessage: null,
+      skipped: true,
+      reason: 'disabled',
+      hazards: [],
+    });
+  });
+
+  it('does not reject a design prompt from a model-only signal', async () => {
+    screenContentMock.mockResolvedValueOnce({
+      action: 'review',
+      userMessage: 'This was not saved for review.',
+      skipped: false,
+      hazards: ['trademark'],
+    });
+
+    const res = await POST(makeRequest({ prompt: 'mickey mouse on my calf' }));
+
+    expect(res.status).not.toBe(422);
+    expect(generateMock).toHaveBeenCalled();
+  });
+
+  it('still generates a mid-range design prompt', async () => {
+    screenContentMock.mockResolvedValueOnce({
+      action: 'review',
+      userMessage: 'This was not saved for review.',
+      skipped: false,
+      hazards: ['real_person'],
+    });
+    generateMock.mockResolvedValueOnce(vertexResult(1));
+
+    const res = await POST(makeRequest({ prompt: 'a portrait of my friend alex' }));
+
+    expect(res.status).toBe(200);
+    expect(generateMock).toHaveBeenCalled();
   });
 
   it('returns the vertex success shape and records vertex spend per image', async () => {
@@ -318,6 +360,13 @@ describe('the pixel guard reaches this lane too', () => {
     rateLimitMock.mockResolvedValue({ allowed: true });
     checkBudgetMock.mockResolvedValue({ allowed: true });
     recordSpendMock.mockResolvedValue(undefined);
+    screenContentMock.mockResolvedValue({
+      action: 'pass',
+      userMessage: null,
+      skipped: true,
+      reason: 'disabled',
+      hazards: [],
+    });
   });
 
   it('observes every image it charged for, not just the first', async () => {

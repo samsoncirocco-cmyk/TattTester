@@ -27,6 +27,7 @@ import {
   uploadImageToPath,
 } from '@/services/storage/imageStorageService';
 import { recordSpend } from '@/lib/budget-tracker';
+import { screenContent } from '@/lib/typesafeModeration';
 import type { IntakeRecord } from '../../intake/types';
 
 vi.mock('../../intake', () => ({ extractIntake: vi.fn() }));
@@ -53,6 +54,15 @@ vi.mock('@/lib/budget-tracker', () => ({
   recordSpend: vi.fn(),
   VERTEX_IMAGEN_COST_CENTS: 4,
 }));
+vi.mock('@/lib/typesafeModeration', () => ({
+  screenContent: vi.fn(async () => ({
+    action: 'pass',
+    userMessage: null,
+    skipped: true,
+    reason: 'disabled',
+    hazards: [],
+  })),
+}));
 
 const mockExtractIntake = vi.mocked(extractIntake);
 const mockEnhanceStructured = vi.mocked(enhanceStructured);
@@ -62,6 +72,7 @@ const mockRecoverImageAtPath = vi.mocked(recoverImageAtPath);
 const mockCopyImageToPath = vi.mocked(copyImageToPath);
 const mockUploadImageToPath = vi.mocked(uploadImageToPath);
 const mockRecordSpend = vi.mocked(recordSpend);
+const mockScreenContent = vi.mocked(screenContent);
 
 /** Where a durable copy lands — the shape imageStorageService returns. */
 const BUCKET_URL = 'https://storage.googleapis.com/tatt-pro-assets';
@@ -145,6 +156,13 @@ beforeEach(() => {
   mockCopyImageToPath.mockImplementation(async objectPath => durableUrl(objectPath));
   mockUploadImageToPath.mockImplementation(async objectPath => durableUrl(objectPath));
   mockRecordSpend.mockResolvedValue(undefined);
+  mockScreenContent.mockResolvedValue({
+    action: 'pass',
+    userMessage: null,
+    skipped: true,
+    reason: 'disabled',
+    hazards: [],
+  });
   mockGenerate.mockImplementation(async request => ({
     images: [`https://replicate.delivery/pbxt/${++imageCounter}/out.png`],
     metadata: {
@@ -167,6 +185,35 @@ async function startAndPick(pickId = 'v3', mostNotYouId = 'v2') {
 }
 
 describe('startSession', () => {
+  it('still extracts and renders when moderation only signals a design prompt', async () => {
+    mockScreenContent.mockResolvedValueOnce({
+      action: 'review',
+      userMessage: 'This was not saved for review.',
+      skipped: false,
+      hazards: ['trademark'],
+    });
+
+    const session = await startSession(startRequest);
+    expect(session.id).toBeTruthy();
+    expect(mockExtractIntake).toHaveBeenCalled();
+  });
+
+  it('still starts when a named subject is only a moderation signal', async () => {
+    mockScreenContent.mockResolvedValueOnce({
+      action: 'review',
+      userMessage: 'This was not saved for review.',
+      skipped: false,
+      hazards: ['real_person'],
+    });
+
+    const session = await startSession({
+      placementAnswer: 'right forearm',
+      meaningAnswer: 'in memory of Margaret',
+    });
+    expect(session.phase).toBe('revealed');
+    expect(mockGenerate).toHaveBeenCalled();
+  });
+
   it('runs intake → council → four renders and persists a revealed session', async () => {
     const session = await startSession(startRequest);
 

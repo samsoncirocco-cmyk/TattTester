@@ -338,6 +338,11 @@ export const ENV_SECTIONS = [
         name: 'GEMINI_MODEL', type: 'string', required: false, default: 'gemini-2.5-flash',
         purpose: 'Model overrides (defaults live in code).',
       },
+      {
+        name: 'TYPESAFE_MODERATION', type: 'bool', required: false, default: 'false',
+        example: 'false',
+        purpose: 'When true, one TypeSafe call screens a design prompt or takedown/appeal text. The result is advisory and does not reject generation or resolve a takedown. Off, missing key, timeout, or error keeps the current path.',
+      },
       { name: 'CONVERSATION_MODEL', type: 'string', required: false, purpose: '' },
       {
         name: 'INTAKE_EXTRACTION_MODEL', type: 'string', required: false,
