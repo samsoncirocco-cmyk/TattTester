@@ -19,7 +19,7 @@ const checkBudgetMock = vi.mocked(checkBudget);
 const recordSpendMock = vi.mocked(recordSpend);
 
 const env = {
-  TYPESAFE_API_KEY: 'ts_test_key_not_a_secret',
+  TYPESAFE_API_KEY: 'ts_example_key',
   TYPESAFE_MODEL: 'jev-1.14.0',
   TYPESAFE_TIMEOUT_MS: '8000',
 } as NodeJS.ProcessEnv;
@@ -148,7 +148,7 @@ describe('postGovernedSystemOne', () => {
   });
 
   it('redacts the key from text', () => {
-    expect(redactTypesafeSecret('bearer ts_test_key_not_a_secret leaked', env.TYPESAFE_API_KEY)).toBe(
+    expect(redactTypesafeSecret('bearer ts_example_key leaked', env.TYPESAFE_API_KEY)).toBe(
       'bearer [redacted] leaked'
     );
   });
