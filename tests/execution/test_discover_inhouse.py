@@ -345,6 +345,10 @@ def test_state_conflicts_are_flagged_and_verified_not_silently_picked(geo, resol
         assert not any(t.startswith("#") for t in tokens)  # importer holds it instead of guessing
     else:
         assert f"#{city.lower()}" in tokens
+    if resolution == "unresolved":
+        assert matt["seedShopCity"] is None and matt["seedShopState"] is None
+    else:
+        assert (matt["seedShopCity"], matt["seedShopState"]) == (city, state)
 
 
 def test_consistent_shop_is_not_geocoded():

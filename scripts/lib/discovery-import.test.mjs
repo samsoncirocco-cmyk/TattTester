@@ -658,3 +658,44 @@ describe('write Cypher', () => {
     }
   });
 });
+
+describe('bare-city context and seed-shop fallback', () => {
+  const ref = {
+    artists: [...artistsFor('Paradise', 'NV', 60), ...artistsFor('Chicago', 'IL', 110)],
+    shops: [...shopsFor('Paradise', 'NV', 40), ...shopsFor('Chicago', 'IL', 40)],
+  };
+  const idx = buildReferenceIndex(ref);
+
+  it('does not read an ordinary word like "paradise" as Paradise, NV', () => {
+    expect(parseBareCityLocation('ink is my paradise, books open', idx)).toBeNull();
+    expect(parseBareCityLocation('paradise artist', idx)).toBeNull();
+  });
+
+  it('accepts a common-word city with a location cue', () => {
+    expect(parseBareCityLocation('tattooer based in paradise', idx)).toMatchObject({ city: 'Paradise', state: 'NV' });
+    expect(parseBareCityLocation('paradise nv tattoos', idx)).toMatchObject({ city: 'Paradise', state: 'NV' });
+  });
+
+  it('needs some context even for a real city name', () => {
+    expect(parseBareCityLocation('i love chicago pizza', idx)).toBeNull();
+    expect(parseBareCityLocation('chicago tattoo artist', idx)).toMatchObject({ city: 'Chicago' });
+  });
+
+  it('falls back to the seed shop city when the bio names none', () => {
+    const loc = resolveCandidateLocation({
+      candidate: candidate({ bioSnippet: 'books open, dm me', seedShopCity: 'Salinas', seedShopState: 'CA' }),
+      profile: { bio: 'books open, dm me' },
+      index: idx,
+    });
+    expect(loc).toMatchObject({ city: 'Salinas', state: 'CA', source: 'seed_shop' });
+  });
+
+  it('prefers a bio city over the seed shop', () => {
+    const loc = resolveCandidateLocation({
+      candidate: candidate({ seedShopCity: 'Salinas', seedShopState: 'CA' }),
+      profile: { bio: 'tattooer based in chicago' },
+      index: idx,
+    });
+    expect(loc).toMatchObject({ city: 'Chicago', source: 'bio-city' });
+  });
+});

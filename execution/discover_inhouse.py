@@ -774,6 +774,10 @@ def build_candidates(found, profiles, *, existing: set[str], reference_names: se
         bio = str(profile.get("bio") or "").replace("\n", " ").strip()
         shop_names = sorted({shops[k]["name"] for k in keys if shops[k].get("name")})
         conflicts = [shops[k]["locationConflict"] for k in keys if shops[k].get("locationConflict")]
+        seed_locs = {(shops[k].get("city"), shops[k].get("state")) for k in keys
+                     if shops[k].get("city") and shops[k].get("state")
+                     and (shops[k].get("locationConflict") or {}).get("resolution") != "unresolved"}
+        seed_city, seed_state = next(iter(seed_locs)) if len(seed_locs) == 1 else (None, None)
         output.append({
             "handle": handle,
             "source": ",".join(sorted(meta["sources"])),
@@ -791,6 +795,9 @@ def build_candidates(found, profiles, *, existing: set[str], reference_names: se
             "shopName": None if shop_reason else (shop_names[0] if len(shop_names) == 1 else None),
             "shopCandidates": shop_names if len(shop_names) > 1 else None,
             "locationConflict": conflicts[0] if conflicts else None,
+            # importer fallback when the bio names no city (locationSource: seed_shop)
+            "seedShopCity": seed_city,
+            "seedShopState": seed_state,
         })
     output.sort(key=lambda c: (not c["looksBookable"], -(c["followers"] or 0)))
     return output, skipped
