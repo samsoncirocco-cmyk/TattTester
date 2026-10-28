@@ -204,7 +204,7 @@ describe('rerankArtistCandidates', () => {
         'Content-Type': 'application/json',
       });
       const body = JSON.parse(String(init.body));
-      expect(body.model).toBe('jev-latest');
+      expect(body.model).toBe('jev-1.14.0');
       expect(body.questions).toEqual(scoreQuestions());
       expect(body.questions.style.options).toBeUndefined();
       expect(body.state.brief).toEqual(brief);
@@ -215,6 +215,24 @@ describe('rerankArtistCandidates', () => {
     expect(recordSpendMock).toHaveBeenCalledTimes(3);
     expect(recordSpendMock).toHaveBeenCalledWith(RERANK_COST_CENTS);
     expect(loggedText()).not.toContain(KEY);
+  });
+
+  it('keeps the original order when confidence is missing, zero, or out of range', async () => {
+    enableRerank();
+    const cases = [
+      (score: number) => ({ type: 'score', score }),
+      (score: number) => ({ type: 'score', score, confidence: 0 }),
+      (score: number) => ({ type: 'score', score, confidence: 1.4 }),
+      (score: number) => ({ type: 'score', score, confidence: -0.2 }),
+    ];
+    for (const answer of cases) {
+      fetchMock.mockResolvedValue(jsonResponse({
+        model: 'jev-1.14.0',
+        answers: { style: answer(3), placement: answer(0), subject: answer(0) },
+      }));
+      const result = await rerankArtistCandidates(brief, artists);
+      expect(result.map((artist) => artist.id)).toEqual(['kenji', 'noor', 'alex']);
+    }
   });
 
   it('scores only the configured head and leaves the tail in place', async () => {

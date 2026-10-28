@@ -13,6 +13,7 @@
  */
 
 import { envBool, envInt, envString } from '@/config/envSchema';
+import { typesafeModel as pinnedTypesafeModel } from '@/services/typesafe';
 import { checkBudget, recordSpend } from '@/lib/budget-tracker';
 import { logger } from '@/lib/logger';
 import {
@@ -25,7 +26,6 @@ import {
 
 export const TYPESAFE_SYSTEMONE_URL = 'https://api.typesafe.ai/v1/systemone';
 
-const DEFAULT_TYPESAFE_MODEL = 'jev-latest';
 const DEFAULT_TYPESAFE_TIMEOUT_MS = 8_000;
 
 /**
@@ -292,6 +292,15 @@ function safeProfile<T>(
   }
 }
 
+/** Below this, or outside (0, 1], a Score is too uncertain to reorder. */
+export const RERANK_MIN_CONFIDENCE = 0.35;
+
+function scoreConfidence(answer: Record<string, unknown>): number | undefined {
+  if (typeof answer.confidence !== 'number' || !Number.isFinite(answer.confidence)) return undefined;
+  if (answer.confidence <= 0 || answer.confidence > 1) return undefined;
+  return answer.confidence;
+}
+
 function readRawScores(payload: unknown): { style: number; placement: number; subject: number } | undefined {
   if (!isRecord(payload) || !isRecord(payload.answers)) return undefined;
   const scores = {} as { style: number; placement: number; subject: number };
@@ -299,6 +308,8 @@ function readRawScores(payload: unknown): { style: number; placement: number; su
     const answer = payload.answers[axis];
     if (!isRecord(answer) || answer.type !== 'score') return undefined;
     if (typeof answer.score !== 'number' || !Number.isFinite(answer.score)) return undefined;
+    const confidence = scoreConfidence(answer);
+    if (confidence === undefined || confidence < RERANK_MIN_CONFIDENCE) return undefined;
     scores[axis] = answer.score;
   }
   return scores;
@@ -315,9 +326,9 @@ function typesafeApiKey(): string | undefined {
 
 function typesafeModel(): string {
   try {
-    return envString('TYPESAFE_MODEL') || DEFAULT_TYPESAFE_MODEL;
+    return pinnedTypesafeModel();
   } catch {
-    return DEFAULT_TYPESAFE_MODEL;
+    return 'jev-1.14.0';
   }
 }
 
