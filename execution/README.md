@@ -334,3 +334,46 @@ is a separate, identity-checked self-signup.
 | Performance Monitor | `src/utils/performanceMonitor.js` | Stencil, matching |
 | Forge Store (Zustand) | `src/stores/useForgeStore` | All canvas/layer operations |
 | Image Registry | `src/services/forgeImageRegistry.ts` | Layer image resolution |
+
+## In-house artist discovery (`discover_inhouse.py`), an Apify replacement
+
+This writes the same artifacts as `discover_ig.py` (`profiles.json` and `candidates.json`), so
+`scripts/import-discovery-to-neo4j.mjs` works on them unchanged. The script never connects to Neo4j.
+The only write path is still the importer with `--apply`.
+
+```bash
+D=data/discovery-inhouse
+python3 execution/discover_inhouse.py --out $D seed-shops --states NE,IA,SD     # OSM shop=tattoo
+python3 execution/discover_inhouse.py --out $D seed-shops --states NE --bbox 41.15,-96.25,41.40,-95.85  # lighter metro query
+python3 execution/discover_inhouse.py --out $D crawl-shops --max 50             # shop sites: roster IGs, email, phone, tech
+IG_GRAPH_USER_ID=... IG_GRAPH_TOKEN=... \
+python3 execution/discover_inhouse.py --out $D enrich --provider meta           # or --provider apify --sweep-id X (paid fallback)
+python3 execution/discover_inhouse.py --out $D --reference snap.json --queue queue.json filter   # dedupe + skip protected
+node scripts/import-discovery-to-neo4j.mjs --input $D/candidates.json --reference snap.json      # offline dry-run plan
+```
+
+| Apify actor | In-house replacement |
+|---|---|
+| google-search / maps seeding | OpenStreetMap Overpass `shop=tattoo` (free, ODbL; cite OSM) |
+| contact-info-scraper, rag-web-browser, tech-stack | `crawl-shops` (robots.txt, 1 req/2s per host, identified UA) |
+| instagram-profile-scraper | Meta Graph `business_discovery` (business/creator accounts only) |
+| followers/following scraper | bio and roster `@mention` expansion (a second enrich pass) |
+| hashtag scraper | **no replacement**: the official hashtag API returns no usernames |
+
+**Dedupe and protection.** Handles already in `--queue` or in the `--reference` snapshot are dropped,
+and so are name+city matches. Artists flagged claimed, selfRegistered, removed, takedownPending,
+tombstoned, or verified in the snapshot are never emitted. The importer's write query still enforces
+the protected fields.
+
+**Cost and rate limits.** OSM, the site crawl, and the Meta API are free.
+- Meta allows about 200 calls per hour per token, so roughly 30k lookups a week, well above the 500–1,000 a week target.
+- Public Overpass mirrors often return 502/504 or time out. The script rotates mirrors with backoff, and `--bbox` metro queries succeed more reliably than whole-state queries.
+- Apify costs about $2–3 per 1k profiles plus actor fees per run.
+
+**Why not scrape IG directly (REA findings).** A logged-out instagram.com page server-renders no profile data.
+- Its only GraphQL calls are logged-out experiment and dialog queries.
+- `api/v1/users/web_profile_info` returns 401 `require_login`.
+- Apify gets around this with residential proxies, which this project does not use.
+
+**Gaps.** Personal (non-business) IG accounts can't be resolved by the Meta API and land in
+`profile_misses.json`. Use the Apify fallback or review them manually. OSM coverage is uneven: about half of the shops have a website.
