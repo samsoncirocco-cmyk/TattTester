@@ -127,6 +127,9 @@ by a scrape. Instagram is immutable after identity verification, and
 | Score aggregation | `src/utils/scoreAggregation.js` |
 | Firebase match service | `src/services/firebase-match-service.js` |
 | Match service (legacy) | `src/features/match-pulse/services/matchService.js` |
+| TypeSafe brief rerank | `src/services/matching/typesafeRerank.ts` |
+| Design-search rerank | `src/services/matching/designSearch.ts` |
+| Offline rerank comparison | `scripts/compare-typesafe-rerank.mjs` |
 | Demo match service | `src/features/match-pulse/services/demoMatchService.js` |
 | Match update service | `src/features/match-pulse/services/matchUpdateService.js` |
 | Real-time hook | `src/features/match-pulse/hooks/useRealtimeMatchPulse.js` |

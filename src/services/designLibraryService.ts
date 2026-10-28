@@ -304,11 +304,13 @@ export function getRecentDesigns(limit: number = 10): Design[] {
 }
 
 /**
- * Search designs
+ * Keyword candidate filter for the design library. Order is library order.
+ * Server rerank of this shortlist lives in `searchDesignCandidates`
+ * (`src/services/matching/designSearch.ts`). This function stays synchronous
+ * so the browser path never calls TypeSafe.
  */
-export function searchDesigns(query: string): Design[] {
-  const designs = getAllDesigns();
-  const lowerQuery = query.toLowerCase();
+export function filterDesignsByQuery(designs: Design[], query: string): Design[] {
+  const lowerQuery = (query || '').toLowerCase();
 
   return designs.filter(d => {
     const searchableText = [
@@ -321,6 +323,13 @@ export function searchDesigns(query: string): Design[] {
 
     return searchableText.includes(lowerQuery);
   });
+}
+
+/**
+ * Search designs saved in the local library.
+ */
+export function searchDesigns(query: string): Design[] {
+  return filterDesignsByQuery(getAllDesigns(), query);
 }
 
 /**

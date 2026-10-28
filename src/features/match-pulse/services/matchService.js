@@ -3,6 +3,8 @@
  *
  * Combines Neo4j and Supabase vector results using Reciprocal Rank Fusion (RRF).
  * Falls back to demo matching when services aren't available.
+ * With TYPESAFE_RERANK on, the fused shortlist is reordered by fit to the
+ * brief. The flag defaults off.
  */
 
 import { searchSimilar } from '@/services/vectorDbService';
@@ -13,6 +15,7 @@ import {
 } from './neo4jService.ts';
 import { findMatchingArtistsForDemo } from './demoMatchService';
 import { DEFAULT_WEIGHTS, weightedAverage } from '@/utils/scoreAggregation';
+import { buildPulseBrief, rerankArtistCandidates } from '@/services/matching/typesafeRerank';
 
 const RRF_K = 60;
 
@@ -175,13 +178,15 @@ export async function getHybridArtistMatches(context, options = {}) {
         }
       );
 
+      const demoCards = demoMatches.map(artist => ({
+        ...artist,
+        matchScore: Math.round((artist.score || 0) * 100),
+        thumbnail: artist.portfolioImages?.[0] || artist.profileImage
+      }));
+      const ordered = await rerankOrOriginal(buildPulseBrief(context), demoCards);
       return {
-        total: demoMatches.length,
-        matches: demoMatches.map(artist => ({
-          ...artist,
-          matchScore: Math.round((artist.score || 0) * 100),
-          thumbnail: artist.portfolioImages?.[0] || artist.profileImage
-        }))
+        total: ordered.length,
+        matches: ordered
       };
     } catch (error) {
       console.error('[MatchService] Demo matching failed:', error);
@@ -228,9 +233,19 @@ export async function getHybridArtistMatches(context, options = {}) {
   );
 
   merged.sort((a, b) => b.matchScore - a.matchScore);
+  const ordered = await rerankOrOriginal(buildPulseBrief(context), merged);
 
   return {
     total: merged.length,
-    matches: merged.slice(0, limit)
+    matches: ordered.slice(0, limit)
   };
+}
+
+async function rerankOrOriginal(brief, candidates) {
+  try {
+    return await rerankArtistCandidates(brief, candidates);
+  } catch {
+    console.warn('[MatchService] Brief rerank failed closed');
+    return candidates;
+  }
 }

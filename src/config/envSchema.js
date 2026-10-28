@@ -338,6 +338,16 @@ export const ENV_SECTIONS = [
         name: 'GEMINI_MODEL', type: 'string', required: false, default: 'gemini-2.5-flash',
         purpose: 'Model overrides (defaults live in code).',
       },
+      {
+        name: 'TYPESAFE_RERANK', type: 'bool', required: false, default: 'false',
+        example: 'false',
+        purpose: 'When true, rerank the top artist-match and design-search candidates with TypeSafe Score questions for style, placement, and subject. Off, missing key, timeout, or error keeps the original order.',
+      },
+      {
+        name: 'TYPESAFE_RERANK_TOP_N', type: 'int', required: false, default: '20',
+        example: '20',
+        purpose: 'How many leading candidates to send to TypeSafe. Values outside 1..50 fall back to 20. The rest of the shortlist stays in its original order after that head.',
+      },
       { name: 'CONVERSATION_MODEL', type: 'string', required: false, purpose: '' },
       {
         name: 'INTAKE_EXTRACTION_MODEL', type: 'string', required: false,

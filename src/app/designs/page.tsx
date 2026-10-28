@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import StudioShell from "@/components/studio/StudioShell";
 import SlashHeadline from "@/components/punk/SlashHeadline";
@@ -18,6 +18,7 @@ import {
 } from "@/lib/taste-profile";
 import { ManageBillingButton } from "@/components/billing/BillingButtons";
 import DesignJourneyRail from "./DesignJourneyRail";
+import { getOptionalApiAuthHeaders } from "@/lib/client-api-auth";
 import { deriveDesignTitle, getDesignJourney } from "./designJourney";
 
 function formatEdited(ts: number): string {
@@ -117,6 +118,63 @@ export default function DesignsPage() {
   // outside of select mode.
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [query, setQuery] = useState("");
+  const [rankedIds, setRankedIds] = useState<string[] | null>(null);
+
+  const matchedDesigns = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return designs;
+    return designs.filter((design) =>
+      `${design.prompt} ${design.title ?? ""}`.toLowerCase().includes(needle)
+    );
+  }, [designs, query]);
+
+  useEffect(() => {
+    const needle = query.trim();
+    if (!needle || matchedDesigns.length === 0) {
+      setRankedIds(null);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      void getOptionalApiAuthHeaders().then((authHeaders) => fetch("/api/v1/designs/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        signal: controller.signal,
+        body: JSON.stringify({
+          brief: needle,
+          designs: matchedDesigns.map((design) => ({
+            id: design.id,
+            subject: design.prompt,
+            style: design.title ?? "",
+            notes: design.prompt,
+          })),
+        }),
+      }))
+        .then(async (response) => {
+          if (!response.ok) throw new Error("search failed");
+          const payload = await response.json() as { ids?: unknown };
+          if (!Array.isArray(payload.ids)) throw new Error("search failed");
+          setRankedIds(payload.ids.filter((id): id is string => typeof id === "string"));
+        })
+        .catch((error: unknown) => {
+          if (error instanceof DOMException && error.name === "AbortError") return;
+          setRankedIds(null);
+        });
+    }, 250);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [query, matchedDesigns]);
+
+  const visibleDesigns = useMemo(() => {
+    if (!rankedIds || rankedIds.length === 0) return matchedDesigns;
+    const rank = new Map(rankedIds.map((id, index) => [id, index]));
+    return [...matchedDesigns].sort(
+      (a, b) => (rank.get(a.id) ?? matchedDesigns.length) - (rank.get(b.id) ?? matchedDesigns.length)
+    );
+  }, [matchedDesigns, rankedIds]);
 
   const exitSelectMode = () => {
     setSelectMode(false);
@@ -293,6 +351,16 @@ export default function DesignsPage() {
                 </section>
               )}
 
+              <label className="mt-10 block">
+                <span className="text-[10px] uppercase tracking-[0.2em] text-white/50 font-body">Search saved cuts</span>
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="style, subject, or placement"
+                  className="mt-2 w-full border-2 hairline bg-transparent px-4 py-3 text-white font-body"
+                />
+              </label>
+
               <div className="mt-14 flex items-end justify-between gap-4">
                 <div>
                   <div className="text-[10px] uppercase tracking-[0.28em] text-pink font-body">
@@ -308,7 +376,7 @@ export default function DesignsPage() {
               </div>
 
               <div className="mt-7 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                {designs.map((d) => {
+                {visibleDesigns.map((d) => {
                   const isSelected = selectedIds.has(d.id);
                   const journey = getDesignJourney(d, bookings);
                   const tile = (
