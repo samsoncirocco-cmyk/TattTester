@@ -6,10 +6,9 @@
  * two cuts spread on one axis per round). With structured input the
  * Council's job shifts from interpretation to axis differentiation
  * (ADR-0012), so construction is fully template-based and works offline —
- * no generative model is called. When TYPESAFE_COUNCIL is on, each draft
- * is judged with one TypeSafe call; a judge error leaves the template
- * result unchanged. The classic `enhance()` path and its provider
- * fallbacks are untouched.
+ * no generative model is called. TYPESAFE_COUNCIL stays staged: turning it
+ * on does not replace these template drafts. judgeStructuredVariations is
+ * the offline evaluator. The classic `enhance()` path is untouched.
  */
 
 import type {
@@ -25,7 +24,6 @@ import { getBaseNegativePrompt, validatePromptLength } from './councilService';
 import { resolvePlacement } from '@/lib/placement';
 import {
   isTypesafeCouncilEnabled,
-  judgeStructuredVariations,
   typesafeApiKey,
 } from './typesafeJudge';
 
@@ -765,39 +763,12 @@ function compositionalPair(
 
 async function applyTypedJudges(
   variations: StructuredVariation[],
-  record: IntakeRecord
+  _record: IntakeRecord
 ): Promise<StructuredVariation[]> {
-  try {
-    if (!isTypesafeCouncilEnabled() || !typesafeApiKey()) return variations;
-    const judged = await judgeStructuredVariations(variations, {
-      requestId: `structured_${Date.now()}`,
-      userRequest: [record.subject, record.meaning].filter(Boolean).join('. '),
-      style: record.styleTags.join(', ') || 'unspecified',
-      bodyPart: record.placement || 'unspecified',
-    });
-    return judged.map((entry, index) => {
-      const base = variations[index];
-      if (entry.fellBack) return base;
-      return {
-        ...base,
-        prompts: entry.draft.prompts,
-        negativePrompt: entry.draft.negativePrompt,
-        clarifyingQuestion: entry.clarifyingQuestion,
-        modelSelection: entry.modelSelection
-          ? {
-              modelId: entry.modelSelection.modelId,
-              modelName: entry.modelSelection.modelName,
-              reasoning: entry.modelSelection.reasoning,
-              isFallback: entry.modelSelection.isFallback,
-              source: entry.modelSelection.source,
-            }
-          : undefined,
-      };
-    });
-  } catch (error) {
-    console.error('[CouncilStructured] TypeSafe judge unavailable, keeping template drafts:', error instanceof Error ? error.message : error);
-    return variations;
+  if (isTypesafeCouncilEnabled() && typesafeApiKey()) {
+    // Staged. The live templates are not replaced and no judge call is made.
   }
+  return variations;
 }
 
 /**

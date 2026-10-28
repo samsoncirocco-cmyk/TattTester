@@ -9,6 +9,7 @@
    The public contract is typed at the boundary (../index.ts); tightening the
    internals is deliberately out of scope for the move. */
 
+import { randomUUID } from 'node:crypto';
 import { buildCharacterMap, getAllCharacterNames } from '../../../config/characterDatabase.js';
 import { envString } from '@/config/envSchema';
 import { selectModelWithFallback, getModelPromptEnhancements } from '../../../utils/styleModelMapping.js';
@@ -18,8 +19,6 @@ import { getGcpAccessToken } from '@/lib/google-auth-edge';
 import { logEvent } from '@/lib/observability';
 import {
   isTypesafeCouncilEnabled,
-  redactSecret,
-  tryTypedCouncil,
   type GeneratedDraft,
 } from './typesafeJudge';
 
@@ -795,7 +794,8 @@ export function resolveVertexProjectId(): string | null {
  * Vertex Gemini when that lane is on and configured; otherwise a single
  * OpenRouter call to COUNCIL_GENERATOR_MODEL. Never the legacy trio.
  */
-async function generateSingleDraft({
+/** Offline single-model draft for the staged TypeSafe judge. The live council does not call it. */
+export async function generateSingleDraft({
   userIdea,
   style,
   bodyPart,
@@ -891,7 +891,7 @@ export async function enhancePrompt({
   isStencilMode = null
 }: any) {
   const startTime = Date.now();
-  const requestId = `council_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const requestId = `council_${randomUUID()}`;
   const characterMatches = detectCharacters(userIdea);
   const resolvedStencilMode = isStencilMode === null
     ? detectStencilMode(userIdea)
@@ -940,51 +940,15 @@ export async function enhancePrompt({
     stencil: resolvedStencilMode
   });
 
-  if (!DEMO_MODE) {
-    try {
-      if (isTypesafeCouncilEnabled()) {
-        const typed = await tryTypedCouncil({
-          requestId,
-          userIdea,
-          style,
-          bodyPart,
-          isStencilMode: resolvedStencilMode,
-          onDiscussionUpdate,
-          generateDraft: async (revisionNotes) => {
-            const raw = await generateSingleDraft({
-              userIdea,
-              style,
-              bodyPart,
-              isStencilMode: resolvedStencilMode,
-              requestId,
-              revisionNotes
-            });
-            const hardened = applyCouncilSkillPack(
-              raw.prompts,
-              raw.negativePrompt,
-              { bodyPart, isStencilMode: resolvedStencilMode, characterMatches }
-            );
-            return {
-              prompts: {
-                simple: hardened.prompts.simple,
-                detailed: hardened.prompts.detailed,
-                ultra: hardened.prompts.ultra
-              },
-              negativePrompt: hardened.negativePrompt,
-              generator: raw.generator,
-              generatorModel: raw.generatorModel
-            };
-          }
-        });
-        if (typed) {
-          cacheSet(cKey, typed);
-          return typed;
-        }
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error('[CouncilService] Typed council unavailable, using legacy path:', redactSecret(message, process.env.TYPESAFE_API_KEY));
-    }
+  if (!DEMO_MODE && isTypesafeCouncilEnabled()) {
+    // Replacement stays staged. The flag records that an offline judge
+    // exists; it does not spend or change the prompts returned here.
+    logEvent('council.typesafe.staged', {
+      requestId,
+      decision: 'shadow',
+      reason: 'replacement_not_activated',
+      simulated: true,
+    });
   }
 
   const USE_VERTEX_AI = (process.env.COUNCIL_VERTEX_AI_ENABLED ?? process.env.NEXT_PUBLIC_VERTEX_AI_ENABLED) !== 'false';

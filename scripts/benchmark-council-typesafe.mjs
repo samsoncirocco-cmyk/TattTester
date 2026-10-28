@@ -2,8 +2,9 @@
 /**
  * Before/after latency and cost for the design council.
  *
- * This does not call OpenRouter or TypeSafe. It sleeps for the planning
- * latencies in COUNCIL_COST_MODEL (src/services/council/internal/typesafeJudge.ts)
+ * SIMULATED. This does not call OpenRouter or TypeSafe and it is not a
+ * measured end-to-end saving. It sleeps for the planning latencies in
+ * COUNCIL_COST_MODEL (src/services/council/internal/typesafeJudge.ts)
  * and prints call counts plus list-price estimates.
  *
  *   node scripts/benchmark-council-typesafe.mjs
@@ -63,6 +64,8 @@ const passUsd = GENERATOR_USD + JUDGE_USD;
 const regenerateUsd = (GENERATOR_USD + JUDGE_USD) * 2;
 
 const report = {
+  label: 'SIMULATED',
+  note: 'Sleeps and assumed list prices. Not a measured end-to-end latency or cost comparison.',
   scale: SCALE,
   legacy: {
     llmCalls: LEGACY_CALLS,

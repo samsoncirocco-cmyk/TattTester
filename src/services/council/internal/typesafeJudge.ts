@@ -13,6 +13,7 @@
 
 import { envBool, envInt, envString } from '@/config/envSchema';
 import { logEvent } from '@/lib/observability';
+import { typesafeModel } from '@/services/typesafe';
 import { MODEL_CONFIGS } from '../../../config/modelRoutingRules.js';
 import { selectModelWithFallback } from '../../../utils/styleModelMapping.js';
 
@@ -385,6 +386,28 @@ export function draftPasses(judgment: ParsedJudgment): boolean {
   return true;
 }
 
+/** Either hazard gate blocks the draft, even when the other score is high. */
+export function hazardBlocks(judgment: ParsedJudgment): boolean {
+  return judgment.nouls.contains_text_not_requested >= COUNCIL_JUDGE_THRESHOLDS.noulYes
+    || judgment.nouls.names_real_person_or_brand >= COUNCIL_JUDGE_THRESHOLDS.noulYes;
+}
+
+/**
+ * Highest combined score among drafts that pass both hazard gates.
+ * A lower-scoring safe retry beats an earlier hazard-positive draft.
+ * Null when every draft is hazard-positive.
+ */
+export function selectSafeDraft<T>(
+  first: { draft: T; judgment: ParsedJudgment },
+  second: { draft: T; judgment: ParsedJudgment }
+): { draft: T; judgment: ParsedJudgment } | null {
+  const safe = [first, second].filter((candidate) => !hazardBlocks(candidate.judgment));
+  if (safe.length === 0) return null;
+  return safe.reduce((best, candidate) => (
+    candidate.judgment.combined >= best.judgment.combined ? candidate : best
+  ));
+}
+
 /** Repeated text/brand hazards fall back to the legacy council. Soft misses ask one question. */
 export function decisionAfterRetry(judgment: ParsedJudgment): 'clarify' | 'fallback' {
   if (judgment.nouls.contains_text_not_requested >= COUNCIL_JUDGE_THRESHOLDS.noulYes) return 'fallback';
@@ -486,7 +509,7 @@ export async function callTypeSafe(
   env: NodeJS.ProcessEnv = process.env
 ): Promise<SystemOneResponse> {
   const timeoutMs = envInt('TYPESAFE_TIMEOUT_MS', env) ?? 8000;
-  const model = envString('TYPESAFE_MODEL', env) || 'jev-latest';
+  const model = typesafeModel(env);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -734,10 +757,6 @@ export async function tryTypedCouncil(args: TypedCouncilArgs): Promise<TypedCoun
     args.onDiscussionUpdate?.('Regenerating the draft once...');
     const secondDraft = await args.generateDraft(revisionNotesFrom(first.judgment));
     const second = await judgeOnce(context, secondDraft, key, 2, secondDraft.generatorModel);
-    const winner = second.judgment.combined >= first.judgment.combined
-      ? { draft: secondDraft, judgment: second.judgment }
-      : { draft: firstDraft, judgment: first.judgment };
-
     if (draftPasses(second.judgment)) {
       const modelSelection = await selectImageModel(context, second.judgment);
       const result = resultFrom(args, secondDraft, second.judgment, modelSelection, started, 2, 2);
@@ -753,7 +772,11 @@ export async function tryTypedCouncil(args: TypedCouncilArgs): Promise<TypedCoun
       return result;
     }
 
-    if (decisionAfterRetry(second.judgment) === 'fallback') {
+    const winner = selectSafeDraft(
+      { draft: firstDraft, judgment: first.judgment },
+      { draft: secondDraft, judgment: second.judgment }
+    );
+    if (!winner) {
       logEvent('council.typesafe.audit', {
         requestId: args.requestId,
         decision: 'fallback',
@@ -850,15 +873,15 @@ export async function judgeStructuredVariations<T extends DraftText>(
           fellBack: false,
         };
       }
-      if (decisionAfterRetry(second.judgment) === 'fallback') {
-        return { draft: original, fellBack: true };
-      }
-      const winner = second.judgment.combined >= first.judgment.combined ? repaired : original;
-      const winnerJudgment = winner === repaired ? second.judgment : first.judgment;
+      const winner = selectSafeDraft(
+        { draft: original, judgment: first.judgment },
+        { draft: repaired, judgment: second.judgment }
+      );
+      if (!winner) return { draft: original, fellBack: true };
       return {
-        draft: winner,
-        clarifyingQuestion: clarifyingQuestionFor(winnerJudgment),
-        modelSelection: await selectImageModel(context, winnerJudgment),
+        draft: winner.draft,
+        clarifyingQuestion: clarifyingQuestionFor(winner.judgment),
+        modelSelection: await selectImageModel(context, winner.judgment),
         fellBack: false,
       };
     } catch (error) {

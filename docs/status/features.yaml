@@ -312,13 +312,14 @@ features:
       - src/app/share/[shareId]/page.test.tsx
 
   typesafe_council_judges:
-    status: implemented
+    status: implemented_unverified
     evidence:
       - src/services/council/internal/typesafeJudge.ts
       - src/services/council/internal/councilService.ts
       - src/services/council/__tests__/typesafeCouncil.test.ts
       - src/utils/styleModelMapping.js
     limitations:
-      - Off unless TYPESAFE_COUNCIL=true. A missing key, timeout, HTTP error, or repeated text/brand hazard uses the legacy three-model council.
+      - TYPESAFE_COUNCIL defaults off. Turning it on does not replace the legacy council and does not call TypeSafe from the live enhance path. The judge stays an offline evaluator until a held-out quality comparison exists.
+      - A hazard-positive draft is not returned after a safer retry. The scripts/benchmark-council-typesafe.mjs numbers are simulated sleeps and assumed prices, not a measured end-to-end saving.
       - The TypeSafe image-model Choice updates selectModelWithFallback. Design-session renders still go through routeGeneration until a caller threads that choice in.
       - Spend recording on POST /api/v1/council/enhance is unchanged.

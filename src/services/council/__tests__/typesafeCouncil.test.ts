@@ -13,6 +13,10 @@ import {
   parseJudgment,
   redactSecret,
   decisionAfterRetry,
+  hazardBlocks,
+  judgeStructuredVariations,
+  selectSafeDraft,
+  tryTypedCouncil,
 } from '../internal/typesafeJudge';
 
 const API_KEY = 'typesafe-test-key-do-not-log';
@@ -208,10 +212,84 @@ describe('typesafe judge primitives', () => {
     expect(redactSecret(`bad ${API_KEY} request`, API_KEY)).toBe('bad [redacted] request');
     expect(redactSecret('plain failure', API_KEY)).toBe('plain failure');
   });
+
+  it('drops an earlier hazard-positive draft when the retry only soft-fails', () => {
+    const hazardous = parseJudgment(typesafePayload({ score: 4, textNoul: 0.95 }));
+    const soft = parseJudgment(typesafePayload({ score: 1, textNoul: 0.1 }));
+    expect(hazardBlocks(hazardous)).toBe(true);
+    expect(hazardBlocks(soft)).toBe(false);
+    expect(selectSafeDraft(
+      { draft: 'first', judgment: hazardous },
+      { draft: 'retry', judgment: soft }
+    )?.draft).toBe('retry');
+    expect(selectSafeDraft(
+      { draft: 'first', judgment: soft },
+      { draft: 'retry', judgment: hazardous }
+    )?.draft).toBe('first');
+    expect(selectSafeDraft(
+      { draft: 'first', judgment: hazardous },
+      { draft: 'retry', judgment: parseJudgment(typesafePayload({ score: 4, personNoul: 0.96 })) }
+    )).toBeNull();
+  });
+});
+
+describe('offline council judge', () => {
+  function draft(label: string) {
+    return {
+      prompts: { simple: label, detailed: label, ultra: label },
+      negativePrompt: 'no text',
+      generator: 'openrouter' as const,
+      generatorModel: 'google/gemini-2.5-flash',
+    };
+  }
+
+  it('returns the safer retry from tryTypedCouncil when the first draft is hazard-positive', async () => {
+    let n = 0;
+    installFetch({
+      typesafe: (index) => jsonResponse(typesafePayload(index === 1
+        ? { score: 4, textNoul: 0.95 }
+        : { score: 1, textNoul: 0.1 })),
+    });
+    process.env.TYPESAFE_API_KEY = API_KEY;
+    const result = await tryTypedCouncil({
+      requestId: 'offline-hazard',
+      userIdea: 'a rose on the forearm',
+      style: 'fine-line',
+      bodyPart: 'forearm',
+      isStencilMode: false,
+      generateDraft: async () => draft(`draft-${n += 1}`),
+    });
+    expect(result?.prompts.ultra).toBe('draft-2');
+    expect(result?.clarifyingQuestion).toEqual(expect.any(String));
+    expect(result?.metadata.provider).toBe('typesafe-council');
+  });
+
+  it('returns the original structured draft when the retry is the hazard-positive one', async () => {
+    installFetch({
+      typesafe: (index) => jsonResponse(typesafePayload(index === 1
+        ? { score: 1, textNoul: 0.1 }
+        : { score: 4, textNoul: 0.95 })),
+    });
+    process.env.TYPESAFE_API_KEY = API_KEY;
+    const [judged] = await judgeStructuredVariations([
+      {
+        prompts: { simple: 'original', detailed: 'original', ultra: 'original' },
+        negativePrompt: 'no text',
+      },
+    ], {
+      requestId: 'offline-structured',
+      userRequest: 'a rose',
+      style: 'fine-line',
+      bodyPart: 'forearm',
+    });
+    expect(judged.fellBack).toBe(false);
+    expect(judged.draft.prompts.ultra).toBe('original');
+    expect(judged.clarifyingQuestion).toEqual(expect.any(String));
+  });
 });
 
 describe('enhancePrompt TypeSafe council', () => {
-  it('passes on one generator call and one TypeSafe call', async () => {
+  it('keeps the legacy council when the flag is on and does not call TypeSafe', async () => {
     const calls = installFetch({});
     const { enhancePrompt, restore } = await loadEnhance({
       TYPESAFE_COUNCIL: 'true',
@@ -223,191 +301,18 @@ describe('enhancePrompt TypeSafe council', () => {
         style: 'anime',
         bodyPart: 'forearm',
       });
-
-      const typesafeCalls = calls.filter(call => call.url.includes('typesafe.ai'));
-      const generatorCalls = calls.filter(call => call.body?.model === 'google/gemini-2.5-flash');
-      const legacyCalls = calls.filter(call =>
-        ['anthropic/claude-3.5-sonnet', 'openai/gpt-4-turbo', 'google/gemini-1.5-pro'].includes(call.body?.model)
-      );
-      expect(generatorCalls).toHaveLength(1);
-      expect(typesafeCalls).toHaveLength(1);
-      expect(legacyCalls).toHaveLength(0);
-      expect(typesafeCalls[0].body.model).toBe('jev-latest');
-      expect(typesafeCalls[0].body.questions.image_model.criteria.flux_dev).toEqual(expect.any(String));
-      expect(typesafeCalls[0].body.questions.image_model.options).toBeUndefined();
-      expect(typesafeCalls[0].init.headers).toMatchObject({ Authorization: `Bearer ${API_KEY}` });
-
-      expect(result.prompts.ultra).toContain('dragon');
-      expect(result.prompts.ultra.toLowerCase()).toContain('vertical');
-      expect(result.negativePrompt.length).toBeGreaterThan(0);
-      expect(result.modelSelection.modelId).toBe('flux_dev');
-      expect(result.modelSelection.source).toBe('typesafe');
-      expect(result.metadata.provider).toBe('typesafe-council');
-      expect(result.metadata.llmCalls).toBe(1);
-      expect(result.metadata.typesafeCalls).toBe(1);
-      expect(result.metadata.judgment.combinedScore).toBeGreaterThan(0.9);
-      expect(result.clarifyingQuestion).toBeUndefined();
-
-      const audit = getRecentLogs(50).filter(entry => entry.type === 'council.typesafe.audit');
-      expect(audit.at(-1)?.data.decision).toBe('pass');
-      expect(audit.at(-1)?.data.scores).toBeTruthy();
-      expect(JSON.stringify(audit)).not.toContain(API_KEY);
-    } finally {
-      restore();
-    }
-  });
-
-  it('regenerates once when the first combined score is low, then accepts the second draft', async () => {
-    const calls = installFetch({
-      typesafe: (index) => jsonResponse(typesafePayload(index === 1 ? { score: 0 } : { score: 4 })),
-    });
-    const { enhancePrompt, restore } = await loadEnhance({
-      TYPESAFE_COUNCIL: 'true',
-      TYPESAFE_API_KEY: API_KEY,
-    });
-    try {
-      const result = await enhancePrompt({
-        userIdea: 'A koi on the forearm',
-        style: 'traditional',
-        bodyPart: 'forearm',
-      });
-      const generatorCalls = calls.filter(call => call.body?.model === 'google/gemini-2.5-flash');
-      const typesafeCalls = calls.filter(call => call.url.includes('typesafe.ai'));
-      expect(generatorCalls).toHaveLength(2);
-      expect(typesafeCalls).toHaveLength(2);
-      expect(calls.some(call => call.body?.model === 'anthropic/claude-3.5-sonnet')).toBe(false);
-      expect(generatorCalls[1].body.messages[1].content).toContain('Problems to fix');
-      expect(result.metadata.llmCalls).toBe(2);
-      expect(result.metadata.typesafeCalls).toBe(2);
-      expect(result.metadata.judgment.combinedScore).toBeGreaterThan(0.9);
-      expect(result.clarifyingQuestion).toBeUndefined();
-    } finally {
-      restore();
-    }
-  });
-
-  it('asks one clarifying question after a second soft miss and does not run the legacy council', async () => {
-    const calls = installFetch({
-      typesafe: () => jsonResponse(typesafePayload({ score: 0, confidence: 0.2 })),
-    });
-    const { enhancePrompt, restore } = await loadEnhance({
-      TYPESAFE_COUNCIL: 'true',
-      TYPESAFE_API_KEY: API_KEY,
-    });
-    try {
-      const result = await enhancePrompt({
-        userIdea: 'Something on my arm',
-        style: 'traditional',
-        bodyPart: 'forearm',
-      });
-      expect(calls.filter(call => call.url.includes('typesafe.ai'))).toHaveLength(2);
-      expect(calls.some(call => call.body?.model === 'openai/gpt-4-turbo')).toBe(false);
-      expect(result.clarifyingQuestion).toEqual(expect.any(String));
-      expect(result.metadata.needsClarification).toBe(true);
-      expect(result.prompts.detailed).toContain('dragon');
-    } finally {
-      restore();
-    }
-  });
-
-  it('falls back to the three serial models when a text hazard survives the retry', async () => {
-    const calls = installFetch({
-      typesafe: () => jsonResponse(typesafePayload({ textNoul: 0.97 })),
-    });
-    const { enhancePrompt, restore } = await loadEnhance({
-      TYPESAFE_COUNCIL: 'true',
-      TYPESAFE_API_KEY: API_KEY,
-    });
-    try {
-      const result = await enhancePrompt({
-        userIdea: 'A banner on the forearm',
-        style: 'traditional',
-        bodyPart: 'forearm',
-      });
-      expect(calls.filter(call => call.url.includes('typesafe.ai'))).toHaveLength(2);
-      expect(calls.filter(call => call.body?.model === 'google/gemini-2.5-flash')).toHaveLength(2);
-      expect(calls.filter(call => call.body?.model === 'anthropic/claude-3.5-sonnet')).toHaveLength(1);
-      expect(calls.filter(call => call.body?.model === 'openai/gpt-4-turbo')).toHaveLength(2);
-      expect(calls.filter(call => call.body?.model === 'google/gemini-1.5-pro')).toHaveLength(1);
-      expect(result.prompts.detailed).toContain('legacy technical plain text');
-      expect(result.metadata.provider).toBe('openrouter');
-    } finally {
-      restore();
-    }
-  });
-
-  it('falls back to the legacy council when TypeSafe returns an error, and does not log the key', async () => {
-    const calls = installFetch({
-      typesafe: () => jsonResponse(`invalid key ${API_KEY}`, 503),
-    });
-    const { enhancePrompt, restore } = await loadEnhance({
-      TYPESAFE_COUNCIL: 'true',
-      TYPESAFE_API_KEY: API_KEY,
-    });
-    try {
-      const result = await enhancePrompt({
-        userIdea: 'A wolf on the forearm',
-        style: 'traditional',
-        bodyPart: 'forearm',
-      });
-      expect(calls.filter(call => call.url.includes('typesafe.ai'))).toHaveLength(1);
-      expect(calls.filter(call => call.body?.model === 'anthropic/claude-3.5-sonnet')).toHaveLength(1);
-      expect(result.metadata.provider).toBe('openrouter');
-      const audit = getRecentLogs(30).filter(entry => entry.type === 'council.typesafe.audit');
-      expect(audit.at(-1)?.data.reason).toBe('http');
-      expect(JSON.stringify(audit)).not.toContain(API_KEY);
-      expect(JSON.stringify(audit)).toContain('[redacted]');
-    } finally {
-      restore();
-    }
-  });
-
-  it('falls back when the TypeSafe call times out', async () => {
-    const calls = installFetch({
-      typesafe: (_index, _body, init) => new Promise((_resolve, reject) => {
-        const signal = init.signal;
-        const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
-        if (signal?.aborted) abort();
-        else signal?.addEventListener('abort', abort);
-      }),
-    });
-    const { enhancePrompt, restore } = await loadEnhance({
-      TYPESAFE_COUNCIL: 'true',
-      TYPESAFE_API_KEY: API_KEY,
-      TYPESAFE_TIMEOUT_MS: '40',
-    });
-    try {
-      const result = await enhancePrompt({
-        userIdea: 'A moth on the forearm',
-        style: 'traditional',
-        bodyPart: 'forearm',
-      });
-      expect(calls.filter(call => call.url.includes('typesafe.ai'))).toHaveLength(1);
-      expect(result.prompts.ultra).toContain('legacy style plain text');
-      const audit = getRecentLogs(20).filter(entry => entry.type === 'council.typesafe.audit');
-      expect(audit.at(-1)?.data.reason).toBe('timeout');
-    } finally {
-      restore();
-    }
-  });
-
-  it('does not call TypeSafe when the key is missing', async () => {
-    const calls = installFetch({});
-    const { enhancePrompt, restore } = await loadEnhance({
-      TYPESAFE_COUNCIL: 'true',
-      TYPESAFE_API_KEY: undefined,
-    });
-    try {
-      const result = await enhancePrompt({
-        userIdea: 'A snake on the forearm',
-        style: 'traditional',
-        bodyPart: 'forearm',
-      });
       expect(calls.some(call => call.url.includes('typesafe.ai'))).toBe(false);
-      expect(calls.filter(call => call.body?.model === 'anthropic/claude-3.5-sonnet')).toHaveLength(1);
+      expect(calls.map(call => call.body?.model)).toEqual([
+        'anthropic/claude-3.5-sonnet',
+        'openai/gpt-4-turbo',
+        'google/gemini-1.5-pro',
+        'openai/gpt-4-turbo',
+      ]);
       expect(result.metadata.provider).toBe('openrouter');
-      const audit = getRecentLogs(20).filter(entry => entry.type === 'council.typesafe.audit');
-      expect(audit.at(-1)?.data.reason).toBe('missing_key');
+      expect(result.modelSelection.source).not.toBe('typesafe');
+      const staged = getRecentLogs(30).filter(entry => entry.type === 'council.typesafe.staged');
+      expect(staged.at(-1)?.data.reason).toBe('replacement_not_activated');
+      expect(staged.at(-1)?.data.simulated).toBe(true);
     } finally {
       restore();
     }
@@ -439,29 +344,6 @@ describe('enhancePrompt TypeSafe council', () => {
     }
   });
 
-  it('ignores a low-confidence image-model choice and uses the rules table', async () => {
-    installFetch({
-      typesafe: () => jsonResponse(typesafePayload({
-        choice: 'krea_2',
-        choiceConfidence: 0.1,
-      })),
-    });
-    const { enhancePrompt, restore } = await loadEnhance({
-      TYPESAFE_COUNCIL: 'true',
-      TYPESAFE_API_KEY: API_KEY,
-    });
-    try {
-      const result = await enhancePrompt({
-        userIdea: 'A peony on the forearm',
-        style: 'traditional',
-        bodyPart: 'forearm',
-      });
-      expect(result.modelSelection.modelId).toBe('flux_dev');
-      expect(result.modelSelection.source).toBe('rules');
-    } finally {
-      restore();
-    }
-  });
 });
 
 describe('structured drafts', () => {
@@ -497,44 +379,14 @@ describe('structured drafts', () => {
     expect(result.variations[0].clarifyingQuestion).toBeUndefined();
   });
 
-  it('judges each structured draft once when the scores pass', async () => {
+  it('does not judge or replace live structured drafts when the flag is on', async () => {
     process.env.TYPESAFE_COUNCIL = 'true';
     process.env.TYPESAFE_API_KEY = API_KEY;
     const calls = installFetch({});
     const { enhanceStructured } = await import('../internal/structuredMode');
     const result = await enhanceStructured(record);
-    const typesafeCalls = calls.filter(call => call.url.includes('typesafe.ai'));
-    expect(typesafeCalls).toHaveLength(2);
-    expect(typesafeCalls[0].body.questions.fits_body_placement.type).toBe('score');
-    expect(result.variations[0].modelSelection?.source).toBe('typesafe');
+    expect(calls.some(call => call.url.includes('typesafe.ai'))).toBe(false);
+    expect(result.variations[0].modelSelection?.source).not.toBe('typesafe');
     expect(result.variations[0].clarifyingQuestion).toBeUndefined();
-    expect(result.variations[0].prompts.ultra).not.toContain('Compose the design');
-  });
-
-  it('repairs a structured draft once and keeps the repaired text when the second judge passes', async () => {
-    process.env.TYPESAFE_COUNCIL = 'true';
-    process.env.TYPESAFE_API_KEY = API_KEY;
-    const calls = installFetch({
-      typesafe: (index) => jsonResponse(typesafePayload(index <= 2 ? { score: 0 } : { score: 4 })),
-    });
-    const { enhanceStructured } = await import('../internal/structuredMode');
-    const result = await enhanceStructured(record);
-    expect(calls.filter(call => call.url.includes('typesafe.ai'))).toHaveLength(4);
-    expect(result.variations[0].prompts.ultra).toContain('named body placement');
-    expect(result.variations[1].prompts.detailed).toContain('named body placement');
-  });
-
-  it('keeps the template drafts when TypeSafe errors', async () => {
-    process.env.TYPESAFE_COUNCIL = 'true';
-    process.env.TYPESAFE_API_KEY = API_KEY;
-    const calls = installFetch({
-      typesafe: () => jsonResponse('nope', 500),
-    });
-    const { enhanceStructured } = await import('../internal/structuredMode');
-    const result = await enhanceStructured(record);
-    expect(calls.filter(call => call.url.includes('typesafe.ai'))).toHaveLength(2);
-    expect(result.variations[0].prompts.ultra).not.toContain('bold readable forms');
-    expect(result.variations[0].clarifyingQuestion).toBeUndefined();
-    expect(JSON.stringify(getRecentLogs(20))).not.toContain(API_KEY);
   });
 });
