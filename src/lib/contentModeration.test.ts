@@ -74,9 +74,15 @@ describe('routeModeration', () => {
 });
 
 describe('moderationUserMessage', () => {
-  it('refuses a design prompt in plain language', () => {
-    expect(moderationUserMessage('design_prompt', 'block')).toMatch(/can't generate/i);
-    expect(moderationUserMessage('design_prompt', 'review')).toMatch(/person to look/i);
+  it('promises review on a design prompt only with a durable, correlated receipt', () => {
+    expect(moderationUserMessage('design_prompt', 'review')).toBe('This was not saved for review.');
+    expect(moderationUserMessage('design_prompt', 'review', { correlationId: 'mod_1', durable: false })).toBe(
+      'This was not saved for review.',
+    );
+    expect(moderationUserMessage('design_prompt', 'review', { correlationId: 'mod_1', durable: true })).toMatch(
+      /saved for review\. reference mod_1/i,
+    );
+    expect(moderationUserMessage('design_prompt', 'block')).not.toMatch(/can't generate/i);
   });
 
   it('tells a takedown requester that nothing was removed and a person will review', () => {
