@@ -1094,7 +1094,14 @@ export async function runConversationTurn(
   // the customer say.
   const previousLog = request.previousTurnLogs?.[request.previousTurnLogs.length - 1];
   let assumedPlacement: string | undefined;
-  if (previousLog?.assumedPlacement && !(record.placement ?? '').trim()) {
+  // The model can also read the assumption back out of the bot's own
+  // reply; a placement equal to the assumption is still the assumption,
+  // not one the customer named.
+  const extractedPlacement = (record.placement ?? '').trim().toLowerCase();
+  if (
+    previousLog?.assumedPlacement &&
+    (!extractedPlacement || extractedPlacement === previousLog.assumedPlacement.toLowerCase())
+  ) {
     record.placement = previousLog.assumedPlacement;
     assumedPlacement = previousLog.assumedPlacement;
   }
