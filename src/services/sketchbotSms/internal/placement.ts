@@ -21,6 +21,8 @@
  */
 import sharp from 'sharp';
 import { assessBackdrop, stripBackdrop } from '@/lib/designBackdrop';
+import { routeDesignTurn } from '@/services/designSession/typesafeDesignRouting';
+import { PLACEMENT_DONE_TEXT } from './render';
 
 /** Fraction of the photo's width the design covers by default. */
 const DEFAULT_WIDTH_FRACTION = 0.45;
@@ -110,4 +112,48 @@ export async function compositeOnBody(
     .toBuffer();
 
   return { buffer };
+}
+
+export interface PlacementFollowUp {
+  /** Same scale the regex would have used. TypeSafe does not invent a fraction. */
+  widthFraction: number;
+  /** The line under the composite. The size line, unless a confident axis replaces it. */
+  closingText: string;
+}
+
+/**
+ * Scale stays `widthFractionFor`. The follow-up line is the size offer
+ * unless TypeSafe is confidently not ready to generate and names an axis
+ * other than size — then that question replaces the size line. Flag off,
+ * a timeout, or low confidence keeps the size line.
+ */
+export async function planPlacementFollowUp(
+  message: string,
+  brief: {
+    placement?: string;
+    styleTags?: string[];
+    meaning?: string;
+    subject?: string;
+  } = {}
+): Promise<PlacementFollowUp> {
+  const current: PlacementFollowUp = {
+    widthFraction: widthFractionFor(message),
+    closingText: PLACEMENT_DONE_TEXT,
+  };
+  const decision = await routeDesignTurn({
+    channel: 'sms-placement',
+    transcript: [{ role: 'user', text: message || '' }],
+    record: {
+      placement: brief.placement ?? '',
+      styleTags: brief.styleTags ?? [],
+      meaning: brief.meaning ?? '',
+      subject: brief.subject,
+      references: [],
+      ambiguousAxes: [],
+    },
+    stage: 'chatting',
+    firedRule: 'none',
+  });
+  if (decision.action !== 'ask' || decision.axis === 'size') return current;
+  return { widthFraction: current.widthFraction, closingText: decision.question };
 }

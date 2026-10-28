@@ -426,6 +426,26 @@ export const ENV_SECTIONS = [
         example: '8000',
         purpose: 'Abort a TypeSafe System One call after this many milliseconds and keep the existing path.',
       },
+      {
+        name: 'TYPESAFE_DESIGN_ROUTING', type: 'bool', required: false, default: 'false',
+        example: 'false',
+        purpose: 'When true, one TypeSafe call per design turn decides whether the brief is ready to generate and which question to ask next. A packet already published by intake is reused instead of a second call. Off, missing key, timeout, or error keeps the current conversation and SMS placement logic.',
+      },
+      {
+        name: 'TYPESAFE_DESIGN_NOUL_YES', type: 'float', required: false, default: '0.7',
+        example: '0.7',
+        purpose: 'Noul at or above this means the brief is ready to generate. TypeSafe starting yes-line is 0.7.',
+      },
+      {
+        name: 'TYPESAFE_DESIGN_NOUL_NO', type: 'float', required: false, default: '0.3',
+        example: '0.3',
+        purpose: 'Noul at or below this means the brief is not ready. Between this and the yes-line, the generate decision stays with the current rules.',
+      },
+      {
+        name: 'TYPESAFE_DESIGN_CHOICE_CONFIDENCE', type: 'float', required: false, default: '0.5',
+        example: '0.5',
+        purpose: 'Choice confidence at or above this steers the next question. Below it, the current question stays.',
+      },
     ],
   },
   {

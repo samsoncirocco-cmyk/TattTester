@@ -56,6 +56,7 @@ import {
   type StoredReference,
 } from './references';
 import { deleteReferencePhotos } from './referencePhotos';
+import { routeDesignTurn, steerConversationTurn } from '../typesafeDesignRouting';
 
 /**
  * Placeholder DesignSession fields for a session still in conversational
@@ -221,6 +222,19 @@ export async function converse(request: ConverseRequest): Promise<ConverseRespon
     referenceCastLabels(references)
   );
 
+  // One TypeSafe call (flag off by default) may promote this turn to a
+  // proposal or replace the question. Hard cadence rules and a low
+  // confidence answer leave the engine's turn alone.
+  const decision = await routeDesignTurn({
+    channel: 'design-session',
+    sessionId: session.id,
+    transcript: messages,
+    record: mergedRecord,
+    stage: result.stage,
+    firedRule: result.turnLog.firedRule,
+  });
+  result = steerConversationTurn({ ...result, record: mergedRecord, notes }, decision);
+
   // Persist everything: transcript + TurnLogs are the ADR-0022 day-one logs.
   conversation.transcript = [...messages, { role: 'bot', text: result.reply }];
   conversation.turnCount = userTurn;
@@ -231,7 +245,7 @@ export async function converse(request: ConverseRequest): Promise<ConverseRespon
   // Per-session model pinning: pass back TurnLog.model as the next turn's
   // pinnedModel (the engine's provider chain tries it first).
   conversation.model = result.turnLog.model;
-  conversation.notes = notes;
+  conversation.notes = result.notes;
   session.updatedAt = new Date().toISOString();
   await store.save(session);
 
@@ -243,7 +257,7 @@ export async function converse(request: ConverseRequest): Promise<ConverseRespon
     // SketchBot's notepad (TAT-48): the engine's whitelisted projection of
     // the record — never the record itself, never TurnLogs or rationale.
     // Reference rows (TAT-50) are overlaid through the same whitelist file.
-    notes,
+    notes: result.notes,
     ...(resumeKey ? { resumeKey } : {}),
   };
   // The gate's spoken state (#376) — field name, stalled flag, one line.

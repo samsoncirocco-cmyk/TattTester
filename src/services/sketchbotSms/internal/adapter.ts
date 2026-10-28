@@ -93,7 +93,7 @@ import type {
 } from '../types';
 import { resolveProfileStore, newProfile } from './profileStore';
 import { analyzeInboundMedia, fetchTwilioMedia, type MediaIngest } from './media';
-import { compositeOnBody, widthFractionFor } from './placement';
+import { compositeOnBody, planPlacementFollowUp } from './placement';
 import {
   renderSmsReply,
   REVEAL_ACK,
@@ -125,7 +125,6 @@ import {
   refinedClosingText,
   PLACEMENT_ACK,
   PLACEMENT_CAPTION,
-  PLACEMENT_DONE_TEXT,
   PLACEMENT_FAILED_TEXT,
   PLACEMENT_UNREADABLE_TEXT,
   PLACEMENT_UNUSABLE_DESIGN_TEXT,
@@ -1314,12 +1313,13 @@ export async function executePlacement(
     if (!photoImage) return { cuts: [], closingText: PLACEMENT_UNREADABLE_TEXT };
     if (!designResponse.ok) throw new Error(`design fetch ${designResponse.status}`);
 
+    const plan = await planPlacementFollowUp(message, session.intake);
     const composite = await compositeOnBody(
       Buffer.from(await designResponse.arrayBuffer()),
       // fetchTwilioMedia hands back base64 (it exists to feed the vision
       // model); sharp wants bytes.
       Buffer.from(photoImage.data, 'base64'),
-      widthFractionFor(message)
+      plan.widthFraction
     );
     if (composite === 'unusable-design') {
       return { cuts: [], closingText: PLACEMENT_UNUSABLE_DESIGN_TEXT };
@@ -1352,7 +1352,7 @@ export async function executePlacement(
 
     return {
       cuts: [{ caption: PLACEMENT_CAPTION, mediaUrl: upload.url }],
-      closingText: PLACEMENT_DONE_TEXT,
+      closingText: plan.closingText,
     };
   } catch (error) {
     logger.error({
