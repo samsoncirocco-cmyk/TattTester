@@ -65,6 +65,8 @@ US_STATES = (
     "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO "
     "MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY"
 ).split()
+STATE_NAMES = {name.replace("_", " ").lower(): code for name, code in zip(
+    "Alabama Alaska Arizona Arkansas California Colorado Connecticut Delaware District_of_Columbia Florida Georgia Hawaii Idaho Illinois Indiana Iowa Kansas Kentucky Louisiana Maine Maryland Massachusetts Michigan Minnesota Mississippi Missouri Montana Nebraska Nevada New_Hampshire New_Jersey New_Mexico New_York North_Carolina North_Dakota Ohio Oklahoma Oregon Pennsylvania Rhode_Island South_Carolina South_Dakota Tennessee Texas Utah Vermont Virginia Washington West_Virginia Wisconsin Wyoming".split(), US_STATES)}
 
 IG_RESERVED = {
     "p", "reel", "reels", "explore", "accounts", "stories", "tv", "about", "legal",
@@ -195,7 +197,8 @@ def overpass_query(state: str) -> str:
     )
 
 
-def parse_osm_elements(elements: Iterable[dict[str, Any]], state: str) -> dict[str, dict[str, Any]]:
+def parse_osm_elements(elements: Iterable[dict[str, Any]], state: str | None) -> dict[str, dict[str, Any]]:
+    """``state`` is only trusted for state-area queries; pass None for bbox queries."""
     shops: dict[str, dict[str, Any]] = {}
     for element in elements:
         tags = element.get("tags") or {}
@@ -211,7 +214,7 @@ def parse_osm_elements(elements: Iterable[dict[str, Any]], state: str) -> dict[s
         shops[f"osm:{element.get('type', 'node')}/{element.get('id')}"] = {
             "name": name,
             "city": (tags.get("addr:city") or "").strip() or None,
-            "state": (tags.get("addr:state") or state).strip().upper(),
+            "state": (normalize_state(tags.get("addr:state")) or normalize_state(state)),
             "website": website or None,
             "instagram": instagram,
             "email": tags.get("contact:email") or tags.get("email"),
@@ -220,6 +223,52 @@ def parse_osm_elements(elements: Iterable[dict[str, Any]], state: str) -> dict[s
             "lon": center.get("lon"),
         }
     return shops
+
+
+def normalize_state(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.strip()
+    if value.upper() in US_STATES:
+        return value.upper()
+    if value.upper().startswith("US-") and value[3:].upper() in US_STATES:
+        return value[3:].upper()
+    return STATE_NAMES.get(value.lower())
+
+
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+
+
+def reverse_geocode(http: Http, lat: float, lon: float) -> tuple[str | None, str | None]:
+    """(state, city) from OSM Nominatim. Policy: <=1 req/s, identifying UA, results cached."""
+    query = urllib.parse.urlencode({"format": "jsonv2", "lat": lat, "lon": lon,
+                                    "zoom": 10, "addressdetails": 1})
+    address = json.loads(http.get(f"{NOMINATIM_URL}?{query}", check_robots=False)).get("address") or {}
+    if address.get("country_code") not in (None, "us"):
+        return None, None
+    state = normalize_state(address.get("ISO3166-2-lvl4")) or normalize_state(address.get("state"))
+    city = address.get("city") or address.get("town") or address.get("village")
+    return state, city
+
+
+def fill_locations(http: Http, shops: dict[str, Any]) -> None:
+    """Infer state (and missing city) from coordinates; leave state None ("unknown") otherwise."""
+    for shop in shops.values():
+        if shop.get("state") and shop.get("city"):
+            continue
+        if shop.get("lat") is None or shop.get("lon") is None:
+            shop.setdefault("stateSource", "unknown")
+            continue
+        try:
+            state, city = reverse_geocode(http, shop["lat"], shop["lon"])
+        except Exception as exc:
+            print(f"[geo] {shop.get('name')}: {exc}", file=sys.stderr)
+            state, city = None, None
+        if not shop.get("state"):
+            shop["state"] = state
+            shop["stateSource"] = "geocode" if state else "unknown"
+        if not shop.get("city") and city:
+            shop["city"], shop["citySource"] = city, "geocode"
 
 
 def bbox_query(bbox: str) -> str:
@@ -246,7 +295,8 @@ def seed_shops(http: Http, states: list[str], raw_path: Path,
                bbox: str | None = None) -> dict[str, Any]:
     raw = load(raw_path, {})
     if bbox:
-        shops = parse_osm_elements(overpass_fetch(http, bbox_query(bbox)), states[0] if states else "")
+        shops = parse_osm_elements(overpass_fetch(http, bbox_query(bbox)), None)
+        fill_locations(http, shops)
         raw.update(shops)
         save(raw_path, raw)
         print(f"[osm] bbox {bbox}: shops={len(shops)}")
@@ -332,25 +382,42 @@ class MetaProvider:
 
     FIELDS = "username,name,biography,followers_count,media_count,website"
 
+    NAME = "meta"
+    MISS_SUBCODES = {2207013}  # "user not found" / not a business-discoverable account
+    FATAL_CODES = {4, 17, 32, 190, 613}  # rate limits and auth: stop, never record as a miss
+
     def __init__(self, http: Http, ig_user_id: str, token: str):
         self.http, self.ig_user_id, self.token = http, ig_user_id, token
+        self.last_error: str | None = None
 
     def fetch(self, handle: str) -> dict[str, Any] | None:
+        self.last_error = None
         query = urllib.parse.urlencode({
             "fields": f"business_discovery.username({handle}){{{self.FIELDS}}}",
             "access_token": self.token,
-        })
+        }, safe="{}(),")  # Graph wants the field-expansion braces unescaped
         try:
             body = self.http.get(f"{GRAPH_URL}/{self.ig_user_id}?{query}", check_robots=False)
         except urllib.error.HTTPError as error:
-            if error.code == 400:  # personal account or no such user
+            try:
+                info = json.loads(error.read().decode("utf-8", "replace")).get("error") or {}
+            except Exception:
+                info = {}
+            code, sub = info.get("code"), info.get("error_subcode")
+            if code in self.FATAL_CODES:
+                # message only: never echo the request URL (it carries the token)
+                raise RuntimeError(f"Graph API error code={code} subcode={sub}: {info.get('message')}") from None
+            if error.code == 400:
+                self.last_error = f"code={code} subcode={sub}"
                 return None
-            raise
+            raise RuntimeError(f"Graph API HTTP {error.code} code={code} subcode={sub}") from None
         bd = json.loads(body).get("business_discovery")
         return profile_from_business_discovery(bd) if bd else None
 
 
 class FixtureProvider:
+    NAME = "fixture"
+
     def __init__(self, path: Path):
         self.rows = {k.lower(): v for k, v in json.loads(Path(path).read_text()).items()}
 
@@ -360,6 +427,7 @@ class FixtureProvider:
 
 class ApifyProvider:
     """Paid fallback that reuses the existing actor plumbing unchanged."""
+    NAME = "apify"
 
     def __init__(self, sweep_id: str, run_report: Path):
         from execution import discover_ig  # lazy: only when explicitly chosen
@@ -390,22 +458,61 @@ class ApifyProvider:
 
 
 def enrich(provider: Any, handles: list[str], profiles_path: Path, misses_path: Path,
-           maximum: int) -> dict[str, Any]:
+           maximum: int, refresh: bool = False) -> dict[str, Any]:
+    """Resolve handles through ``provider``.
+
+    Cache entries are reused only when the same provider produced them (tracked in
+    ``profile_provenance.json``), so a fixture/offline run never masks the real API.
+    """
+    name = getattr(provider, "NAME", type(provider).__name__)
+    prov_path = profiles_path.with_name("profile_provenance.json")
     profiles = load(profiles_path, {})
     misses = load(misses_path, {})
-    todo = [h for h in handles if h not in profiles and h not in misses][:maximum]
+    provenance = load(prov_path, {})
+
+    def cached(handle: str) -> bool:
+        if refresh:
+            return False
+        miss = misses.get(handle)
+        miss_from = miss.get("provider") if isinstance(miss, dict) else None
+        return provenance.get(handle) == name or miss_from == name
+
+    todo = [h for h in handles if not cached(h)][:maximum]
     if hasattr(provider, "prefetch") and todo:
         provider.prefetch(todo)
+    resolved = 0
     for handle in todo:
         row = provider.fetch(handle)
         if row is None:
-            misses[handle] = "not-resolvable(personal-or-missing)"
+            if provenance.get(handle) != name:
+                profiles.pop(handle, None)
+                provenance.pop(handle, None)
+            misses[handle] = {"provider": name,
+                              "reason": getattr(provider, "last_error", None) or "not-resolvable(personal-or-missing)"}
         else:
             profiles[handle] = row
+            provenance[handle] = name
+            misses.pop(handle, None)
+            resolved += 1
     save(profiles_path, profiles)
     save(misses_path, misses)
-    print(f"[enrich] requested={len(todo)} resolved={len(todo) - sum(1 for h in todo if h in misses)}")
+    save(prov_path, provenance)
+    print(f"[enrich:{name}] requested={len(todo)} resolved={resolved} misses={len(todo) - resolved}")
     return profiles
+
+
+def load_env_file(path: Path, keys: Iterable[str]) -> None:
+    """Populate missing env vars from a KEY=VALUE file (values are never printed)."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.removeprefix("export ").strip()
+        if key in keys and not os.environ.get(key):
+            os.environ[key] = value.strip().strip('"').strip("'")
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +624,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     seed = sub.add_parser("seed-shops")
     seed.add_argument("--states", default="NE,IA,SD")
-    seed.add_argument("--bbox", help="south,west,north,east (lighter metro query); --states gives the state")
+    seed.add_argument("--bbox", help="south,west,north,east (lighter metro query); state comes from address or reverse geocode")
     crawl = sub.add_parser("crawl-shops")
     crawl.add_argument("--max", type=int, default=50)
     en = sub.add_parser("enrich")
@@ -525,6 +632,7 @@ def main(argv: list[str] | None = None) -> int:
     en.add_argument("--fixture", type=Path)
     en.add_argument("--max", type=int, default=200)
     en.add_argument("--sweep-id")
+    en.add_argument("--refresh", action="store_true", help="ignore cached profiles/misses")
     sub.add_parser("filter")
     sub.add_parser("stats")
     args = parser.parse_args(argv)
@@ -556,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("--fixture is required with --provider fixture")
             provider = FixtureProvider(args.fixture)
         elif args.provider == "meta":
+            load_env_file(ROOT / ".env.ig-graph", ("IG_GRAPH_USER_ID", "IG_GRAPH_TOKEN"))
             ig_id, token = os.environ.get("IG_GRAPH_USER_ID"), os.environ.get("IG_GRAPH_TOKEN")
             if not ig_id or not token:
                 parser.error("IG_GRAPH_USER_ID and IG_GRAPH_TOKEN must be set for --provider meta")
@@ -568,7 +677,8 @@ def main(argv: list[str] | None = None) -> int:
         for _ in range(2):
             found = collect_sources(shops, crawled, profiles)
             todo = [h for h in found if h not in existing and h not in ref_handles and h not in protected]
-            profiles = enrich(provider, todo, profiles_path, misses_path, args.max)
+            profiles = enrich(provider, todo, profiles_path, misses_path, args.max, refresh=args.refresh)
+            args.refresh = False  # second pass reuses what pass one just fetched
         return 0
     found = collect_sources(shops, crawled, profiles)
     if args.command == "stats":

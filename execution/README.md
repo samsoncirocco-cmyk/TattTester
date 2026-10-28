@@ -346,8 +346,7 @@ D=data/discovery-inhouse
 python3 execution/discover_inhouse.py --out $D seed-shops --states NE,IA,SD     # OSM shop=tattoo
 python3 execution/discover_inhouse.py --out $D seed-shops --states NE --bbox 41.15,-96.25,41.40,-95.85  # lighter metro query
 python3 execution/discover_inhouse.py --out $D crawl-shops --max 50             # shop sites: roster IGs, email, phone, tech
-IG_GRAPH_USER_ID=... IG_GRAPH_TOKEN=... \
-python3 execution/discover_inhouse.py --out $D enrich --provider meta           # or --provider apify --sweep-id X (paid fallback)
+python3 execution/discover_inhouse.py --out $D enrich --provider meta  # reads gitignored .env.ig-graph (or env); --refresh to bypass cache          # or --provider apify --sweep-id X (paid fallback)
 python3 execution/discover_inhouse.py --out $D --reference snap.json --queue queue.json filter   # dedupe + skip protected
 node scripts/import-discovery-to-neo4j.mjs --input $D/candidates.json --reference snap.json      # offline dry-run plan
 ```
@@ -374,6 +373,8 @@ the protected fields.
 - Its only GraphQL calls are logged-out experiment and dialog queries.
 - `api/v1/users/web_profile_info` returns 401 `require_login`.
 - Apify gets around this with residential proxies, which this project does not use.
+
+**Caching and location.** Cached profiles and misses are reused only if the same provider produced them (`profile_provenance.json`), so a fixture or Apify run never masks Meta. Graph subcode 2207013 (user not found or not discoverable) counts as a miss. Auth and rate-limit codes (4/17/32/190/613) stop the run. For `--bbox` seeds, a shop's state comes from OSM `addr:state`. If that's missing, it's reverse-geocoded through Nominatim (1 req/s) and marked `stateSource: geocode`. If both fail it's left `null` (`stateSource: unknown`), never the searched state.
 
 **Gaps.** Personal (non-business) IG accounts can't be resolved by the Meta API and land in
 `profile_misses.json`. Use the Apify fallback or review them manually. OSM coverage is uneven: about half of the shops have a website.

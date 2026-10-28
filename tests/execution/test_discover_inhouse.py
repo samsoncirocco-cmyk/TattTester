@@ -159,3 +159,94 @@ def test_protected_and_known_artists_are_skipped(tmp_path):
 def test_module_never_imports_neo4j():
     source = (inhouse.ROOT / "execution" / "discover_inhouse.py").read_text()
     assert "neo4j" not in source.split('"""', 2)[2].lower().replace("import-discovery-to-neo4j", "")
+
+
+def test_bbox_shops_infer_state_from_coordinates_or_mark_unknown():
+    shops = inhouse.parse_osm_elements([
+        {"type": "node", "id": 1, "lat": 41.26, "lon": -95.86, "tags": {"name": "Black Squirrel"}},
+        {"type": "node", "id": 2, "lat": 41.25, "lon": -96.0, "tags": {"name": "Has Addr", "addr:state": "Nebraska", "addr:city": "Omaha"}},
+        {"type": "node", "id": 3, "tags": {"name": "No Coords"}},
+    ], None)
+    assert shops["osm:node/1"]["state"] is None  # never the searched state
+    assert shops["osm:node/2"]["state"] == "NE"
+
+    class GeoHttp:
+        def get(self, url, check_robots=False):
+            assert "nominatim" in url
+            return json.dumps({"address": {"country_code": "us", "ISO3166-2-lvl4": "US-IA",
+                                           "city": "Council Bluffs"}})
+
+    inhouse.fill_locations(GeoHttp(), shops)
+    assert shops["osm:node/1"]["state"] == "IA" and shops["osm:node/1"]["stateSource"] == "geocode"
+    assert shops["osm:node/1"]["city"] == "Council Bluffs"
+    assert shops["osm:node/2"].get("stateSource") is None
+    assert shops["osm:node/3"]["state"] is None and shops["osm:node/3"]["stateSource"] == "unknown"
+
+
+def test_cache_from_another_provider_does_not_mask_real_api(tmp_path):
+    profiles, misses = tmp_path / "profiles.json", tmp_path / "profile_misses.json"
+    fixture = tmp_path / "fx.json"
+    fixture.write_text(json.dumps({}))
+    inhouse.enrich(inhouse.FixtureProvider(fixture), ["salvagedsouljason"], profiles, misses, 10)
+    assert json.loads(misses.read_text())["salvagedsouljason"]["provider"] == "fixture"
+
+    class Live:
+        NAME = "meta"
+        calls = []
+
+        def fetch(self, handle):
+            self.calls.append(handle)
+            return {"bio": "tattoo artist", "followers": 1, "postCount": 1}
+
+    live = Live()
+    inhouse.enrich(live, ["salvagedsouljason"], profiles, misses, 10)
+    assert live.calls == ["salvagedsouljason"]
+    assert "salvagedsouljason" in json.loads(profiles.read_text())
+    assert "salvagedsouljason" not in json.loads(misses.read_text())
+    inhouse.enrich(live, ["salvagedsouljason"], profiles, misses, 10)  # same provider -> cached
+    assert live.calls == ["salvagedsouljason"]
+
+
+def test_meta_provider_url_braces_and_error_classification():
+    import io
+    import urllib.error
+    import urllib.parse
+
+    seen = {}
+
+    def http_error(code, payload):
+        return urllib.error.HTTPError("u", code, "x", {}, io.BytesIO(json.dumps(payload).encode()))
+
+    class FakeHttp:
+        def __init__(self, exc=None):
+            self.exc = exc
+
+        def get(self, url, check_robots=False):
+            seen["url"] = url
+            if self.exc:
+                raise self.exc
+            return json.dumps({"business_discovery": {"username": "x", "biography": "b",
+                                                      "followers_count": 5, "media_count": 2}})
+
+    assert inhouse.MetaProvider(FakeHttp(), "1", "SECRET").fetch("x")["followers"] == 5
+    assert "business_discovery.username(x){username," in seen["url"]
+
+    miss = inhouse.MetaProvider(FakeHttp(http_error(400, {"error": {"code": 110, "error_subcode": 2207013}})), "1", "SECRET")
+    assert miss.fetch("kadestattoos") is None and "2207013" in miss.last_error
+
+    for payload in ({"error": {"code": 190, "message": "expired"}}, {"error": {"code": 4}}):
+        with pytest.raises(RuntimeError) as info:
+            inhouse.MetaProvider(FakeHttp(http_error(400, payload)), "1", "SECRET").fetch("y")
+        assert "SECRET" not in str(info.value)
+
+
+def test_load_env_file_does_not_override(tmp_path, monkeypatch):
+    env = tmp_path / ".env.ig-graph"
+    env.write_text("IG_GRAPH_USER_ID=123\nexport IG_GRAPH_TOKEN='abc'\nOTHER=1\n")
+    monkeypatch.delenv("IG_GRAPH_TOKEN", raising=False)
+    monkeypatch.setenv("IG_GRAPH_USER_ID", "keep")
+    monkeypatch.delenv("OTHER", raising=False)
+    inhouse.load_env_file(env, ("IG_GRAPH_USER_ID", "IG_GRAPH_TOKEN"))
+    import os
+    assert os.environ["IG_GRAPH_TOKEN"] == "abc" and os.environ["IG_GRAPH_USER_ID"] == "keep"
+    assert "OTHER" not in os.environ
