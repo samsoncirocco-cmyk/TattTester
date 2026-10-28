@@ -536,7 +536,8 @@ def collect_sources(shops: dict[str, Any], crawled: dict[str, Any],
         item["seedFrom"].update(s for s in seeds if s)
 
     for key, shop in shops.items():
-        loc = location_token(shop.get("city"))
+        unresolved = (shop.get("locationConflict") or {}).get("resolution") == "unresolved"
+        loc = None if unresolved else location_token(shop.get("city"))
         shop_ref = f"shop:{key}"
         if shop.get("instagram"):
             add(shop["instagram"], "osm", [shop_ref, loc])
@@ -567,12 +568,179 @@ def load_reference(path: Path | None) -> tuple[set[str], set[tuple[str, str]], s
         if handle and any(artist.get(flag) for flag in (
                 "claimed", "selfRegistered", "removed", "takedownPending", "tombstoned", "verified")):
             protected.add(handle)
+    for key in snap.get("tombstoneKeys", []) or []:
+        if str(key).startswith("instagram:"):
+            handle = normalize_handle(str(key)[len("instagram:"):])
+            if handle:
+                protected.add(handle)
     return handles, names, protected
+
+
+# ---------------------------------------------------------------------------
+# classification helpers: shop accounts, shop-linked bookability, state conflicts
+# ---------------------------------------------------------------------------
+
+GENERIC_SHOP_WORDS = {"tattoo", "tattoos", "tattooing", "studio", "studios", "shop", "parlor",
+                      "parlour", "co", "company", "collective", "gallery", "the", "and", "llc",
+                      "inc", "art", "arts", "body", "piercing"}
+SHOP_HANDLE_WORDS = re.compile(r"tattoo|studio|parlou?r|collective|gallery|inkshop|shop", re.I)
+SHOP_NAME_TAIL = re.compile(r"\b(tattoo|tattoos|studio|parlou?r|collective|tattoo co\.?|ink)\s*$", re.I)
+PERSONAL = re.compile(r"\b(i|i'm|im|my|me)\b|owner/artist|artist\b", re.I)
+SOFT_TATTOO = re.compile(r"\btats?\b|\btatt?s\b|\binked\b|\bink(ing)?\b|\btattoo", re.I)
+SOFT_BOOK = re.compile(r"\bbook(s|ing|ed)?\b|\bappt|\bappointments?\b|\bdm\b|\bflash\b|"
+                       r"\bdeposit|\bslots?\b|\bwalk[- ]?ins?\b|\binquir", re.I)
+NOT_TATTOO_TRADE = re.compile(r"photograph|\bphoto\b|hair|barber|nails?\b|lash|brows?\b|"
+                              r"realtor|real estate|makeup|mua\b|esthetic|clothing|apparel", re.I)
+
+
+def name_tokens(text: str | None) -> list[str]:
+    return [t for t in re.findall(r"[a-z0-9]+", (text or "").lower()) if t not in GENERIC_SHOP_WORDS]
+
+
+def is_shop_account(handle: str, profile: dict[str, Any], shop_names: Iterable[str],
+                    osm_handles: set[str]) -> str | None:
+    """Return why ``handle`` is a shop's own account, or None for a person."""
+    if handle in osm_handles:
+        return "osm-shop-handle"
+    full_name = str(profile.get("fullName") or "")
+    bio = str(profile.get("bio") or "")
+    compact = re.sub(r"[^a-z0-9]", "", handle.lower())
+    for shop_name in shop_names:
+        core = name_tokens(shop_name)
+        if not core:
+            continue
+        if all(t in compact for t in core) and SHOP_HANDLE_WORDS.search(handle):
+            return "handle-matches-shop"
+        if name_tokens(full_name) == core and not PERSONAL.search(bio):
+            return "name-matches-shop"
+    mentions = len(set(MENTION.findall(bio)))
+    if SHOP_NAME_TAIL.search(full_name.strip()) and (mentions >= 2 or SHOP_HANDLE_WORDS.search(handle)) \
+            and not PERSONAL.search(bio):
+        return "shop-name+roster"
+    if mentions >= 3 and not PERSONAL.search(bio):
+        return "roster-bio"
+    return None
+
+
+def assess_bookable(profile: dict[str, Any], shop_linked: bool) -> tuple[bool, str]:
+    """Shared gate first; a narrow second chance for artists found on a shop's roster.
+
+    The shared ``looks_bookable`` needs the literal word tattoo/tattooist. Artists a
+    verified shop lists or tags often write "TATS", "Black & Grey", "books open"
+    instead. Only those shop-linked accounts get the softer check, and they still
+    need a non-empty bio, a booking signal, and a tattoo word or tattoo style term.
+    """
+    verdict, reason = looks_bookable(profile)
+    if verdict or reason != "no-tattoo-signal" or not shop_linked:
+        return verdict, reason
+    if profile.get("private"):
+        return False, "private"
+    bio = str(profile.get("bio") or "").strip()
+    text = f"{bio} {profile.get('fullName') or ''}"
+    if not bio or NOT_TATTOO_TRADE.search(text):
+        return False, reason
+    booking = bool(SOFT_BOOK.search(text) or profile.get("url"))
+    tattoo_word = bool(SOFT_TATTOO.search(text))
+    styles = extract_styles(text)
+    if booking and (tattoo_word or styles) and (tattoo_word or len(bio) >= 20):
+        return True, "shop-linked:" + ("tattoo-word" if tattoo_word else "style") + "+booking"
+    return False, reason
+
+
+STATE_CODE_IN_TEXT = re.compile(r",\s*([A-Z]{2})\b")
+
+
+def state_signals(*texts: str | None, handles: Iterable[str] = ()) -> set[str]:
+    """States named in bios/names ("Omaha, NE", "Iowa") or glued into handles/domains."""
+    found: set[str] = set()
+    for text in texts:
+        if not text:
+            continue
+        found.update(c for c in STATE_CODE_IN_TEXT.findall(text) if c in US_STATES)
+        lowered = text.lower()
+        for name, code in STATE_NAMES.items():
+            if re.search(rf"\b{re.escape(name)}\b", lowered):
+                found.add(code)
+    for handle in handles:
+        compact = re.sub(r"[^a-z]", "", (handle or "").lower())
+        # longest names first so "arkansas" is not also read as "kansas"
+        for name in sorted(STATE_NAMES, key=len, reverse=True):
+            key = name.replace(" ", "")
+            if len(key) >= 4 and key in compact:
+                found.add(STATE_NAMES[name])
+                compact = compact.replace(key, "")
+    if "virginia" in " ".join(t or "" for t in texts).lower() and "WV" in found:
+        found.discard("VA")  # "West Virginia" also matches "virginia"
+    return found
+
+
+def shop_profile_handles(key: str, shop: dict[str, Any], crawled: dict[str, Any],
+                         profiles: dict[str, Any]) -> list[str]:
+    handles = [shop["instagram"]] if shop.get("instagram") else []
+    for handle in (crawled.get(key) or {}).get("instagram", []):
+        profile = profiles.get(handle)
+        if profile and handle not in handles and is_shop_account(handle, profile, [shop.get("name", "")], set()):
+            handles.append(handle)
+    return handles
+
+
+def resolve_locations(http: Any, shops: dict[str, Any], crawled: dict[str, Any],
+                      profiles: dict[str, Any]) -> Counter:
+    """Flag shops whose own handle/bio/website names a different state than OSM.
+
+    A conflict is never settled silently: the shop's coordinates are reverse-geocoded
+    and the result is recorded next to every signal. If the geocode agrees with one
+    side, that side is used and the conflict stays on record; otherwise the shop is
+    marked unresolved and its city is withheld from candidates (importer holds them).
+    """
+    stats: Counter = Counter()
+    for key, shop in shops.items():
+        handles = shop_profile_handles(key, shop, crawled, profiles)
+        texts = [shop.get("name")]
+        for handle in handles:
+            texts += [profiles[handle].get("bio"), profiles[handle].get("fullName")] if handle in profiles else []
+        domain = urllib.parse.urlsplit(shop.get("website") or "").netloc
+        signals = state_signals(*texts, handles=[*handles, domain.split(".")[0] if domain else ""])
+        osm_state = shop.get("state")
+        if not signals or osm_state in signals and len(signals) == 1:
+            shop.pop("locationConflict", None)
+            stats["consistent" if signals else "no-signal"] += 1
+            continue
+        conflict = {"osmCity": shop.get("osmCity", shop.get("city")), "osmState": osm_state,
+                    "signals": sorted(signals), "signalSources": handles + ([domain] if domain else [])}
+        geo_state = geo_city = None
+        if shop.get("lat") is not None and shop.get("lon") is not None:
+            try:
+                geo_state, geo_city = reverse_geocode(http, shop["lat"], shop["lon"])
+            except Exception as exc:
+                conflict["geocodeError"] = str(exc)[:120]
+        conflict.update(geocodeState=geo_state, geocodeCity=geo_city)
+        shop.setdefault("osmCity", shop.get("city"))
+        shop.setdefault("osmState", osm_state)
+        if geo_state and geo_state in signals and geo_state != osm_state:
+            conflict["resolution"] = "geocode-agrees-with-signal"
+            shop["state"], shop["city"] = geo_state, geo_city or shop.get("city")
+        elif geo_state and geo_state == osm_state:
+            conflict["resolution"] = "geocode-agrees-with-osm"
+        else:
+            conflict["resolution"] = "unresolved"
+        shop["locationConflict"] = conflict
+        stats[conflict["resolution"]] += 1
+        print(f"[geo] conflict {shop.get('name')}: osm={osm_state} signals={sorted(signals)} "
+              f"geocode={geo_city},{geo_state} -> {conflict['resolution']}")
+    return stats
+
+
+def shop_keys_for(meta: dict[str, Any]) -> list[str]:
+    keys = set(meta.get("shops") or ())
+    keys.update(t[5:] for t in meta.get("seedFrom", ()) if t.startswith("shop:"))
+    return sorted(keys)
 
 
 def build_candidates(found, profiles, *, existing: set[str], reference_names: set[tuple[str, str]],
                      protected: set[str], shops: dict[str, Any]) -> tuple[list[dict], Counter]:
     output, skipped = [], Counter()
+    osm_handles = {s["instagram"] for s in shops.values() if s.get("instagram")}
     for handle, meta in found.items():
         if handle in protected:
             skipped["protected"] += 1
@@ -584,12 +752,19 @@ def build_candidates(found, profiles, *, existing: set[str], reference_names: se
         if not profile:
             skipped["no-profile"] += 1
             continue
-        city = next((shops[k].get("city") for k in meta["shops"] if shops.get(k, {}).get("city")), None)
+        keys = [k for k in shop_keys_for(meta) if k in shops]
+        city = next((shops[k].get("city") for k in keys if shops[k].get("city")), None)
         if city and (str(profile.get("fullName") or "").strip().lower(), city.lower()) in reference_names:
             skipped["name+city-duplicate"] += 1
             continue
-        verdict, reason = looks_bookable(profile)
+        shop_reason = is_shop_account(handle, profile, [shops[k].get("name", "") for k in keys], osm_handles)
+        if shop_reason:
+            verdict, reason = False, "shop-account"
+        else:
+            verdict, reason = assess_bookable(profile, shop_linked=bool(keys))
         bio = str(profile.get("bio") or "").replace("\n", " ").strip()
+        shop_names = sorted({shops[k]["name"] for k in keys if shops[k].get("name")})
+        conflicts = [shops[k]["locationConflict"] for k in keys if shops[k].get("locationConflict")]
         output.append({
             "handle": handle,
             "source": ",".join(sorted(meta["sources"])),
@@ -600,6 +775,13 @@ def build_candidates(found, profiles, *, existing: set[str], reference_names: se
             "looksBookable": verdict,
             "filterReason": reason,
             "styles": extract_styles(f"{bio} {profile.get('fullName') or ''}"),
+            "fullName": profile.get("fullName"),
+            "isShop": bool(shop_reason),
+            "shopReason": shop_reason,
+            # artist -> shop by name (OSM shops carry no placeId the graph knows)
+            "shopName": None if shop_reason else (shop_names[0] if len(shop_names) == 1 else None),
+            "shopCandidates": shop_names if len(shop_names) > 1 else None,
+            "locationConflict": conflicts[0] if conflicts else None,
         })
     output.sort(key=lambda c: (not c["looksBookable"], -(c["followers"] or 0)))
     return output, skipped
@@ -633,6 +815,7 @@ def main(argv: list[str] | None = None) -> int:
     en.add_argument("--max", type=int, default=200)
     en.add_argument("--sweep-id")
     en.add_argument("--refresh", action="store_true", help="ignore cached profiles/misses")
+    sub.add_parser("resolve-locations", help="flag/verify shop state conflicts (reverse geocode)")
     sub.add_parser("filter")
     sub.add_parser("stats")
     args = parser.parse_args(argv)
@@ -679,6 +862,11 @@ def main(argv: list[str] | None = None) -> int:
             todo = [h for h in found if h not in existing and h not in ref_handles and h not in protected]
             profiles = enrich(provider, todo, profiles_path, misses_path, args.max, refresh=args.refresh)
             args.refresh = False  # second pass reuses what pass one just fetched
+        return 0
+    if args.command == "resolve-locations":
+        stats = resolve_locations(http, shops, crawled, profiles)
+        save(shops_path, shops)
+        print("[geo]", dict(stats))
         return 0
     found = collect_sources(shops, crawled, profiles)
     if args.command == "stats":

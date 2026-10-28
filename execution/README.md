@@ -347,6 +347,7 @@ python3 execution/discover_inhouse.py --out $D seed-shops --states NE,IA,SD     
 python3 execution/discover_inhouse.py --out $D seed-shops --states NE --bbox 41.15,-96.25,41.40,-95.85  # lighter metro query
 python3 execution/discover_inhouse.py --out $D crawl-shops --max 50             # shop sites: roster IGs, email, phone, tech
 python3 execution/discover_inhouse.py --out $D enrich --provider meta  # reads gitignored .env.ig-graph (or env); --refresh to bypass cache          # or --provider apify --sweep-id X (paid fallback)
+python3 execution/discover_inhouse.py --out $D resolve-locations                # flag + geocode-verify state conflicts
 python3 execution/discover_inhouse.py --out $D --reference snap.json --queue queue.json filter   # dedupe + skip protected
 node scripts/import-discovery-to-neo4j.mjs --input $D/candidates.json --reference snap.json      # offline dry-run plan
 ```
@@ -375,6 +376,13 @@ the protected fields.
 - Apify gets around this with residential proxies, which this project does not use.
 
 **Caching and location.** Cached profiles and misses are reused only if the same provider produced them (`profile_provenance.json`), so a fixture or Apify run never masks Meta. Graph subcode 2207013 (user not found or not discoverable) counts as a miss. Auth and rate-limit codes (4/17/32/190/613) stop the run. For `--bbox` seeds, a shop's state comes from OSM `addr:state`. If that's missing, it's reverse-geocoded through Nominatim (1 req/s) and marked `stateSource: geocode`. If both fail it's left `null` (`stateSource: unknown`), never the searched state.
+
+**Shops, shop-linked artists, state conflicts.**
+- An account counts as a shop when its handle is the shop's OSM `contact:instagram`, or its handle has the shop's name plus a shop word, or its name equals the shop name, or its bio is a roster of 3 or more @mentions with no first-person words. Shops are emitted with `isShop: true` and `filterReason: shop-account`, never as artists. Artists found through a shop carry `shopName`.
+- The shared `looks_bookable` gate runs first. Artists linked to a shop that fail only on "no-tattoo-signal" get a narrow second check: a non-empty bio, a booking signal, a tattoo word ("tats", "ink") or tattoo style, and no other-trade words (photo, hair, nails...).
+- `resolve-locations` looks for state signals in a shop's handle, bio and domain (for example "iowa" in `blacksquirreltattooiowa`) and compares them to its OSM state. On a conflict it reverse-geocodes the shop's coordinates and records `locationConflict` with both sides. If the geocode agrees with one side, that side is used; otherwise the city token is withheld, so the importer holds the candidate instead of guessing.
+
+**Reference snapshot (read-only).** `node scripts/export-discovery-reference.mjs` writes `data/discovery-inhouse/reference-snapshot.json` (gitignored, mode 600). It uses a READ session with `executeRead` and refuses any query that contains write clauses.
 
 **Gaps.** Personal (non-business) IG accounts can't be resolved by the Meta API and land in
 `profile_misses.json`. Use the Apify fallback or review them manually. OSM coverage is uneven: about half of the shops have a website.

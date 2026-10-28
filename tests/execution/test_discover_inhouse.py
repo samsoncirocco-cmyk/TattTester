@@ -250,3 +250,105 @@ def test_load_env_file_does_not_override(tmp_path, monkeypatch):
     import os
     assert os.environ["IG_GRAPH_TOKEN"] == "abc" and os.environ["IG_GRAPH_USER_ID"] == "keep"
     assert "OTHER" not in os.environ
+
+
+# --- shop accounts, shop-linked bookability, state conflicts (live Omaha cases) ---
+
+BLACK_SQUIRREL = {"bio": "@mdinovo  @ugghhhkylie @stabbed.by.kai   To book: ⤵️", "fullName": "Black Squirrel Tattoo",
+                  "followers": 1999, "postCount": 276, "url": "https://blacksquirreltattoo.com", "private": False}
+KYLIE = {"bio": "☆ the internet is cursed and so is this account ☆ ✦ Black & Grey Luvr ✦ Omaha, NE | Books open",
+         "fullName": "Kylie Ann 🫐🦷 TATS", "followers": 1608, "postCount": 86, "url": "", "private": False}
+MATT = {"bio": "Black Squirrel Tattoo Iowa Owner/Artist ▶️Booking: visit website below", "fullName": "Matt Dinovo",
+        "followers": 2430, "postCount": 265, "url": "https://blacksquirreltattoo.com", "private": False}
+
+
+def test_shop_accounts_are_detected_but_staff_are_not():
+    names = ["Black Squirrel Tattoo", "Ink Link Tattoo", "Salvaged Soul Tattoo"]
+    assert inhouse.is_shop_account("blacksquirreltattooiowa", BLACK_SQUIRREL, names, set()) == "handle-matches-shop"
+    assert inhouse.is_shop_account("inklinktattooomaha", {"bio": "Call for availability", "fullName": "Ink Link Omaha"},
+                                   names, set())
+    assert inhouse.is_shop_account("salvagedsoultattoo", {}, [], {"salvagedsoultattoo"}) == "osm-shop-handle"
+    # an artist whose handle carries the shop name, and an owner/artist, stay people
+    assert inhouse.is_shop_account("salvagedsouljason", {"bio": "", "fullName": "Jason Contreras"}, names, set()) is None
+    assert inhouse.is_shop_account("mdinovo", MATT, names, set()) is None
+    assert inhouse.is_shop_account("someone", {"bio": "@a @b @c guest artists", "fullName": "Ink Den Tattoo"}, [], set())
+
+
+def test_shop_linked_artist_with_tats_and_books_passes_but_junk_does_not():
+    assert inhouse.looks_bookable(KYLIE)[0] is False  # shared gate alone still rejects
+    verdict, reason = inhouse.assess_bookable(KYLIE, shop_linked=True)
+    assert verdict and reason.startswith("shop-linked:")
+    assert inhouse.assess_bookable(KYLIE, shop_linked=False) == (False, "no-tattoo-signal")
+    junk = [
+        {"bio": "", "fullName": "Jason Contreras"},
+        {"bio": "dog mom | coffee | Omaha, NE", "fullName": "Sam"},
+        {"bio": "Black & grey photography | book a shoot", "fullName": "Lens Co"},
+        {"bio": "Hair + nails, books open!", "fullName": "Glam Tats Salon"},
+        {"bio": "Black & Grey Luvr | books open", "fullName": "Private", "private": True},
+    ]
+    for profile in junk:
+        assert inhouse.assess_bookable(profile, shop_linked=True)[0] is False, profile
+
+
+def test_state_signals_from_handles_bios_and_codes():
+    assert inhouse.state_signals(handles=["blacksquirreltattooiowa"]) == {"IA"}
+    assert inhouse.state_signals(handles=["arkansasink"]) == {"AR"}
+    assert inhouse.state_signals("Omaha, NE | Books") == {"NE"}
+    assert inhouse.state_signals("Council Bluffs, Iowa") == {"IA"}
+    assert inhouse.state_signals("no location here", handles=["inkbyjess"]) == set()
+
+
+def _conflict_fixture():
+    shops = {"osm:way/1": {"name": "Black Squirrel Tattoo", "city": "Omaha", "state": "NE",
+                           "website": "https://blacksquirreltattoo.com/", "lat": 41.24, "lon": -95.98}}
+    crawled = {"osm:way/1": {"instagram": ["blacksquirreltattooiowa", "mdinovo"]}}
+    profiles = {"blacksquirreltattooiowa": BLACK_SQUIRREL, "mdinovo": MATT}
+    return shops, crawled, profiles
+
+
+class _Geo:
+    def __init__(self, state, city):
+        self.answer = {"address": {"country_code": "us", "ISO3166-2-lvl4": f"US-{state}", "city": city}} if state else {}
+        self.calls = 0
+
+    def get(self, url, check_robots=False):
+        self.calls += 1
+        if not self.answer:
+            raise TimeoutError("nominatim down")
+        return json.dumps(self.answer)
+
+
+@pytest.mark.parametrize("geo,resolution,state,city", [
+    (("IA", "Council Bluffs"), "geocode-agrees-with-signal", "IA", "Council Bluffs"),
+    (("NE", "Omaha"), "geocode-agrees-with-osm", "NE", "Omaha"),
+    ((None, None), "unresolved", "NE", "Omaha"),
+])
+def test_state_conflicts_are_flagged_and_verified_not_silently_picked(geo, resolution, state, city):
+    shops, crawled, profiles = _conflict_fixture()
+    http = _Geo(*geo)
+    stats = inhouse.resolve_locations(http, shops, crawled, profiles)
+    shop = shops["osm:way/1"]
+    assert http.calls == 1 and stats[resolution] == 1
+    conflict = shop["locationConflict"]
+    assert conflict["osmState"] == "NE" and conflict["signals"] == ["IA"]
+    assert conflict["resolution"] == resolution
+    assert (shop["state"], shop["city"]) == (state, city)
+    found = inhouse.collect_sources(shops, crawled, profiles)
+    cands, _ = inhouse.build_candidates(found, profiles, existing=set(), reference_names=set(),
+                                        protected=set(), shops=shops)
+    by = {c["handle"]: c for c in cands}
+    assert by["blacksquirreltattooiowa"]["isShop"] and not by["blacksquirreltattooiowa"]["looksBookable"]
+    matt = by["mdinovo"]
+    assert matt["shopName"] == "Black Squirrel Tattoo" and matt["locationConflict"]["resolution"] == resolution
+    tokens = matt["seedFrom"].split(",")
+    if resolution == "unresolved":
+        assert not any(t.startswith("#") for t in tokens)  # importer holds it instead of guessing
+    else:
+        assert f"#{city.lower()}" in tokens
+
+
+def test_consistent_shop_is_not_geocoded():
+    shops = {"osm:node/2": {"name": "Ink Link Tattoo", "city": "Omaha", "state": "NE", "lat": 1, "lon": 2}}
+    http = _Geo("IA", "x")
+    inhouse.resolve_locations(http, shops, {}, {})
+    assert http.calls == 0 and "locationConflict" not in shops["osm:node/2"]
