@@ -404,6 +404,31 @@ export const ENV_SECTIONS = [
     ],
   },
   {
+    title: 'TYPESAFE — System One',
+    comment: [
+      '# Shared client: src/services/typesafe/client.ts.',
+      '# Feature flags are declared by the feature that owns them and stay off.',
+      '# TYPESAFE_MODEL is the evaluated release. jev-latest currently aliases it and can move.',
+    ],
+    vars: [
+      {
+        name: 'TYPESAFE_API_KEY', type: 'string', required: false, commentedOut: true,
+        example: 'ts_your_key_here',
+        purpose: 'TypeSafe System One key (server only). Never log it.\nhttps://docs.typesafe.ai/introduction',
+      },
+      {
+        name: 'TYPESAFE_MODEL', type: 'string', required: false, default: 'jev-1.14.0',
+        example: 'jev-1.14.0',
+        purpose: 'Pinned System One model. The evaluated release is jev-1.14.0.\njev-latest currently aliases that id and can move, so the default is the version, not the alias.',
+      },
+      {
+        name: 'TYPESAFE_TIMEOUT_MS', type: 'int', required: false, default: '8000',
+        example: '8000',
+        purpose: 'Abort a TypeSafe System One call after this many milliseconds and keep the existing path.',
+      },
+    ],
+  },
+  {
     title: 'BUDGET CONTROLS (src/lib/budget-tracker.ts)',
     vars: [
       {
