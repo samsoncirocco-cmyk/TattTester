@@ -426,6 +426,11 @@ export const ENV_SECTIONS = [
         example: '8000',
         purpose: 'Abort a TypeSafe System One call after this many milliseconds and keep the existing path.',
       },
+      {
+        name: 'TYPESAFE_INTAKE', type: 'bool', required: false, default: 'false',
+        example: 'false',
+        purpose: 'When true, one TypeSafe call types intake placement, style tags, and axis ambiguity. Off, missing key, timeout, error, demo mode, or a denied budget keeps Gemini extraction. Subject and characters stay on Gemini.',
+      },
     ],
   },
   {

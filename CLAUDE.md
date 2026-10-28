@@ -90,6 +90,7 @@ Single source of truth: `src/config/envSchema.js` (name, type, required/optional
 - `SHOW_UNCLAIMED_PORTFOLIOS` — controls public rendering of unclaimed portfolio images; never assume its production value.
 - `STRIPE_SECRET_KEY` — Stripe routes fail closed (503) when unset or placeholder.
 - `CRON_SECRET` — bearer secret guarding `/api/cron/expire-deposits`.
+- `TYPESAFE_INTAKE=false` — placement, per-tag style, and axis-ambiguity extraction stays on Gemini unless this is `true`. Demo mode skips the call before any request. Outside demo mode the shared client checks and debits the spend governor. A missing `TYPESAFE_API_KEY`, timeout (`TYPESAFE_TIMEOUT_MS`, default 8000), denied budget, or any TypeSafe error keeps the Gemini path. The model id is the shared pin (`TYPESAFE_MODEL`, evaluated `jev-1.14.0`). Subject and characters stay on Gemini either way. The key is never logged. Compatible style tags are kept. Left/right is taken from the selected placement only.
 
 ## Booking & Payments (gotcha summary)
 

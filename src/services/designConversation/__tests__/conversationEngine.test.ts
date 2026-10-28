@@ -69,6 +69,10 @@ const ENV_KEYS = [
   'VERTEX_PROJECT_ID',
   'GCP_REGION',
   'NEXT_PUBLIC_DEMO_MODE',
+  'TYPESAFE_API_KEY',
+  'TYPESAFE_INTAKE',
+  'TYPESAFE_MODEL',
+  'TYPESAFE_TIMEOUT_MS',
 ];
 
 let savedEnv: Record<string, string | undefined>;
