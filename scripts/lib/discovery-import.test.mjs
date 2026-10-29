@@ -12,6 +12,8 @@ import {
   classifyDuplicate,
   classifyJobBoard,
   detectNonUsLocation,
+  resolveShopLink,
+  isNonUsDomain,
   discoveryArtistId,
   evaluateQualityGates,
   normalizeDomain,
@@ -343,10 +345,12 @@ describe('bio location parsing', () => {
   });
 
   it('reads a lone non-US flag emoji as weaker, flag-grade evidence', () => {
-    expect(detectNonUsLocation('37 yrs exp. Belle River ON \u{1F1E8}\u{1F1E6}')).toEqual({
+    expect(detectNonUsLocation('37 yrs exp. \u{1F1E8}\u{1F1E6}')).toEqual({
       marker: 'flag:\u{1F1E8}\u{1F1E6}',
       kind: 'flag',
     });
+    // A written province code is a stronger, text-grade claim.
+    expect(detectNonUsLocation('37 yrs exp. Belle River ON \u{1F1E8}\u{1F1E6}')).toMatchObject({ kind: 'text' });
     // A US flag beside it means the flags are heritage, not an address.
     expect(detectNonUsLocation('31 years \u{1F1E7}\u{1F1F7}\u{1F1FA}\u{1F1F8} Realism')).toBeNull();
     expect(detectNonUsLocation('Austin TX \u{1F1FA}\u{1F1F8} tattooer')).toBeNull();
@@ -656,5 +660,87 @@ describe('write Cypher', () => {
       expect(cypher).toMatch(/^\s*MATCH/);
       expect(cypher).not.toMatch(/MERGE|CREATE|SET|DELETE/);
     }
+  });
+});
+
+describe('bare-city context and seed-shop fallback', () => {
+  const ref = {
+    artists: [...artistsFor('Paradise', 'NV', 60), ...artistsFor('Chicago', 'IL', 110)],
+    shops: [...shopsFor('Paradise', 'NV', 40), ...shopsFor('Chicago', 'IL', 40)],
+  };
+  const idx = buildReferenceIndex(ref);
+
+  it('does not read an ordinary word like "paradise" as Paradise, NV', () => {
+    expect(parseBareCityLocation('ink is my paradise, books open', idx)).toBeNull();
+    expect(parseBareCityLocation('paradise artist', idx)).toBeNull();
+  });
+
+  it('accepts a common-word city with a location cue', () => {
+    expect(parseBareCityLocation('tattooer based in paradise', idx)).toMatchObject({ city: 'Paradise', state: 'NV' });
+    expect(parseBareCityLocation('paradise nv tattoos', idx)).toMatchObject({ city: 'Paradise', state: 'NV' });
+  });
+
+  it('needs some context even for a real city name', () => {
+    expect(parseBareCityLocation('i love chicago pizza', idx)).toBeNull();
+    expect(parseBareCityLocation('chicago tattoo artist', idx)).toMatchObject({ city: 'Chicago' });
+  });
+
+  it('falls back to the seed shop city when the bio names none', () => {
+    const loc = resolveCandidateLocation({
+      candidate: candidate({ bioSnippet: 'books open, dm me', seedShopCity: 'Salinas', seedShopState: 'CA' }),
+      profile: { bio: 'books open, dm me' },
+      index: idx,
+    });
+    expect(loc).toMatchObject({ city: 'Salinas', state: 'CA', source: 'seed_shop' });
+  });
+
+  it('prefers a bio city over the seed shop', () => {
+    const loc = resolveCandidateLocation({
+      candidate: candidate({ seedShopCity: 'Salinas', seedShopState: 'CA' }),
+      profile: { bio: 'tattooer based in chicago' },
+      index: idx,
+    });
+    expect(loc).toMatchObject({ city: 'Chicago', source: 'bio-city' });
+  });
+});
+
+describe('US detection and non-US shop sites', () => {
+  const ref = {
+    artists: [...artistsFor('Montgomery', 'AL', 60)],
+    shops: [
+      ...shopsFor('Montgomery', 'AL', 20),
+      { placeId: 'grim', name: 'House of GRIM', city: 'Fort Hamilton', state: 'NY', website: 'http://www.grimstudios.ca/' },
+      { placeId: 'bh', name: 'Black Hatchet Tattoo Co.', city: 'Meriden', state: 'CT', website: 'https://blackhatchettattoos.com' },
+    ],
+  };
+  const idx = buildReferenceIndex(ref);
+
+  it('does not read a display name like "Sydney Walker" as Australia', () => {
+    const loc = resolveCandidateLocation({
+      candidate: candidate({ seedShopCity: 'Montgomery', seedShopState: 'AL' }),
+      profile: { fullName: 'Sydney Walker', bio: 'Tattooer at Outlaw Custom Tattoo' },
+      index: idx,
+    });
+    expect(loc).toMatchObject({ city: 'Montgomery', state: 'AL', source: 'seed_shop' });
+  });
+
+  it('still holds a bio that names a foreign city, and a Canadian province anywhere', () => {
+    expect(detectNonUsLocation('Kim\nresident artist in Sydney', { markerText: 'resident artist in Sydney' }))
+      .toMatchObject({ kind: 'text' });
+    const loc = resolveCandidateLocation({
+      candidate: candidate({ seedShopCity: 'Fort Hamilton', seedShopState: 'NY' }),
+      profile: { fullName: 'Sheldon Davidson - Tattoo Artist in Hamilton ON', bio: 'Books open' },
+      index: idx,
+    });
+    expect(loc).toMatchObject({ source: 'none', city: null });
+    expect(detectNonUsLocation('tattoos on demand in Miami')).toBeNull();
+  });
+
+  it('does not trust a shop city from a country-code website', () => {
+    expect(isNonUsDomain('grimstudios.ca')).toBe(true);
+    expect(isNonUsDomain('ink.co.uk')).toBe(true);
+    expect(isNonUsDomain('blackhatchettattoos.com')).toBe(false);
+    expect(resolveShopLink('https://grimstudios.ca/', idx)).toBeNull();
+    expect(resolveShopLink('https://blackhatchettattoos.com/', idx)).toMatchObject({ city: 'Meriden' });
   });
 });

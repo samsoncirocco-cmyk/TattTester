@@ -343,9 +343,19 @@ const US_FLAG = '\u{1F1FA}\u{1F1F8}';
  *     US city named in the bio a chance to win first.
  * Whole words only: "Japanese Tattoo" is a style, not an address.
  */
-export function detectNonUsLocation(text) {
+// "Hamilton ON", "Kelowna, BC": a Canadian province code after a capitalised
+// place name (case-sensitive, so "tattoos on demand" is not Ontario).
+const CA_PROVINCE_CODE = /\b[A-Z][a-z]+,?[ ](ON|BC|QC|AB|MB|SK|NS|NB|NL|PE)\b/;
+const CA_PROVINCE_NAME = /(^|[^\p{L}])(ontario|british columbia|alberta|nova scotia|manitoba|saskatchewan|new brunswick)([^\p{L}]|$)/iu;
+
+export function detectNonUsLocation(text, { markerText } = {}) {
   const raw = foldText(text);
-  const haystack = raw.toLowerCase().replace(/\s+/g, ' ');
+  const province = raw.match(CA_PROVINCE_CODE) ?? raw.match(CA_PROVINCE_NAME);
+  if (province) return { marker: `province:${province[1] || province[2]}`.toLowerCase(), kind: 'text' };
+  // Written-out place names come from the bio only: a display name such as
+  // "Sydney Walker" or "Paris Hilton" is a person, not an address.
+  const markerSource = markerText === undefined ? raw : foldText(markerText);
+  const haystack = markerSource.toLowerCase().replace(/\s+/g, ' ');
   for (const marker of NON_US_LOCATION_MARKERS) {
     const pattern = new RegExp(`(^|[^\\p{L}])${marker}([^\\p{L}]|$)`, 'u');
     if (pattern.test(haystack)) return { marker, kind: 'text' };
@@ -398,6 +408,42 @@ export function parseAliasLocation(text) {
 }
 
 /**
+ * City names that are also ordinary words ("paradise", "surprise") only count
+ * with a location cue: a preposition before ("in", "based in", "from", a pin
+ * emoji) or a state after. Other names also accept a trade word right after
+ * ("chicago artist", "miami tattoo artist"). A bare "paradise" in a bio is
+ * prose, not Paradise, NV.
+ */
+export const COMMON_WORD_CITIES = new Set([
+  'paradise', 'surprise', 'spring', 'mission', 'enterprise', 'victoria', 'florence',
+  'independence', 'liberty', 'freedom', 'harmony', 'eden', 'hope', 'unity', 'normal',
+  'temple', 'union', 'commerce', 'pearl', 'orange', 'aurora', 'pleasant', 'friendly',
+  'magic', 'wonder', 'happy', 'deal', 'sandy', 'goodyear', 'rose', 'hazel', 'grace',
+  'joy', 'heaven', 'eureka', 'concord', 'justice', 'bliss', 'paris', 'dublin', 'athens',
+]);
+const LOCATION_CUE_BEFORE = /(^| )(in|from|near|based|located|out of|outta|serving|visiting)$/;
+const TRADE_WORD_AFTER = /^(artist|tattoo|tattoos|tattooer|tattooist|tattooing|ink|based|area|native|local)$/;
+const STATE_NAME_WORDS = new Set([
+  'alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado', 'connecticut',
+  'delaware', 'florida', 'georgia', 'hawaii', 'idaho', 'illinois', 'indiana', 'iowa',
+  'kansas', 'kentucky', 'louisiana', 'maine', 'maryland', 'massachusetts', 'michigan',
+  'minnesota', 'mississippi', 'missouri', 'montana', 'nebraska', 'nevada', 'ohio',
+  'oklahoma', 'oregon', 'pennsylvania', 'tennessee', 'texas', 'utah', 'vermont',
+  'virginia', 'washington', 'wisconsin', 'wyoming', 'cali',
+]);
+
+function hasCityContext(cleaned, haystack, name) {
+  const at = haystack.indexOf(` ${name} `);
+  const before = haystack.slice(0, at).trim().split(' ').slice(-2).join(' ');
+  const nextWord = haystack.slice(at + name.length + 2).trim().split(' ')[0] || '';
+  if (LOCATION_CUE_BEFORE.test(before)) return true;
+  if (new RegExp(`\u{1F4CD}\\s*${name}`, 'u').test(cleaned)) return true;
+  if (US_STATE_SET.has(nextWord.toUpperCase()) || STATE_NAME_WORDS.has(nextWord)) return true;
+  if (COMMON_WORD_CITIES.has(name)) return false;
+  return TRADE_WORD_AFTER.test(nextWord);
+}
+
+/**
  * Last resort before the seed: a bare city name written in the bio.
  *
  * Three rules keep this honest, each of them earned from a wrong answer on the
@@ -432,6 +478,7 @@ export function parseBareCityLocation(text, index, options) {
     }
   }
   if (!first) return null;
+  if (!hasCityContext(cleaned, haystack, first.name)) return null;
 
   const resolved = resolveCityName(first.name, index, options);
   if (!resolved) return null;
@@ -496,7 +543,7 @@ export function resolveCandidateLocation({ candidate, profile, index, options } 
   const alias = parseAliasLocation(text);
   if (alias) return { ...alias, source: 'bio-alias', confidence: 'medium' };
 
-  const foreign = detectNonUsLocation(text);
+  const foreign = detectNonUsLocation(text, { markerText: bio });
   const held = {
     city: null,
     state: null,
@@ -511,6 +558,18 @@ export function resolveCandidateLocation({ candidate, profile, index, options } 
   const bare = parseBareCityLocation(bio, index, options);
   if (bare) return { ...bare, source: 'bio-city', confidence: 'medium' };
   if (foreign) return held;
+
+  // The shop the crawl found this handle on (discover_inhouse seedShop*). It is
+  // a real storefront address, so it outranks a hashtag/handle seed.
+  if (candidate?.seedShopCity && candidate?.seedShopState) {
+    return {
+      city: candidate.seedShopCity,
+      state: String(candidate.seedShopState).toUpperCase(),
+      evidence: candidate.shopName ?? candidate.seedFrom ?? 'seed shop',
+      source: 'seed_shop',
+      confidence: 'low',
+    };
+  }
 
   const seed = resolveSeedLocation(candidate?.seedFrom, index, options);
   if (seed) {
@@ -539,9 +598,19 @@ export function resolveCandidateLocation({ candidate, profile, index, options } 
  * deliberately low-recall: a wrong WORKS_AT edge shows a client the wrong
  * address.
  */
+const US_FRIENDLY_TLDS = new Set(['us', 'co', 'io', 'me', 'ai', 'tv', 'gg', 'fm', 'ly', 'to', 'cc', 'ee', 'ke', 'so', 'gl']);
+
+/** grimstudios.ca, studio.co.uk: a country-code site means the US city on file is not trusted. */
+export function isNonUsDomain(domain) {
+  const host = String(domain ?? '').toLowerCase();
+  if (/\.(co|com|org|net)\.[a-z]{2}$/.test(host)) return true;
+  const tld = host.split('.').pop();
+  return Boolean(tld && tld.length === 2 && !US_FRIENDLY_TLDS.has(tld));
+}
+
 export function resolveShopLink(profileUrl, index) {
   const domain = normalizeDomain(profileUrl);
-  if (!domain || NON_SHOP_DOMAIN_SET.has(domain)) return null;
+  if (!domain || NON_SHOP_DOMAIN_SET.has(domain) || isNonUsDomain(domain)) return null;
   const shops = index?.shopsByDomain?.get(domain);
   if (!shops || shops.length !== 1) return null;
   const shop = shops[0];
@@ -747,7 +816,7 @@ export function planCandidate({ candidate, profile, index, options = {}, now } =
   // A shop link is a stronger location signal than the seed fallback: it is a
   // street address, not an inference. It never overrides the bio.
   const resolved =
-    shop && (location.source === 'seed' || location.source === 'none')
+    shop && (location.source === 'seed' || location.source === 'seed_shop' || location.source === 'none')
       ? { city: shop.city, state: shop.state, source: 'shop', confidence: 'high', evidence: shop.domain }
       : location;
 
@@ -862,10 +931,10 @@ export function summarizeDecisions(decisions, { totalCandidates = 0, bookable = 
     heldJobBoard: 0,
     photosUnknown: 0,
     gateFailures: {},
-    locationSources: { 'bio-explicit': 0, 'bio-alias': 0, 'bio-city': 0, shop: 0, seed: 0, none: 0 },
+    locationSources: { 'bio-explicit': 0, 'bio-alias': 0, 'bio-city': 0, shop: 0, seed_shop: 0, seed: 0, none: 0 },
     // Same breakdown restricted to the rows that would actually be written —
     // this is the number the #66 spend decision hangs on.
-    importableLocationSources: { 'bio-explicit': 0, 'bio-alias': 0, 'bio-city': 0, shop: 0, seed: 0 },
+    importableLocationSources: { 'bio-explicit': 0, 'bio-alias': 0, 'bio-city': 0, shop: 0, seed_shop: 0, seed: 0 },
     shopLinks: 0,
     ambiguousSeeds: 0,
   };
@@ -907,7 +976,7 @@ export function buildSpotCheckSample(decisions, size = 20) {
 
   const rank = (decision) => {
     if (decision.location.ambiguousSeed) return 0;
-    if (decision.location.source === 'seed') return 1;
+    if (decision.location.source === 'seed' || decision.location.source === 'seed_shop') return 1;
     if (decision.location.source === 'bio-city') return 2;
     if (decision.shop) return 3;
     if (decision.location.source === 'bio-alias') return 4;

@@ -73,6 +73,7 @@ tsconfig.tsbuildinfo
 # Artist discovery/refresh runtime artifacts contain scraped profile data and
 # mutable checkpoints. Review them locally; never mix them into source PRs.
 /data/discovery/
+/data/discovery-inhouse/
 /data/enrichment/instagram/apify-profiles/
 /data/enrichment/instagram/refresh-status.json
 /data/enrichment/instagram/refresh-audit.jsonl
