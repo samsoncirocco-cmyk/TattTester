@@ -9,8 +9,8 @@ description: Use when validating any change in this repo before calling it done 
 
 - `npm test` — full Vitest suite (`vitest run`).
 - `npm run lint` — ESLint. Advisory: CI runs it with `continue-on-error`
-  because of a pre-existing backlog (~298 errors from the flat-config
-  migration). Don't add new errors; don't treat old ones as your blocker.
+  because of a pre-existing backlog (193 errors / 109 warnings as of
+  run 33032690138, left over from the flat-config migration). Don't add new errors; don't treat old ones as your blocker.
 - `npm run docs:check` — validates docs (`scripts/docs/validate-docs.mjs`).
   Run it for any change under `docs/` (ADR numbering is checked).
 - `npm run security:secrets` — secret scan; its CI twin ("Scan for committed
@@ -21,8 +21,10 @@ description: Use when validating any change in this repo before calling it done 
 
 ## Expected green baseline
 
-Main is fully green. The last CI run on main (run 30967370141) reported
-**2666 passed, 2 skipped (2668 tests) across 235 test files, 0 failures**.
+Main is fully green. The last CI run on main (run 33032690138, commit
+`6b1a0af`, 2026-08-27) reported **3372 passed, 2 skipped (3374 tests)
+across 259 test files (258 run, 1 skipped), 0 failures**. If main has
+moved since, refresh this from `gh run list --branch main --workflow ci-cd.yml`.
 Any failure you see after your change is yours until proven otherwise —
 there is no known-flaky allowance.
 
@@ -47,7 +49,7 @@ changes; they are a required check, so a red Python job blocks you too.
 ## Gotchas
 
 - **Scoped test runs hide breakage.** `vitest run path/to/x.test.ts` passing
-  proves nothing about the rest of the 2,600+ tests — copy assertions
+  proves nothing about the rest of the 3,300+ tests — copy assertions
   (e.g. `src/lib/money-copy.test.ts`) and cross-cutting suites break from
   edits far away. Always finish with the full `npm test`.
 - **Unresolved review threads read as a policy block.** With conversation
