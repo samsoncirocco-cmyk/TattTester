@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from discover_inhouse import IG_LINK, load, normalize_handle, normalize_state, save  # noqa: E402
+from discover_inhouse import IG_LINK, load, normalize_handle, normalize_state, save, seed_shop_reject  # noqa: E402
 
 WORKSPACE = Path(os.path.expanduser("~/tatt-scraper/data"))
 
@@ -30,6 +30,7 @@ def to_raw(shop: dict) -> tuple[str, dict]:
         "instagram": normalize_handle(m.group(1)) if m else None,
         "email": None, "phone": None, "lat": shop.get("lat"), "lon": shop.get("lng"),
         "rating": shop.get("rating"), "placeId": shop["place_id"], "source": "places",
+        "types": shop.get("types"),
     }
 
 
@@ -56,13 +57,18 @@ def seed(out: Path, city: str, state: str, live: bool, max_shops: int) -> dict:
         from scrape_artists import places_search_city
         shops += places_search_city(city, state, key, max_shops)
         src = "cache+live"
+    rejected: dict[str, int] = {}
     for s in shops:
         k, v = to_raw(s)
+        why = seed_shop_reject({**v, "website": s.get("website")})
+        if why:
+            rejected[why] = rejected.get(why, 0) + 1
+            continue
         raw.setdefault(k, v)
     out.mkdir(parents=True, exist_ok=True)
     save(raw_path, raw)
     res = {"city": city, "state": state, "source": src, "cached": len(cached),
-           "shops": len(raw), "withSite": sum(1 for v in raw.values() if v.get("website"))}
+           "shops": len(raw), "withSite": sum(1 for v in raw.values() if v.get("website")), "rejected": rejected}
     print(f"[places] {city}, {state}: shops={len(raw)} cached={len(cached)} src={src}")
     return res
 

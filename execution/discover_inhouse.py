@@ -746,6 +746,81 @@ def shop_keys_for(meta: dict[str, Any]) -> list[str]:
     return sorted(keys)
 
 
+
+# --- seed-shop guards -------------------------------------------------------
+NON_TATTOO_NAME_WORDS = re.compile(
+    r"aesthetic|laser|med ?spa|medspa|\bspa\b|salon|nails?\b|lash|brow|microblad|permanent make ?up|"
+    r"\bpmu\b|cosmetic|barber|beauty|skin ?care|wax|tattoo removal|removal|dental|clinic|piercing only", re.I)
+NON_TATTOO_PLACE_TYPES = {"beauty_salon", "hair_salon", "hair_care", "spa", "nail_salon", "barber_shop",
+                          "skin_care_clinic", "medical_spa", "doctor", "dentist", "health", "store",
+                          "clothing_store", "cosmetics_store"}
+US_TLDS = {"com", "net", "org", "us", "co", "ink", "art", "studio", "tattoo", "biz", "info", "io",
+           "site", "online", "shop", "store", "me", "xyz", "app", "gallery", "design", "gov", "edu"}
+LINK_HOSTS = ("linktr.ee", "msha.ke", "taplink.cc", "bio.link", "lnk.bio", "tap.bio", "solo.to", "hoo.be", "allmylinks.com", "beacons.ai", "carrd.co", "square.site", "wixsite.com")
+# The country is the address's last comma segment ("..., Mexico, NY 13114, USA" is US).
+NON_US_COUNTRY = re.compile(r"^(canada|uk|united kingdom|australia|mexico|m[eé]xico|new zealand|germany|ireland|"
+                            r"sweden|france|spain|italy|netherlands|japan)$", re.I)  # Puerto Rico is US
+CA_POSTAL = re.compile(r"\b(ON|BC|QC|AB|MB|SK|NS|NB|NL|PE)\s+[A-Z]\d[A-Z]\s?\d[A-Z]\d\b")
+
+
+def is_tattoo_shop(name: str | None, types: list[str] | None = None) -> bool:
+    """False for aesthetics/laser/salon places mis-tagged as tattoo shops."""
+    name = name or ""
+    types = [t.lower() for t in (types or [])]
+    if types and "tattoo_shop" not in types and any(t in NON_TATTOO_PLACE_TYPES for t in types):
+        return False
+    if NON_TATTOO_NAME_WORDS.search(name) and not re.search(r"tattoo|tatt|\bink", name, re.I):
+        return False
+    if re.search(r"tattoo removal|laser", name, re.I) and not re.search(r"tattoo(?!\s+(?:laser\s+)?removal)", name, re.I):
+        return False
+    return True
+
+
+def domain_tld(url: str | None) -> str | None:
+    m = re.match(r"^(?:[a-z]+://)?([^/?#:]+)", (url or "").strip().lower())
+    if not m or "." not in m.group(1):
+        return None
+    return m.group(1).rsplit(".", 1)[1]
+
+
+US_BOXES = ((24.0, 50.0, -125.5, -66.0), (51.0, 72.0, -180.0, -129.0), (18.5, 22.5, -161.0, -154.0),
+            (17.5, 18.6, -67.5, -64.5), (13.0, 21.0, 144.0, 146.5))
+
+
+def in_us_bounds(lat, lon) -> bool:
+    """True when unknown, or inside a rough US/territory box (Stockholm or Paris coordinates are not)."""
+    try:
+        lat, lon = float(lat), float(lon)
+    except (TypeError, ValueError):
+        return True
+    return any(a <= lat <= b and c <= lon <= d for a, b, c, d in US_BOXES)
+
+
+def is_non_us_shop(shop: dict) -> bool:
+    """A .ca/.co.uk/... site or a foreign address means the US city on file is not trustworthy."""
+    address = (shop.get("address") or "").strip()
+    country = address.rsplit(",", 1)[-1].strip() if "," in address else ""
+    if re.fullmatch(r"USA|United States|US", country):
+        return False  # a US street address beats the site's TLD
+    if NON_US_COUNTRY.match(country) or CA_POSTAL.search(address):
+        return True
+    if not in_us_bounds(shop.get("lat"), shop.get("lon", shop.get("lng"))):
+        return True
+    host = re.sub(r"^(?:[a-z]+://)?(?:www\.)?", "", (shop.get("website") or "").strip().lower()).split("/")[0]
+    if any(host == d or host.endswith("." + d) for d in LINK_HOSTS):
+        return False
+    tld = domain_tld(shop.get("website"))
+    return bool(tld and len(tld) == 2 and tld not in US_TLDS)
+
+
+def seed_shop_reject(shop: dict) -> str | None:
+    if not is_tattoo_shop(shop.get("name") or shop.get("shopName"), shop.get("types")):
+        return "non-tattoo-shop"
+    if is_non_us_shop(shop):
+        return "non-us-shop"
+    return None
+
+
 def build_candidates(found, profiles, *, existing: set[str], reference_names: set[tuple[str, str]],
                      protected: set[str], shops: dict[str, Any]) -> tuple[list[dict], Counter]:
     output, skipped = [], Counter()
@@ -761,7 +836,13 @@ def build_candidates(found, profiles, *, existing: set[str], reference_names: se
         if not profile:
             skipped["no-profile"] += 1
             continue
-        keys = [k for k in shop_keys_for(meta) if k in shops]
+        all_keys = [k for k in shop_keys_for(meta) if k in shops]
+        rejects = {k: seed_shop_reject(shops[k]) for k in all_keys}
+        keys = [k for k in all_keys if not rejects[k]]
+        other_seeds = [t for t in meta.get("seedFrom", ()) if not t.startswith(("shop:", "#"))]
+        if all_keys and not keys and not other_seeds:
+            skipped[next(r for r in rejects.values() if r)] += 1
+            continue
         city = next((shops[k].get("city") for k in keys if shops[k].get("city")), None)
         if city and (str(profile.get("fullName") or "").strip().lower(), city.lower()) in reference_names:
             skipped["name+city-duplicate"] += 1

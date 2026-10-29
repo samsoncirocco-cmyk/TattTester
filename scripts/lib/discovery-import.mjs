@@ -343,9 +343,19 @@ const US_FLAG = '\u{1F1FA}\u{1F1F8}';
  *     US city named in the bio a chance to win first.
  * Whole words only: "Japanese Tattoo" is a style, not an address.
  */
-export function detectNonUsLocation(text) {
+// "Hamilton ON", "Kelowna, BC": a Canadian province code after a capitalised
+// place name (case-sensitive, so "tattoos on demand" is not Ontario).
+const CA_PROVINCE_CODE = /\b[A-Z][a-z]+,?[ ](ON|BC|QC|AB|MB|SK|NS|NB|NL|PE)\b/;
+const CA_PROVINCE_NAME = /(^|[^\p{L}])(ontario|british columbia|alberta|nova scotia|manitoba|saskatchewan|new brunswick)([^\p{L}]|$)/iu;
+
+export function detectNonUsLocation(text, { markerText } = {}) {
   const raw = foldText(text);
-  const haystack = raw.toLowerCase().replace(/\s+/g, ' ');
+  const province = raw.match(CA_PROVINCE_CODE) ?? raw.match(CA_PROVINCE_NAME);
+  if (province) return { marker: `province:${province[1] || province[2]}`.toLowerCase(), kind: 'text' };
+  // Written-out place names come from the bio only: a display name such as
+  // "Sydney Walker" or "Paris Hilton" is a person, not an address.
+  const markerSource = markerText === undefined ? raw : foldText(markerText);
+  const haystack = markerSource.toLowerCase().replace(/\s+/g, ' ');
   for (const marker of NON_US_LOCATION_MARKERS) {
     const pattern = new RegExp(`(^|[^\\p{L}])${marker}([^\\p{L}]|$)`, 'u');
     if (pattern.test(haystack)) return { marker, kind: 'text' };
@@ -533,7 +543,7 @@ export function resolveCandidateLocation({ candidate, profile, index, options } 
   const alias = parseAliasLocation(text);
   if (alias) return { ...alias, source: 'bio-alias', confidence: 'medium' };
 
-  const foreign = detectNonUsLocation(text);
+  const foreign = detectNonUsLocation(text, { markerText: bio });
   const held = {
     city: null,
     state: null,
@@ -588,9 +598,19 @@ export function resolveCandidateLocation({ candidate, profile, index, options } 
  * deliberately low-recall: a wrong WORKS_AT edge shows a client the wrong
  * address.
  */
+const US_FRIENDLY_TLDS = new Set(['us', 'co', 'io', 'me', 'ai', 'tv', 'gg', 'fm', 'ly', 'to', 'cc', 'ee', 'ke', 'so', 'gl']);
+
+/** grimstudios.ca, studio.co.uk: a country-code site means the US city on file is not trusted. */
+export function isNonUsDomain(domain) {
+  const host = String(domain ?? '').toLowerCase();
+  if (/\.(co|com|org|net)\.[a-z]{2}$/.test(host)) return true;
+  const tld = host.split('.').pop();
+  return Boolean(tld && tld.length === 2 && !US_FRIENDLY_TLDS.has(tld));
+}
+
 export function resolveShopLink(profileUrl, index) {
   const domain = normalizeDomain(profileUrl);
-  if (!domain || NON_SHOP_DOMAIN_SET.has(domain)) return null;
+  if (!domain || NON_SHOP_DOMAIN_SET.has(domain) || isNonUsDomain(domain)) return null;
   const shops = index?.shopsByDomain?.get(domain);
   if (!shops || shops.length !== 1) return null;
   const shop = shops[0];

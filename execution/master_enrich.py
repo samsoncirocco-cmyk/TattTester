@@ -32,7 +32,7 @@ DEFAULT_ROOT = ROOT / "data" / "discovery-inhouse" / "master-enrich"
 REFERENCE = ROOT / "data" / "discovery-inhouse" / "reference-snapshot.json"
 RATE_CODES = {"4", "17", "32", "613"}
 sys.path.insert(0, str(ROOT / "execution"))
-from discover_inhouse import load, normalize_handle, normalize_state, save  # noqa: E402
+from discover_inhouse import load, normalize_handle, normalize_state, save, seed_shop_reject  # noqa: E402
 
 
 def log(msg: str) -> None:
@@ -46,9 +46,14 @@ def shop_key(name: str, city: str, state: str) -> str:
 def prepare(master: dict, work: Path) -> dict:
     """master.json -> raw_shops.json + raw_shop_sites.json (artist handles per shop)."""
     shops, index = {}, {}
+    rejected: dict[str, int] = {}
     for s in master.get("shops", []):
+        why = seed_shop_reject(s)
+        if why:
+            rejected[why] = rejected.get(why, 0) + 1
+            continue
         key = f"gmaps:{s['place_id']}"
-        shops[key] = {"name": s.get("shopName", ""), "city": s.get("city"),
+        shops[key] = {"name": s.get("shopName", ""), "address": s.get("address"), "city": s.get("city"),
                       "state": normalize_state(s.get("state")), "website": s.get("website"),
                       "instagram": None, "email": None, "phone": None,
                       "lat": s.get("lat"), "lon": s.get("lng"), "placeId": s["place_id"], "source": "places"}
@@ -71,7 +76,7 @@ def prepare(master: dict, work: Path) -> dict:
     save(work / "raw_shops.json", shops)
     save(work / "raw_shop_sites.json", crawl)
     handles = sum(len(v["instagram"]) for v in crawl.values())
-    return {"shops": len(shops), "shopsWithArtists": len(crawl), "handles": handles, "unmatchedArtists": unmatched}
+    return {"shops": len(shops), "shopsWithArtists": len(crawl), "handles": handles, "unmatchedArtists": unmatched, "rejectedShops": rejected}
 
 
 def allowed_now(calls: list[float], per_hour: int, now: float) -> int:

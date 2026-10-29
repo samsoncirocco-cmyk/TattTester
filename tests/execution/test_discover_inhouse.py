@@ -356,3 +356,34 @@ def test_consistent_shop_is_not_geocoded():
     http = _Geo("IA", "x")
     inhouse.resolve_locations(http, shops, {}, {})
     assert http.calls == 0 and "locationConflict" not in shops["osm:node/2"]
+
+
+@pytest.mark.parametrize("shop,why", [
+    ({"name": "Ivory Rose Aesthetics/Shore Laser + Aesthetics"}, "non-tattoo-shop"),
+    ({"name": "Removery Tattoo Removal"}, "non-tattoo-shop"),
+    ({"name": "Emerald Empire Tattoo & Tattoo Laser Removal"}, None),
+    ({"name": "Ink & Lash Bar"}, None),
+    ({"name": "House of GRIM", "website": "http://www.grimstudios.ca/"}, "non-us-shop"),
+    ({"name": "Seraphim Studio", "website": "http://linktr.ee/x", "address": "1 St, San Antonio, TX 78240, USA"}, None),
+    ({"name": "Black Ash Tattoo", "address": "Niagara Falls, ON L2G 4P6, Canada"}, "non-us-shop"),
+    ({"name": "Stockholm Ink Bash", "lat": 59.32, "lon": 18.05}, "non-us-shop"),
+    ({"name": "Rayon Noir", "address": "12 Rue Crozatier, 75012 Paris, France"}, "non-us-shop"),
+    ({"name": "LES Tattoos", "lat": 38.57, "lon": -121.5, "address": "2223 10th St, Sacramento, CA 95811, USA"}, None),
+    ({"name": "Aloha Ink", "lat": 21.3, "lon": -157.8}, None),
+    ({"name": "Uptown Ink Tattoo", "address": "3265 Main St, Mexico, NY 13114, USA", "website": "https://x.de"}, None),
+    ({"name": "Isla Tattoo", "address": "Calle 1, San Juan, 00901, Puerto Rico", "lat": 18.46, "lon": -66.1}, None),
+])
+def test_seed_shop_reject(shop, why):
+    assert inhouse.seed_shop_reject(shop) == why
+
+
+def test_build_candidates_skips_artists_only_seen_at_rejected_shops():
+    shops = {"gmaps:a": {"name": "Ivory Rose Aesthetics", "city": "Pasadena", "state": "MD"},
+             "gmaps:g": {"name": "House of GRIM", "city": "Fort Hamilton", "state": "NY",
+                         "website": "http://www.grimstudios.ca/"}}
+    found = {"pmu": {"sources": {"shop-site"}, "seedFrom": {"shop:gmaps:a", "#pasadena"}, "shops": {"gmaps:a"}},
+             "grim": {"sources": {"shop-site"}, "seedFrom": {"shop:gmaps:g"}, "shops": {"gmaps:g"}}}
+    profiles = {h: {"bio": "tattoo artist, books open", "followers": 900, "postCount": 50} for h in found}
+    cands, skipped = inhouse.build_candidates(found, profiles, existing=set(), reference_names=set(),
+                                              protected=set(), shops=shops)
+    assert cands == [] and skipped["non-tattoo-shop"] == 1 and skipped["non-us-shop"] == 1

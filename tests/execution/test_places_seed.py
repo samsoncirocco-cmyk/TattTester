@@ -20,3 +20,16 @@ def test_cached_shops_filters_city(tmp_path):
     (tmp_path / "master.json").write_text('{"shops":[{"place_id":"a","city":"Salinas","state":"CA"},'
                                           '{"place_id":"b","city":"Salinas","state":"KS"}]}')
     assert [s["place_id"] for s in ps.cached_shops("Salinas", "CA", tmp_path)] == ["a"]
+
+
+def test_seed_skips_non_tattoo_and_non_us_shops(tmp_path, monkeypatch):
+    monkeypatch.setattr(ps, "cached_shops", lambda c, s: [
+        {"place_id": "a", "shopName": "Luxe Brow Studio", "city": "Salinas", "state": "CA"},
+        {"place_id": "b", "shopName": "Skin Candy Tattoo", "city": "Salinas", "state": "CA",
+         "website": "http://www.skincandytattoo.ca/"},
+        {"place_id": "c", "shopName": "Glow Spa", "city": "Salinas", "state": "CA", "types": ["spa"]},
+        {"place_id": "d", "shopName": "Salinas Ink", "city": "Salinas", "state": "CA",
+         "website": "https://linktr.ee/x", "address": "1 Main St, Salinas, CA 93901, USA"}])
+    res = ps.seed(tmp_path, "Salinas", "CA", live=False, max_shops=10)
+    assert list(ps.load(tmp_path / "raw_shops.json", {})) == ["gmaps:d"]
+    assert res["rejected"] == {"non-tattoo-shop": 2, "non-us-shop": 1}
