@@ -1,6 +1,6 @@
 schema_version: 1
-verified_against: 18301f0
-verified_on: 2026-08-10
+verified_against: 7e5cd71
+verified_on: 2026-10-28
 
 statuses:
   implemented: Source and focused test evidence exist; production operation is not implied.
@@ -285,6 +285,16 @@ features:
     limitations:
       - No production refresh-status apply has been verified.
       - Full-sweep Apify and GCS cost, spend approval, and quarterly scheduling remain open under TAT-7.
+
+  inhouse_artist_discovery:
+    status: implemented_unverified
+    evidence:
+      - docs/operations/inhouse-artist-discovery.md
+      - execution/inhouse_discover.py
+      - tests/execution/test_inhouse_discover.py
+    limitations:
+      - Logged-out Instagram profile and following URLs redirect to a login wall, and hashtag pages are JavaScript shells, so those Apify actors are not reproduced.
+      - No production discovery run has been executed. Shop-roster rows stay held unless the importer is passed the unknown-follower and unknown-photo flags.
 
   artist_console:
     status: implemented

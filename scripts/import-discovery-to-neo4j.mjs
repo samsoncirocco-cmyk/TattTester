@@ -30,6 +30,7 @@
  *   node scripts/import-discovery-to-neo4j.mjs --limit 25            # dry run, small slice
  *   node scripts/import-discovery-to-neo4j.mjs --reference snap.json # fully offline plan
  *   node scripts/import-discovery-to-neo4j.mjs --allow-unknown-photos # ceiling, gate not enforced
+ *   node scripts/import-discovery-to-neo4j.mjs --allow-unknown-followers # shop rosters with no count
  *   node scripts/import-discovery-to-neo4j.mjs --apply               # actually write
  *
  * Requires NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD in .env unless --reference is

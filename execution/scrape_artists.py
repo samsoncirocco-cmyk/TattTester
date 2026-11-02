@@ -76,6 +76,8 @@ IG_HANDLE_RE = re.compile(
 IG_NON_ACCOUNT_PATHS = {
     "p", "reel", "reels", "tv", "stories", "explore", "accounts",
     "sharer", "share", "about", "legal", "directory", "developer", "tags",
+    # /popular/{tag} is the logged-out hashtag shell, not an artist account.
+    "popular",
 }
 
 IMAGE_EXT_RE = re.compile(r"\.(jpe?g|png|webp)(\?|$)", re.I)
