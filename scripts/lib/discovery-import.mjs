@@ -173,7 +173,12 @@ export function parseDiscoveryImportArgs(args) {
     '--sample',
     '--reference',
   ]);
-  const supported = new Set([...valued, '--apply', '--allow-unknown-photos']);
+  const supported = new Set([
+    ...valued,
+    '--apply',
+    '--allow-unknown-photos',
+    '--allow-unknown-followers',
+  ]);
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!supported.has(arg)) throw new Error(`Unknown option: ${arg}`);
@@ -188,6 +193,7 @@ export function parseDiscoveryImportArgs(args) {
   return {
     apply: args.includes('--apply'),
     allowUnknownPhotos: args.includes('--allow-unknown-photos'),
+    allowUnknownFollowers: args.includes('--allow-unknown-followers'),
     input,
     profiles: optionValue(args, '--profiles') ?? defaultProfilesPathFor(input),
     out: optionValue(args, '--out') ?? DEFAULT_DISCOVERY_OUTPUT,
@@ -525,6 +531,22 @@ export function resolveCandidateLocation({ candidate, profile, index, options } 
     };
   }
 
+  // Operator-supplied search or roster metro. Bio and a known seed account win
+  // first; this only fills a city the gazetteer cannot see yet. The spelling
+  // is the operator's, so a mismatched City node is on them.
+  const queryState = String(candidate?.seedState ?? '').trim().toUpperCase();
+  const queryCity = String(candidate?.seedCity ?? '').trim();
+  if (queryCity && US_STATE_SET.has(queryState)) {
+    return {
+      city: queryCity,
+      state: queryState,
+      evidence: `query:${queryCity}, ${queryState}`,
+      seedKind: 'query',
+      source: 'seed',
+      confidence: 'medium',
+    };
+  }
+
   return { city: null, state: null, source: 'none', confidence: 'none' };
 }
 
@@ -636,6 +658,7 @@ export function classifyJobBoard(candidate, profile) {
 export function evaluateQualityGates(candidate, profile, options = {}) {
   const minFollowers = options.minFollowers ?? DEFAULT_MIN_FOLLOWERS;
   const allowUnknownPhotos = options.allowUnknownPhotos ?? false;
+  const allowUnknownFollowers = options.allowUnknownFollowers ?? false;
 
   const followers = candidate?.followers ?? profile?.followers ?? null;
   const bio = String(profile?.bio ?? candidate?.bioSnippet ?? '').trim();
@@ -649,8 +672,12 @@ export function evaluateQualityGates(candidate, profile, options = {}) {
   if (candidate?.looksBookable !== true) failures.push('looksBookable');
   if (profile?.private === true) failures.push('notPrivate');
   if (jobBoard.isJobBoard) failures.push('notJobBoard');
-  if (!Number.isFinite(followers)) failures.push('followers:unknown');
-  else if (followers < minFollowers) failures.push('followers');
+  if (!Number.isFinite(followers)) {
+    // Shop rosters often have a name and a handle and no follower count.
+    // Unknown stays a hold unless the operator opts in, same as photos.
+    if (allowUnknownFollowers) warnings.push('followers:unknown');
+    else failures.push('followers:unknown');
+  } else if (followers < minFollowers) failures.push('followers');
   if (!bio) failures.push('bio');
 
   if (photosKnown) {

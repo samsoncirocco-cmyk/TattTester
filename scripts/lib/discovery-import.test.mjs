@@ -119,6 +119,7 @@ describe('discovery importer options', () => {
     expect(parseDiscoveryImportArgs([])).toEqual({
       apply: false,
       allowUnknownPhotos: false,
+      allowUnknownFollowers: false,
       input: DEFAULT_DISCOVERY_CANDIDATES_INPUT,
       profiles: 'data/discovery/profiles.json',
       out: DEFAULT_DISCOVERY_OUTPUT,
@@ -141,6 +142,7 @@ describe('discovery importer options', () => {
       parseDiscoveryImportArgs([
         '--apply',
         '--allow-unknown-photos',
+        '--allow-unknown-followers',
         '--input', 'a/candidates.json',
         '--profiles', 'b/profiles.json',
         '--out', 'c/plan.json',
@@ -152,6 +154,7 @@ describe('discovery importer options', () => {
     ).toEqual({
       apply: true,
       allowUnknownPhotos: true,
+      allowUnknownFollowers: true,
       input: 'a/candidates.json',
       profiles: 'b/profiles.json',
       out: 'c/plan.json',
@@ -216,6 +219,21 @@ describe('quality gates', () => {
     expect(lenient.failures).toEqual([]);
     expect(lenient.warnings).toContain('photos:unknown');
     expect(lenient.photoEvidence).toBe('unknown');
+  });
+
+  it('admits an unknown follower count only under --allow-unknown-followers', () => {
+    const strict = evaluateQualityGates(candidate({ followers: null }), profile({ followers: null }));
+    expect(strict.admitted).toBe(false);
+    expect(strict.failures).toContain('followers:unknown');
+
+    const lenient = evaluateQualityGates(
+      candidate({ followers: null }),
+      profile({ followers: null }),
+      { allowUnknownFollowers: true },
+    );
+    expect(lenient.admitted).toBe(true);
+    expect(lenient.failures).toEqual([]);
+    expect(lenient.warnings).toContain('followers:unknown');
   });
 
   // Both of these cleared the upstream looks_bookable classifier in the real
@@ -417,6 +435,35 @@ describe('seed fallback', () => {
   it('returns nothing for an unknown seed', () => {
     expect(resolveSeedLocation('someunknownseed', index)).toBeNull();
     expect(resolveSeedLocation('', index)).toBeNull();
+  });
+
+  it('uses an operator city when the bio and the seed handle do not locate one', () => {
+    const result = resolveCandidateLocation({
+      candidate: candidate({
+        seedFrom: 'nobodyknowsthisseed',
+        bioSnippet: 'Booking below',
+        seedCity: 'Boise',
+        seedState: 'id',
+      }),
+      profile: profile({ bio: 'Booking below', fullName: 'New Artist' }),
+      index,
+    });
+    expect(result).toMatchObject({
+      city: 'Boise',
+      state: 'ID',
+      source: 'seed',
+      seedKind: 'query',
+      evidence: 'query:Boise, ID',
+    });
+  });
+
+  it('does not let an operator city override a city written in the bio', () => {
+    const result = resolveCandidateLocation({
+      candidate: candidate({ seedCity: 'Boise', seedState: 'ID' }),
+      profile: profile({ bio: 'Cathedral Tattoo Chicago, IL' }),
+      index,
+    });
+    expect(result).toMatchObject({ city: 'Chicago', state: 'IL', source: 'bio-explicit' });
   });
 });
 

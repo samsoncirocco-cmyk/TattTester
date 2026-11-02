@@ -38,6 +38,9 @@ class TestExtractInstagramHandles:
         # content paths are not accounts
         assert "p" not in handles
         assert "explore" not in handles
+        assert "popular" not in extract_instagram_handles(
+            '<a href="https://www.instagram.com/popular/finelinetattoo/">tag</a>'
+        )
 
     def test_dedupes_and_lowercases(self):
         html = (

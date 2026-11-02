@@ -62,6 +62,12 @@ records potential spend before POST in `apify-discovery-run-report.json`.
 Only terminal-success actor output enters the discovery caches; ambiguous,
 running, failed, aborted, timed-out, or dataset-error attempts stay retryable.
 
+The public-page lane that avoids this spend is
+`execution/inhouse_discover.py`. Commands, the $0 actor cost, and the rate
+limit (2.5s, 400 requests, no cookies, robots fail-closed) are in
+`docs/operations/inhouse-artist-discovery.md`. It does not replace the
+refresh runner above.
+
 ## Status semantics
 
 - `active`: resets the confirmed-dead counter, clears stale, and stamps

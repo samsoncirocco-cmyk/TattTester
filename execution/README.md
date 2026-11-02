@@ -87,6 +87,58 @@ fields (including `artistManagedFields` and
 by a scrape. Instagram is immutable after identity verification, and
 `claimVerificationStatus` is verification state rather than scrape data.
 
+## In-house discovery
+
+`execution/inhouse_discover.py` is the public-page lane that replaces the
+Apify actors for new-artist discovery. It writes
+`data/discovery/inhouse/candidates.json` and `profiles.json` in the shape
+`scripts/import-discovery-to-neo4j.mjs` already imports, plus
+`style-harvest.json` for `scripts/link-artist-styles.mjs`. Dry-run is the
+default. The full runbook, including what a logged-out browser actually
+returns, is `docs/operations/inhouse-artist-discovery.md`.
+
+```bash
+python execution/inhouse_discover.py --queue queue.json --metro "Austin,TX" plan
+python execution/inhouse_discover.py --queue queue.json --metro "Austin,TX" --execute collect-search
+python execution/inhouse_discover.py --queue queue.json --sites shops.json --execute collect-sites
+python execution/inhouse_discover.py --queue queue.json --out data/discovery/inhouse collect-mentions
+python execution/inhouse_discover.py --queue queue.json --out data/discovery/inhouse filter
+node scripts/import-discovery-to-neo4j.mjs \
+  --input data/discovery/inhouse/candidates.json \
+  --profiles data/discovery/inhouse/profiles.json
+```
+
+**Cost.** Marginal actor spend is $0. Apify's console starting prices, per
+1,000 units, were profile $2.60, hashtag $2.60, follow items $5.00, contact
+pages $2.00, search pages $4.50, fetched pages $2.28, tech-stack results
+$10.00. One shop page stands in for contact + page-read + tech-stack, about
+$14.28 per 1,000 pages at those starting rates. The 361 profile-scraper runs
+are the volume center; at the 50-username chunks `discover_ig.py` sends, that
+is at most about 18,000 profiles and about $47 if every run was full and
+priced at the starting rate. That is an illustration, not a bill.
+
+**Rate limits.** One request at a time, 2.5 seconds apart, 400 requests per
+process. No cookie jar and no login. `robots.txt` is fail-closed.
+`instagram.com` and `google.com` are not fetched unless
+`--allow-disallowed-hosts` names them: Instagram's robots.txt is `Disallow: /`
+for `User-agent: *`, and Google disallows `/search`. A 429, a login wall, or a
+bot challenge stops that host for the rest of the process. Three HTTP errors
+do the same. Blocked results are cached; `--retry-blocked` is the only retry.
+The tool does not solve challenges.
+
+**Against the Apify actors.** Profile and following URLs on a logged-out
+browser redirect to `/accounts/login/?…&is_from_rle`, so those two actors are
+not honestly replaceable from public pages today. Hashtag URLs redirect to
+`/popular/{tag}/`, which is a JavaScript shell rather than an owner list.
+Search HTML is parsed when a results page is actually returned; DuckDuckGo's
+HTML endpoint answered this environment with HTTP 202 and an anomaly puzzle,
+and that response stops the host. Shop pages are the lane that works: a public
+roster contains `mailto:`, `tel:`, Instagram hrefs, and a platform fingerprint
+(GoDaddy Website Builder via the generator meta and `wsimg.com` /
+`secureserver.net`). Mention expansion reads `@handles` already present in
+bios. Claimed, self-registered, removed, and takedown-flagged artists in
+`--reference` are left out of `candidates.json`.
+
 ## Directive → Implementation Map
 
 ### `directives/generate-design.md`
